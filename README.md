@@ -1,300 +1,261 @@
-async function serviceCallApiRequest(
-    pathName,
-    method = 'GET',
-    body = null,
-    allowRefresh = true
-) {
- 
-    let config =
-        loadConfig();
-
-    const validAccessToken =
-    await ensureValidAccessToken();
- 
-    if (
-        !config ||
-        !config.instanceUrl ||
-        !config.accessToken
-    ) {
-        throw new Error(
-            'ServiceCall Desktop is not connected to ServiceNow.'
-        );
-    }
- 
- 
-    const url =
-        config.instanceUrl.replace(/\/$/, '') +
-        '/api/x_1806573_servic_0/servicecall_desktop_api' +
-        pathName;
- 
- 
-    const options = {
-        method: method,
- 
-        headers: {
-            'Accept':
-                'application/json',
- 
-            'Authorization':
-                'Bearer ' +
-                validAccessToken
-        }
-    };
- 
- 
-    if (body) {
- 
-        options.headers['Content-Type'] =
-            'application/json';
- 
-        options.body =
-            JSON.stringify(body);
-    }
- 
- 
-    let response =
-        await fetch(
-            url,
-            options
-        );
- 
- 
-    /*
-     * -------------------------------------------------
-     * ACCESS TOKEN EXPIRED
-     * -------------------------------------------------
-     *
-     * Try ONE automatic refresh.
-     *
-     * We only retry once so a bad/revoked refresh
-     * token cannot create an infinite loop.
-     */
-    if (
-        (
-            response.status === 401 ||
-            response.status === 403
-        ) &&
-        allowRefresh
-    ) {
- 
-        console.log(
-            'ServiceCall API authorization expired. Trying automatic renewal...'
-        );
- 
- 
-        try {
- 
-            const newAccessToken =
-                await refreshAccessToken();
- 
- 
-            /*
-             * Retry the ORIGINAL request using
-             * the newly issued access token.
-             */
-            options.headers['Authorization'] =
-                'Bearer ' +
-                newAccessToken;
- 
- 
-            response =
-                await fetch(
-                    url,
-                    options
-                );
- 
- 
-        } catch (refreshError) {
- 
-            console.error(
-                'Automatic ServiceCall authorization renewal failed:',
-                refreshError.message
-            );
- 
- 
-            const error =
-                new Error(
-                    'Your ServiceCall authorization has expired. Please sign in to ServiceNow again.'
-                );
- 
-            error.code =
-                'AUTHENTICATION_REQUIRED';
- 
-            throw error;
-        }
-    }
- 
- 
-    let data = {};
- 
-    try {
- 
-        data =
-            await response.json();
- 
-    } catch (error) {
- 
-        data = {};
-    }
- 
- 
-    const result =
-        data.result || data;
- 
- 
-    /*
-     * If we're STILL unauthorized after refreshing,
-     * the long-lived authorization is no longer usable.
-     */
-    if (
-        response.status === 401 ||
-        response.status === 403
-    ) {
- 
-        const error =
-            new Error(
-                'Your ServiceCall authorization has expired. Please sign in to ServiceNow again.'
-            );
- 
-        error.code =
-            'AUTHENTICATION_REQUIRED';
- 
-        throw error;
-    }
- 
- 
-    if (!response.ok) {
- 
-        const error =
-            new Error(
-                result.message ||
-                'ServiceCall request failed.'
-            );
- 
-        error.code =
-            result.code ||
-            'SERVICECALL_API_ERROR';
- 
-        throw error;
-    }
- 
- 
-    return result;
-}
-
-ipcMain.handle(
-    'servicecall-accept-call',
-    async (
-        event,
-        callSysId
-    ) => {
-
-        return await serviceCallApiRequest(
-            '/accept-call',
-            'POST',
-            {
-                call_sys_id:
-                    callSysId
-            }
-        );
-    }
-);
-
-
-ipcMain.handle(
-    'servicecall-decline-call',
-    async (
-        event,
-        callSysId
-    ) => {
-
-        return await serviceCallApiRequest(
-            '/decline-call',
-            'POST',
-            {
-                call_sys_id:
-                    callSysId
-            }
-        );
-    }
-);
-
-
-ipcMain.handle(
-    'servicecall-cancel-call',
-    async (
-        event,
-        callSysId
-    ) => {
-
-        return await serviceCallApiRequest(
-            '/cancel-call',
-            'POST',
-            {
-                call_sys_id:
-                    callSysId
-            }
-        );
-    }
-);
-
-
-ipcMain.handle(
-    'servicecall-end-call',
-    async (
-        event,
-        callSysId
-    ) => {
-
-        return await serviceCallApiRequest(
-            '/end-call',
-            'POST',
-            {
-                call_sys_id:
-                    callSysId
-            }
-        );
-    }
-);
-
-
-ipcMain.handle(
-    'servicecall-get-call-status',
-    async (
-        event,
-        callSysId
-    ) => {
-
-        return await serviceCallApiRequest(
-            '/call-status?call_sys_id=' +
-            encodeURIComponent(
-                callSysId
-            ),
-            'GET'
-        );
-    }
-);
-
-
 const {
-    app,
-    BrowserWindow,
-    ipcMain,
-    shell,
-    Tray,
-    Menu,
-    desktopCapturer,
+    contextBridge,
+    ipcRenderer
 } = require('electron');
 
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const http = require('http');
-const os = require('os');
 
-const {
-    convertWebmToMp3,
-    convertWebmToMp4
-} = require(
-    './media-converter'
+contextBridge.exposeInMainWorld(
+    'serviceCall',
+    {
+
+        /* -------------------------
+           INSTANCE / CONNECTION
+        ------------------------- */
+
+        saveInstance:
+            (instanceUrl) =>
+                ipcRenderer.invoke(
+                    'servicecall-save-instance',
+                    instanceUrl
+                ),
+
+
+        getInstance:
+            () =>
+                ipcRenderer.invoke(
+                    'servicecall-get-instance'
+                ),
+
+
+        getConnectionStatus:
+            () =>
+                ipcRenderer.invoke(
+                    'servicecall-get-connection-status'
+                ),
+
+
+        /* -------------------------
+           AUTHENTICATION
+        ------------------------- */
+
+        startLogin:
+            () =>
+                ipcRenderer.invoke(
+                    'servicecall-start-login'
+                ),
+
+
+        onAuthStatus:
+            (callback) => {
+
+                ipcRenderer.on(
+                    'servicecall-auth-status',
+                    (
+                        event,
+                        data
+                    ) => {
+
+                        callback(
+                            data
+                        );
+                    }
+                );
+            },
+
+
+        /* -------------------------
+           ACTIVE CALL
+        ------------------------- */
+
+        openActiveCall:
+            () =>
+                ipcRenderer.invoke(
+                    'servicecall-open-active-call'
+                ),
+
+
+        /* -------------------------
+           CALL ACTIONS
+        ------------------------- */
+
+        acceptCall:
+            (callSysId) =>
+                ipcRenderer.invoke(
+                    'servicecall-accept-call',
+                    callSysId
+                ),
+
+
+        declineCall:
+            (callSysId) =>
+                ipcRenderer.invoke(
+                    'servicecall-decline-call',
+                    callSysId
+                ),
+
+
+        cancelCall:
+            (callSysId) =>
+                ipcRenderer.invoke(
+                    'servicecall-cancel-call',
+                    callSysId
+                ),
+
+
+        endCall:
+            (callSysId) =>
+                ipcRenderer.invoke(
+                    'servicecall-end-call',
+                    callSysId
+                ),
+
+        leaveCall:
+    (callSysId) =>
+        ipcRenderer.invoke(
+            'servicecall-leave-call',
+            callSysId
+        ),
+
+
+        getCallStatus:
+            (callSysId) =>
+                ipcRenderer.invoke(
+                    'servicecall-get-call-status',
+                    callSysId
+                ),
+
+
+        /* -------------------------
+           PARTICIPANTS
+        ------------------------- */
+
+        searchUsers:
+            (searchText) =>
+                ipcRenderer.invoke(
+                    'servicecall-search-users',
+                    searchText
+                ),
+
+
+        inviteParticipant:
+            (
+                callSysId,
+                userSysId
+            ) =>
+                ipcRenderer.invoke(
+                    'servicecall-invite-participant',
+                    callSysId,
+                    userSysId
+                ),
+
+
+        /* -------------------------
+           DYNAMIC MEDIA CREDENTIALS
+        ------------------------- */
+
+        getMediaCredentials:
+    (callSysId) =>
+        ipcRenderer.invoke(
+            'servicecall-get-media-credentials',
+            callSysId
+        ),
+
+
+/* -------------------------
+   SCREEN SHARING
+------------------------- */
+
+getScreenSources:
+    () =>
+        ipcRenderer.invoke(
+            'servicecall-get-screen-sources'
+        ),
+
+        setCallWindowLayout:
+    (layout) =>
+        ipcRenderer.invoke(
+            'servicecall-set-call-window-layout',
+            layout
+        ),
+
+
+/* -------------------------
+   RECORDING
+------------------------- */
+
+startRecording:
+    (callSysId) =>
+        ipcRenderer.invoke(
+            'servicecall-start-recording',
+            callSysId
+        ),
+
+
+finishRecording:
+    (recordingSysId) =>
+        ipcRenderer.invoke(
+            'servicecall-finish-recording',
+            recordingSysId
+        ),
+
+uploadRecording:
+    (
+        recordingSysId,
+        fileData,
+        fileName,
+        format
+    ) =>
+        ipcRenderer.invoke(
+            'servicecall-upload-recording',
+            recordingSysId,
+            fileData,
+            fileName,
+            format
+        ),
+
+finalizeVoiceRecording:
+    (
+        recordingSysId,
+        webmData
+    ) =>
+        ipcRenderer.invoke(
+            'servicecall-finalize-voice-recording',
+            recordingSysId,
+            webmData
+        ),
+
+        finalizeScreenRecording:
+    (
+        recordingSysId,
+        webmData
+    ) =>
+        ipcRenderer.invoke(
+            'servicecall-finalize-screen-recording',
+            recordingSysId,
+            webmData
+        ),
+
+        downloadRecording:
+    (recordingSysId) =>
+        ipcRenderer.invoke(
+            'servicecall-download-recording',
+            recordingSysId
+        ),
+
+
+completeRecording:
+    (
+        recordingSysId,
+        attachmentSysId,
+        format
+    ) =>
+        ipcRenderer.invoke(
+            'servicecall-complete-recording',
+            recordingSysId,
+            attachmentSysId,
+            format
+        )
+
+    }
 );
+
