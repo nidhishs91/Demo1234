@@ -3923,6 +3923,27 @@ document
                      */
                     await stopAgoraAudio();
 
+                    /*
+ * Tell the main ServiceCall window that
+ * this meeting has changed.
+ *
+ * Normal calls/conferences do not send
+ * this notification.
+ */
+if (
+    isMeeting &&
+    meetingSysId &&
+    window.serviceCall &&
+    typeof window.serviceCall
+        .notifyMeetingChanged ===
+        'function'
+) {
+
+    window.serviceCall
+        .notifyMeetingChanged(
+            meetingSysId
+        );
+}
 
                     setMode(
                         'completed'
