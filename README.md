@@ -4456,3 +4456,57 @@ ipcMain.handle(
         }
     }
 );
+
+/* -------------------------------------------------------
+   SERVICECALL MEETINGS
+------------------------------------------------------- */
+
+/*
+ * Get all meetings relevant to the currently
+ * authenticated ServiceCall user.
+ *
+ * ServiceNow decides which meetings the user
+ * is allowed to see.
+ */
+ipcMain.handle(
+    'servicecall-get-my-meetings',
+
+    async () => {
+
+        try {
+
+            const result =
+                await serviceCallApiRequest(
+                    '/my-meetings',
+                    'GET'
+                );
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to get ServiceCall meetings:',
+                error.message
+            );
+
+
+            return {
+
+                success: false,
+
+                code:
+                    error.code ||
+                    'GET_MEETINGS_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to retrieve meetings.',
+
+                meetings: []
+            };
+        }
+    }
+);
