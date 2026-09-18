@@ -81,6 +81,10 @@ let currentMeetingStatus = '';
 
 let meetingSearchTimer = null;
 
+let schedulePeopleSearchTimer = null;
+
+let selectedMeetingPeople = [];
+
 const meetingDetailsModal =
     document.getElementById(
         'meetingDetailsModal'
@@ -879,6 +883,8 @@ function openScheduleMeetingModal() {
     if (scheduleMeetingEnd) {
         scheduleMeetingEnd.value = '';
     }
+
+    selectedMeetingPeople = [];
 
     if (scheduleMeetingPeopleSearch) {
         scheduleMeetingPeopleSearch.value = '';
@@ -2735,8 +2741,387 @@ if (
     );
 }
 
+/* -------------------------------------------------
+   SCHEDULE MEETING - PEOPLE SEARCH
+------------------------------------------------- */
+
+if (
+    scheduleMeetingPeopleSearch
+) {
+
+    scheduleMeetingPeopleSearch.addEventListener(
+        'input',
+        () => {
+
+            const searchText =
+                scheduleMeetingPeopleSearch
+                    .value
+                    .trim();
+
+
+            if (
+                schedulePeopleSearchTimer
+            ) {
+
+                clearTimeout(
+                    schedulePeopleSearchTimer
+                );
+            }
+
+
+            /*
+             * Our existing /users API requires
+             * at least 2 characters.
+             */
+            if (
+                searchText.length < 2
+            ) {
+
+                scheduleMeetingPeopleResults.innerHTML =
+                    '';
+
+                scheduleMeetingPeopleResults.style.display =
+                    'none';
+
+                return;
+            }
+
+
+            schedulePeopleSearchTimer =
+                setTimeout(
+                    async () => {
+
+                        try {
+
+                            const result =
+                                await window
+                                    .serviceCall
+                                    .searchUsers(
+                                        searchText
+                                    );
+
+
+                            console.log(
+                                'Schedule meeting user search:',
+                                result
+                            );
+
+                            if (
+    !result ||
+    result.success !== true
+) {
+    return;
+}
+
+const users =
+    Array.isArray(result.users)
+        ? result.users.filter(
+            user =>
+                !selectedMeetingPeople.some(
+                    person =>
+                        person.sys_id ===
+                        user.sys_id
+                )
+        )
+        : [];
+
+
+scheduleMeetingPeopleResults.innerHTML =
+    '';
+
+
+users.forEach(
+    user => {
+
+        const item =
+            document.createElement(
+                'div'
+            );
+
+
+        item.className =
+            'schedule-meeting-person-result';
+
+
+        item.textContent =
+            user.name ||
+            'Unknown User';
+
+item.addEventListener(
+    'click',
+    () => {
+
+        /*
+         * Don't add the same person twice.
+         */
+        const alreadySelected =
+            selectedMeetingPeople.some(
+                person =>
+                    person.sys_id ===
+                    user.sys_id
+            );
+
+
+        if (!alreadySelected) {
+
+            selectedMeetingPeople.push(
+                {
+                    sys_id: user.sys_id,
+                    name:
+                        user.name ||
+                        'Unknown User'
+                }
+            );
+        }
+
+
+        /*
+         * Show selected people.
+         */
+        scheduleMeetingSelectedPeople.innerHTML =
+            '';
+
+
+        selectedMeetingPeople.forEach(
+    person => {
+
+        const selectedPerson =
+            document.createElement(
+                'div'
+            );
+
+        selectedPerson.className =
+            'schedule-meeting-selected-person';
+
+
+        const name =
+            document.createElement(
+                'span'
+            );
+
+        name.textContent =
+            person.name;
+
+
+        const removeButton =
+            document.createElement(
+                'button'
+            );
+
+        removeButton.type =
+            'button';
+
+        removeButton.textContent =
+            '×';
+
+        removeButton.title =
+            'Remove';
+
+
+        removeButton.addEventListener(
+            'click',
+            () => {
+
+                selectedMeetingPeople =
+                    selectedMeetingPeople.filter(
+                        selected =>
+                            selected.sys_id !==
+                            person.sys_id
+                    );
+
+
+                selectedPerson.remove();
+
+
+                /*
+                 * If nobody remains selected,
+                 * show our empty message again.
+                 */
+                if (
+                    selectedMeetingPeople.length === 0
+                ) {
+
+                    scheduleMeetingSelectedPeople.innerHTML = `
+                        <div
+                            id="scheduleMeetingNoPeople"
+                            class="schedule-meeting-no-people"
+                        >
+                            No people selected.
+                        </div>
+                    `;
+                }
+            }
+        );
+
+
+        selectedPerson.appendChild(
+            name
+        );
+
+        selectedPerson.appendChild(
+            removeButton
+        );
+
+
+        scheduleMeetingSelectedPeople.appendChild(
+            selectedPerson
+        );
     }
 );
+        /*
+         * Clear search and hide results.
+         */
+        scheduleMeetingPeopleSearch.value =
+            '';
+
+        scheduleMeetingPeopleResults.innerHTML =
+            '';
+
+        scheduleMeetingPeopleResults.style.display =
+            'none';
+    }
+);
+
+
+        scheduleMeetingPeopleResults.appendChild(
+            item
+        );
+    }
+);
+
+
+scheduleMeetingPeopleResults.style.display =
+    users.length > 0
+        ? 'block'
+        : 'none';
+
+                        } catch (error) {
+
+                            console.error(
+                                'Schedule meeting user search failed:',
+                                error
+                            );
+                        }
+
+                    },
+                    300
+                );
+        }
+    );
+}
+
+    }
+);
+
+/* -------------------------------------------------
+   SCHEDULE MEETING - VALIDATION
+------------------------------------------------- */
+
+if (scheduleMeetingSubmitButton) {
+
+    scheduleMeetingSubmitButton.addEventListener(
+        'click',
+        () => {
+
+            const title =
+                scheduleMeetingTitle.value.trim();
+
+            const start =
+                scheduleMeetingStart.value;
+
+            const end =
+                scheduleMeetingEnd.value;
+
+
+            /*
+             * Clear previous message.
+             */
+            scheduleMeetingMessage.textContent =
+                '';
+
+
+            if (!title) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please enter a meeting title.';
+
+                scheduleMeetingTitle.focus();
+
+                return;
+            }
+
+
+            if (!start) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please select a start date and time.';
+
+                scheduleMeetingStart.focus();
+
+                return;
+            }
+
+
+            if (!end) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please select an end date and time.';
+
+                scheduleMeetingEnd.focus();
+
+                return;
+            }
+
+
+            if (
+                new Date(end) <=
+                new Date(start)
+            ) {
+
+                scheduleMeetingMessage.textContent =
+                    'End time must be after the start time.';
+
+                scheduleMeetingEnd.focus();
+
+                return;
+            }
+
+
+            if (
+                selectedMeetingPeople.length === 0
+            ) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please select at least one person.';
+
+                scheduleMeetingPeopleSearch.focus();
+
+                return;
+            }
+
+
+            /*
+             * Validation passed.
+             *
+             * We are NOT creating the meeting yet.
+             */
+            console.log(
+                'Schedule meeting validation passed:',
+                {
+                    title,
+                    start,
+                    end,
+                    participants:
+                        selectedMeetingPeople
+                }
+            );
+
+
+            scheduleMeetingMessage.textContent =
+                'Ready to schedule.';
+        }
+    );
+}
 
 const refreshRecordingsButton =
     document.getElementById(
@@ -2754,6 +3139,60 @@ const recordingsList =
     document.getElementById(
         'recordingsList'
     );
+
+window.addEventListener(
+    'scroll',
+    () => {
+
+        if (
+            scheduleMeetingPeopleResults
+        ) {
+
+            scheduleMeetingPeopleResults.style.display =
+                'none';
+        }
+    },
+    true
+);
+
+document.addEventListener(
+    'click',
+    event => {
+
+        if (
+            !scheduleMeetingPeopleSearch ||
+            !scheduleMeetingPeopleResults
+        ) {
+            return;
+        }
+
+
+        const clickedSearch =
+            scheduleMeetingPeopleSearch.contains(
+                event.target
+            );
+
+
+        const clickedResults =
+            scheduleMeetingPeopleResults.contains(
+                event.target
+            );
+
+
+        /*
+         * Click anywhere outside the
+         * People search/results → close dropdown.
+         */
+        if (
+            !clickedSearch &&
+            !clickedResults
+        ) {
+
+            scheduleMeetingPeopleResults.style.display =
+                'none';
+        }
+    }
+);
  
  
 async function loadRecordingHistory() {
