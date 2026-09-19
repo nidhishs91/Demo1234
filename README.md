@@ -85,6 +85,8 @@ let schedulePeopleSearchTimer = null;
 
 let selectedMeetingPeople = [];
 
+let currentMeetingTimezone = '';
+
 const meetingDetailsModal =
     document.getElementById(
         'meetingDetailsModal'
@@ -208,6 +210,11 @@ const scheduleMeetingStart =
 const scheduleMeetingEnd =
     document.getElementById(
         'scheduleMeetingEnd'
+    );
+
+    const scheduleMeetingTimezone =
+    document.getElementById(
+        'scheduleMeetingTimezone'
     );
 
 const scheduleMeetingPeopleSearch =
@@ -861,6 +868,13 @@ function openScheduleMeetingModal() {
     if (!scheduleMeetingModal) {
         return;
     }
+
+    if (scheduleMeetingTimezone) {
+
+    scheduleMeetingTimezone.textContent =
+        currentMeetingTimezone ||
+        'Loading...';
+}
 
 
     /*
@@ -2448,27 +2462,45 @@ else {
                         .serviceCall
                         .getMyMeetings(currentMeetingPage, currentMeetingSearch, currentMeetingStatus);
 
-
                 if (
-                    !result ||
-                    result.success !== true
-                ) {
+    !result ||
+    result.success !== true
+) {
 
-                    throw new Error(
-                        result &&
-                        result.message
-                            ? result.message
-                            : 'Unable to retrieve meetings.'
-                    );
-                }
+    throw new Error(
+        result &&
+        result.message
+            ? result.message
+            : 'Unable to retrieve meetings.'
+    );
+}
 
 
-                const meetings =
-                    Array.isArray(
-                        result.meetings
-                    )
-                        ? result.meetings
-                        : [];
+/*
+ * Save the authenticated user's
+ * ServiceNow timezone.
+ */
+currentMeetingTimezone =
+    String(
+        result.user_timezone ||
+        ''
+    ).trim();
+
+
+if (scheduleMeetingTimezone) {
+
+    scheduleMeetingTimezone.textContent =
+        currentMeetingTimezone ||
+        'Unavailable';
+}
+
+
+const meetings =
+    Array.isArray(
+        result.meetings
+    )
+        ? result.meetings
+        : [];
 
                 currentMeetingPage =
     parseInt(
