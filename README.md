@@ -1006,7 +1006,6 @@ function openMeetingDetailsModal(
             details.organizer_name
         );
 
-
     meetingDetailsStart.textContent =
         formatMeetingDetailsValue(
             details.scheduled_start
@@ -3010,9 +3009,6 @@ scheduleMeetingPeopleResults.style.display =
     );
 }
 
-    }
-);
-
 /* -------------------------------------------------
    SCHEDULE MEETING - VALIDATION
 ------------------------------------------------- */
@@ -3021,10 +3017,13 @@ if (scheduleMeetingSubmitButton) {
 
     scheduleMeetingSubmitButton.addEventListener(
         'click',
-        () => {
+        async () => {
 
             const title =
                 scheduleMeetingTitle.value.trim();
+
+            const description =
+                scheduleMeetingDescription.value.trim();
 
             const start =
                 scheduleMeetingStart.value;
@@ -3101,24 +3100,129 @@ if (scheduleMeetingSubmitButton) {
 
 
             /*
-             * Validation passed.
-             *
-             * We are NOT creating the meeting yet.
+             * Build participant sys_id array.
              */
-            console.log(
-                'Schedule meeting validation passed:',
-                {
+            const participants =
+                selectedMeetingPeople.map(
+                    person => person.sys_id
+                );
+
+
+            /*
+             * Build meeting payload.
+             */
+            const meetingData = {
+                title:
                     title,
+
+                description:
+                    description,
+
+                scheduled_start:
                     start,
+
+                scheduled_end:
                     end,
-                    participants:
-                        selectedMeetingPeople
-                }
+
+                participants:
+                    participants
+            };
+
+
+            console.log(
+                'Creating ServiceCall meeting:',
+                meetingData
             );
 
 
+            /*
+             * Prevent duplicate clicks while
+             * the meeting is being created.
+             */
+            scheduleMeetingSubmitButton.disabled =
+                true;
+
+
             scheduleMeetingMessage.textContent =
-                'Ready to schedule.';
+                'Scheduling meeting...';
+
+
+            try {
+
+                const result =
+                    await window.serviceCall.createMeeting(
+                        meetingData
+                    );
+
+
+                console.log(
+                    'Create meeting result:',
+                    result
+                );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    scheduleMeetingMessage.textContent =
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to schedule meeting.';
+
+                    return;
+                }
+
+
+                /*
+                 * Meeting created successfully.
+                 */
+                scheduleMeetingMessage.textContent =
+                    'Meeting scheduled successfully.';
+
+
+                /*
+                 * Refresh Meetings list.
+                 */
+                await loadMeetings();
+
+
+                /*
+                 * Close modal shortly after
+                 * successful creation.
+                 */
+                setTimeout(
+                    () => {
+
+                        closeScheduleMeetingModal();
+
+                    },
+                    700
+                );
+
+
+            } catch (error) {
+
+                console.error(
+                    'Schedule meeting failed:',
+                    error
+                );
+
+
+                scheduleMeetingMessage.textContent =
+                    error &&
+                    error.message
+                        ? error.message
+                        : 'Unable to schedule meeting.';
+
+
+            } finally {
+
+                scheduleMeetingSubmitButton.disabled =
+                    false;
+            }
         }
     );
 }
@@ -3595,4 +3699,4 @@ if (
         loadRecordingHistory
     );
 }
- 
+});
