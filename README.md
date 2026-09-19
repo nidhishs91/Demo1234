@@ -1506,7 +1506,8 @@ function handleServiceCallDeepLink(
     if (
         !deepLink ||
         !deepLink.startsWith(
-            'servicecall://'
+            SERVICECALL_PROTOCOL +
+            '://'
         )
     ) {
         return;
@@ -1521,6 +1522,34 @@ function handleServiceCallDeepLink(
         'ServiceCall deep link received:',
         deepLink
     );
+
+
+    /*
+     * If the renderer is already loaded,
+     * send the link immediately.
+     */
+    if (
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        !mainWindow.webContents.isLoading()
+    ) {
+
+        mainWindow.webContents.send(
+            'servicecall-deep-link',
+            {
+                url:
+                    deepLink
+            }
+        );
+
+
+        /*
+         * The renderer now owns this link,
+         * so it is no longer pending.
+         */
+        pendingDeepLink =
+            null;
+    }
 }
 
 function showMainWindow() {
@@ -1577,6 +1606,35 @@ function createWindow() {
     mainWindow.loadFile(
         'index.html'
     );
+
+mainWindow.webContents.on(
+    'did-finish-load',
+    () => {
+
+        if (!pendingDeepLink) {
+            return;
+        }
+
+
+        mainWindow.webContents.send(
+            'servicecall-deep-link',
+            {
+                url:
+                    pendingDeepLink
+            }
+        );
+
+
+        console.log(
+            'Pending ServiceCall deep link sent to renderer:',
+            pendingDeepLink
+        );
+
+
+        pendingDeepLink =
+            null;
+    }
+);
 
     mainWindow.on(
     'close',
@@ -1963,13 +2021,9 @@ ipcMain.handle(
     }
 );
 
-
-/* -------------------------------------------------------
-   APP START
-------------------------------------------------------- */
-
 const gotSingleInstanceLock =
     app.requestSingleInstanceLock();
+
 
 if (!gotSingleInstanceLock) {
 
@@ -1984,67 +2038,51 @@ if (!gotSingleInstanceLock) {
             commandLine
         ) => {
 
-            const protocolUrl =
-                commandLine.find(
-                    function(arg) {
-
-                        return arg.startsWith(
-                            SERVICECALL_PROTOCOL +
-                            '://'
-                        );
-                    }
+            const deepLink =
+                getServiceCallDeepLink(
+                    commandLine
                 );
 
-            if (protocolUrl) {
 
-                console.log(
-                    'ServiceCall protocol opened:',
-                    protocolUrl
+            if (deepLink) {
+
+                handleServiceCallDeepLink(
+                    deepLink
                 );
             }
+
 
             showMainWindow();
         }
     );
 }
 
-/* =====================================================
-   SERVICECALL DEEP LINK PROTOCOL
-===================================================== */
-
-if (process.defaultApp) {
-
-    if (
-        process.argv.length >= 2
-    ) {
-
-        app.setAsDefaultProtocolClient(
-            'servicecall',
-            process.execPath,
-            [
-                require('path').resolve(
-                    process.argv[1]
-                )
-            ]
-        );
-    }
-
-} else {
-
-    app.setAsDefaultProtocolClient(
-        'servicecall'
-    );
-}
-
-
-
-
 app.whenReady().then(
     async () => {
 
         registerServiceCallProtocol();
 
+
+        /*
+         * Was ServiceCall launched by a
+         * servicecall:// URL?
+         */
+        const startupDeepLink =
+            getServiceCallDeepLink(
+                process.argv
+            );
+
+
+        if (startupDeepLink) {
+
+            handleServiceCallDeepLink(
+                startupDeepLink
+            );
+        }
+
+
         createWindow();
+
 
         await restoreSavedConnection();
 
@@ -2107,10 +2145,11 @@ app.on(
 
         event.preventDefault();
 
-        console.log(
-            'ServiceCall protocol opened:',
+
+        handleServiceCallDeepLink(
             url
         );
+
 
         showMainWindow();
     }
