@@ -137,6 +137,39 @@ const connectedActions =
         'connectedActions'
     );
 
+/* -------------------------
+   PARTICIPANTS PANEL
+------------------------- */
+
+const participantsButton =
+    document.getElementById(
+        'participantsButton'
+    );
+
+const participantsPanel =
+    document.getElementById(
+        'participantsPanel'
+    );
+
+const participantsPanelBody =
+    document.getElementById(
+        'participantsPanelBody'
+    );
+
+const participantsPanelCount =
+    document.getElementById(
+        'participantsPanelCount'
+    );
+
+const closeParticipantsPanelButton =
+    document.getElementById(
+        'closeParticipantsPanel'
+    );
+
+
+let latestCallParticipants =
+    [];
+
 
 /* -------------------------
    INITIAL DISPLAY
@@ -944,6 +977,414 @@ function startDurationTimer() {
         );
 }
 
+/* =======================================================
+   ACTIVE PARTICIPANTS PANEL
+======================================================= */
+
+function getParticipantInitials(
+    name
+) {
+
+    return String(
+        name ||
+        'Unknown User'
+    )
+        .split(' ')
+        .filter(Boolean)
+        .slice(0, 2)
+        .map(
+            part =>
+                part.charAt(0)
+                    .toUpperCase()
+        )
+        .join('') ||
+        '?';
+}
+
+
+function getParticipantStatusLabel(
+    status
+) {
+
+    switch (
+        String(status || '')
+            .toLowerCase()
+    ) {
+
+        case 'connected':
+            return 'Connected';
+
+        case 'ringing':
+            return 'Ringing';
+
+        case 'invited':
+            return 'Invited';
+
+        default:
+            return status ||
+                'Participant';
+    }
+}
+
+
+function renderParticipants(
+    participants
+) {
+
+    latestCallParticipants =
+        Array.isArray(participants)
+            ? participants
+            : [];
+
+
+    if (participantsCount) {
+
+        participantsCount.textContent =
+            String(
+                latestCallParticipants.length
+            );
+    }
+
+
+    if (!participantsList) {
+        return;
+    }
+
+
+    participantsList.innerHTML =
+        '';
+
+
+    if (
+        latestCallParticipants.length === 0
+    ) {
+
+        const empty =
+            document.createElement(
+                'div'
+            );
+
+        empty.className =
+            'participants-empty';
+
+        empty.textContent =
+            'No active participants.';
+
+
+        participantsList.appendChild(
+            empty
+        );
+
+        return;
+    }
+
+
+    latestCallParticipants.forEach(
+        participant => {
+
+            const row =
+                document.createElement(
+                    'div'
+                );
+
+            row.className =
+                'active-participant-row';
+
+
+            /* -------------------------
+               AVATAR
+            ------------------------- */
+
+            const participantAvatar =
+                document.createElement(
+                    'div'
+                );
+
+            participantAvatar.className =
+                'active-participant-avatar';
+
+            participantAvatar.textContent =
+                getParticipantInitials(
+                    participant.name
+                );
+
+
+            /* -------------------------
+               DETAILS
+            ------------------------- */
+
+            const details =
+                document.createElement(
+                    'div'
+                );
+
+            details.className =
+                'active-participant-details';
+
+
+            const nameRow =
+                document.createElement(
+                    'div'
+                );
+
+            nameRow.className =
+                'active-participant-name-row';
+
+
+            const name =
+                document.createElement(
+                    'div'
+                );
+
+            name.className =
+                'active-participant-name';
+
+            name.textContent =
+                participant.name ||
+                'Unknown User';
+
+
+            nameRow.appendChild(
+                name
+            );
+
+
+            /*
+             * Show Organizer/Owner beside
+             * the conference owner.
+             */
+            if (
+                participant.is_owner === true
+            ) {
+
+                const ownerBadge =
+                    document.createElement(
+                        'span'
+                    );
+
+                ownerBadge.className =
+                    'participant-owner-badge';
+
+                ownerBadge.textContent =
+                    isMeeting
+                        ? 'Organizer'
+                        : 'Owner';
+
+
+                nameRow.appendChild(
+                    ownerBadge
+                );
+            }
+
+
+            const subtitle =
+                document.createElement(
+                    'div'
+                );
+
+            subtitle.className =
+                'active-participant-subtitle';
+
+
+            const subtitleParts =
+                [];
+
+
+            if (participant.department) {
+
+                subtitleParts.push(
+                    participant.department
+                );
+            }
+
+
+            if (participant.role) {
+
+                subtitleParts.push(
+                    participant.role
+                );
+            }
+
+
+            subtitle.textContent =
+                subtitleParts.join(
+                    ' • '
+                ) ||
+                (
+                    isMeeting
+                        ? 'Meeting participant'
+                        : 'Call participant'
+                );
+
+
+            details.appendChild(
+                nameRow
+            );
+
+            details.appendChild(
+                subtitle
+            );
+
+
+            /* -------------------------
+               STATUS
+            ------------------------- */
+
+            const status =
+                document.createElement(
+                    'div'
+                );
+
+            status.className =
+                'active-participant-status';
+
+
+            const statusDot =
+                document.createElement(
+                    'span'
+                );
+
+            statusDot.className =
+                'participant-status-dot';
+
+
+            const statusTextElement =
+                document.createElement(
+                    'span'
+                );
+
+            statusTextElement.textContent =
+                getParticipantStatusLabel(
+                    participant.status
+                );
+
+
+            status.appendChild(
+                statusDot
+            );
+
+            status.appendChild(
+                statusTextElement
+            );
+
+
+            /* -------------------------
+               ROW
+            ------------------------- */
+
+            row.appendChild(
+                participantAvatar
+            );
+
+            row.appendChild(
+                details
+            );
+
+            row.appendChild(
+                status
+            );
+
+
+            participantsList.appendChild(
+                row
+            );
+        }
+    );
+}
+
+
+function openParticipantsPanel() {
+
+    if (!participantsPanel) {
+        return;
+    }
+
+
+    renderParticipants(
+        latestCallParticipants
+    );
+
+
+    participantsPanel
+        .classList
+        .remove(
+            'hidden'
+        );
+}
+
+
+function closeParticipantsPanel() {
+
+    if (!participantsPanel) {
+        return;
+    }
+
+
+    participantsPanel
+        .classList
+        .add(
+            'hidden'
+        );
+}
+
+
+/* -------------------------
+   PANEL EVENTS
+------------------------- */
+
+if (participantsButton) {
+
+    participantsButton
+        .addEventListener(
+            'click',
+            () => {
+
+                if (
+                    currentMode !==
+                    'connected'
+                ) {
+                    return;
+                }
+
+
+                openParticipantsPanel();
+            }
+        );
+}
+
+
+if (closeParticipantsPanelButton) {
+
+    closeParticipantsPanelButton
+        .addEventListener(
+            'click',
+            closeParticipantsPanel
+        );
+}
+
+
+if (participantsPanel) {
+
+    participantsPanel
+        .addEventListener(
+            'click',
+            event => {
+
+                /*
+                 * Close only when clicking
+                 * the dark background.
+                 */
+                if (
+                    event.target ===
+                    participantsPanel
+                ) {
+
+                    closeParticipantsPanel();
+                }
+            }
+        );
+}
+
 
 /* -------------------------
    STATUS POLLING
@@ -971,6 +1412,20 @@ async function checkCallStatus() {
         ) {
             return;
         }
+
+        /*
+ * Keep the live participant list
+ * synchronized with ServiceNow.
+ *
+ * /call-status already runs every
+ * 2 seconds, so no extra polling
+ * request is required.
+ */
+renderParticipants(
+    result.participants
+);
+
+        renderParticipants(result.participants);
 
 
         const state =
@@ -1412,6 +1867,443 @@ document
             }
         }
     );
+
+/* =======================================================
+   LIVE PARTICIPANTS PANEL
+======================================================= */
+
+function getParticipantInitials(
+    name
+) {
+
+    return String(
+        name ||
+        'Unknown User'
+    )
+        .split(' ')
+        .filter(Boolean)
+        .slice(0, 2)
+        .map(
+            part =>
+                part.charAt(0)
+                    .toUpperCase()
+        )
+        .join('') ||
+        '?';
+}
+
+
+function getParticipantStatusLabel(
+    status
+) {
+
+    switch (
+        String(status || '')
+            .toLowerCase()
+    ) {
+
+        case 'connected':
+            return 'Connected';
+
+        case 'ringing':
+            return 'Ringing';
+
+        case 'invited':
+            return 'Invited';
+
+        default:
+            return status ||
+                'Participant';
+    }
+}
+
+
+function renderParticipants(
+    participants
+) {
+
+    latestCallParticipants =
+        Array.isArray(participants)
+            ? participants
+            : [];
+
+
+    /* -------------------------
+       COUNT
+    ------------------------- */
+
+    if (participantsPanelCount) {
+
+        participantsPanelCount
+            .textContent =
+                String(
+                    latestCallParticipants
+                        .length
+                );
+    }
+
+
+    if (!participantsPanelBody) {
+        return;
+    }
+
+
+    participantsPanelBody.innerHTML =
+        '';
+
+
+    /* -------------------------
+       SECTION LABEL
+    ------------------------- */
+
+    const sectionLabel =
+        document.createElement(
+            'div'
+        );
+
+    sectionLabel.className =
+        'participants-section-label';
+
+    sectionLabel.textContent =
+        isMeeting
+            ? 'In this meeting'
+            : 'In this call';
+
+
+    participantsPanelBody
+        .appendChild(
+            sectionLabel
+        );
+
+
+    /* -------------------------
+       EMPTY STATE
+    ------------------------- */
+
+    if (
+        latestCallParticipants.length === 0
+    ) {
+
+        const empty =
+            document.createElement(
+                'div'
+            );
+
+        empty.className =
+            'participants-empty';
+
+        empty.textContent =
+            'No active participants.';
+
+
+        participantsPanelBody
+            .appendChild(
+                empty
+            );
+
+        return;
+    }
+
+
+    /* -------------------------
+       PARTICIPANTS
+    ------------------------- */
+
+    latestCallParticipants.forEach(
+        participant => {
+
+            const row =
+                document.createElement(
+                    'div'
+                );
+
+            row.className =
+                'live-participant';
+
+
+            /* -------------------------
+               AVATAR
+            ------------------------- */
+
+            const participantAvatar =
+                document.createElement(
+                    'div'
+                );
+
+            participantAvatar.className =
+                'live-participant-avatar';
+
+            participantAvatar.textContent =
+                getParticipantInitials(
+                    participant.name
+                );
+
+
+            /* -------------------------
+               INFO
+            ------------------------- */
+
+            const info =
+                document.createElement(
+                    'div'
+                );
+
+            info.className =
+                'live-participant-info';
+
+
+            const name =
+                document.createElement(
+                    'div'
+                );
+
+            name.className =
+                'live-participant-name';
+
+            name.textContent =
+                participant.name ||
+                'Unknown User';
+
+
+            const meta =
+                document.createElement(
+                    'div'
+                );
+
+            meta.className =
+                'live-participant-meta';
+
+
+            const metaParts =
+                [];
+
+
+            if (
+                participant.is_owner === true
+            ) {
+
+                metaParts.push(
+                    isMeeting
+                        ? 'Organizer'
+                        : 'Owner'
+                );
+
+            } else if (
+                participant.role
+            ) {
+
+                metaParts.push(
+                    participant.role
+                );
+            }
+
+
+            if (
+                participant.department
+            ) {
+
+                metaParts.push(
+                    participant.department
+                );
+            }
+
+
+            meta.textContent =
+                metaParts.join(
+                    ' • '
+                ) ||
+                (
+                    isMeeting
+                        ? 'Meeting participant'
+                        : 'Call participant'
+                );
+
+
+            info.appendChild(
+                name
+            );
+
+            info.appendChild(
+                meta
+            );
+
+
+            /* -------------------------
+               STATUS
+            ------------------------- */
+
+            const participantStatus =
+                document.createElement(
+                    'div'
+                );
+
+            participantStatus.className =
+                'live-participant-status';
+
+
+            const statusDot =
+                document.createElement(
+                    'span'
+                );
+
+            statusDot.className =
+                'live-participant-status-dot';
+
+
+            const statusLabel =
+                document.createElement(
+                    'span'
+                );
+
+            statusLabel.textContent =
+                getParticipantStatusLabel(
+                    participant.status
+                );
+
+
+            participantStatus.appendChild(
+                statusDot
+            );
+
+            participantStatus.appendChild(
+                statusLabel
+            );
+
+
+            /* -------------------------
+               BUILD ROW
+            ------------------------- */
+
+            row.appendChild(
+                participantAvatar
+            );
+
+            row.appendChild(
+                info
+            );
+
+            row.appendChild(
+                participantStatus
+            );
+
+
+            participantsPanelBody
+                .appendChild(
+                    row
+                );
+        }
+    );
+}
+
+
+/* -------------------------
+   OPEN PANEL
+------------------------- */
+
+function openParticipantsPanel() {
+
+    if (!participantsPanel) {
+        return;
+    }
+
+
+    /*
+     * Render the latest data immediately.
+     */
+    renderParticipants(
+        latestCallParticipants
+    );
+
+
+    participantsPanel
+        .classList
+        .remove(
+            'hidden'
+        );
+}
+
+
+/* -------------------------
+   CLOSE PANEL
+------------------------- */
+
+function closeParticipantsPanel() {
+
+    if (!participantsPanel) {
+        return;
+    }
+
+
+    participantsPanel
+        .classList
+        .add(
+            'hidden'
+        );
+}
+
+
+/* -------------------------
+   PARTICIPANTS BUTTON
+------------------------- */
+
+if (participantsButton) {
+
+    participantsButton
+        .addEventListener(
+            'click',
+            () => {
+
+                if (
+                    currentMode !==
+                    'connected'
+                ) {
+                    return;
+                }
+
+
+                openParticipantsPanel();
+            }
+        );
+}
+
+
+/* -------------------------
+   CLOSE BUTTON
+------------------------- */
+
+if (closeParticipantsPanelButton) {
+
+    closeParticipantsPanelButton
+        .addEventListener(
+            'click',
+            closeParticipantsPanel
+        );
+}
+
+
+/* -------------------------
+   ESCAPE TO CLOSE
+------------------------- */
+
+document.addEventListener(
+    'keydown',
+    event => {
+
+        if (
+            event.key ===
+                'Escape' &&
+            participantsPanel &&
+            !participantsPanel
+                .classList
+                .contains(
+                    'hidden'
+                )
+        ) {
+
+            closeParticipantsPanel();
+        }
+    }
+);
 
 /* -------------------------
    ADD PARTICIPANT
@@ -1946,6 +2838,26 @@ document.addEventListener(
         ) {
 
             closeParticipantModal();
+        }
+    }
+);
+
+document.addEventListener(
+    'keydown',
+    event => {
+
+        if (
+            event.key ===
+            'Escape' &&
+            participantsPanel &&
+            !participantsPanel
+                .classList
+                .contains(
+                    'hidden'
+                )
+        ) {
+
+            closeParticipantsPanel();
         }
     }
 );
