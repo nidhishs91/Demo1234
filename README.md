@@ -87,6 +87,22 @@ let selectedMeetingPeople = [];
 
 let currentMeetingTimezone = '';
 
+let meetingsAutoRefreshTimer = null;
+
+/*
+ * Meeting form mode:
+ *
+ * create = scheduling a new meeting
+ * edit   = modifying an existing meeting
+ */
+let meetingFormMode = 'create';
+
+
+/*
+ * Stores the meeting currently being edited.
+ */
+let editingMeetingSysId = '';
+
 const meetingDetailsModal =
     document.getElementById(
         'meetingDetailsModal'
@@ -215,6 +231,17 @@ const scheduleMeetingEnd =
     const scheduleMeetingTimezone =
     document.getElementById(
         'scheduleMeetingTimezone'
+    );
+
+const scheduleMeetingHeading =
+    document.getElementById(
+        'scheduleMeetingHeading'
+    );
+
+
+const scheduleMeetingSubtitle =
+    document.getElementById(
+        'scheduleMeetingSubtitle'
     );
 
 const scheduleMeetingPeopleSearch =
@@ -705,12 +732,18 @@ if (
                          * opens the Meetings page.
                          */
                         if (
-                            targetView ===
-                            'meetingsView'
-                        ) {
+    targetView ===
+    'meetingsView'
+) {
 
-                            await loadMeetings();
-                        }
+    await loadMeetings();
+
+    startMeetingsAutoRefresh();
+
+} else {
+
+    stopMeetingsAutoRefresh();
+}
                     }
                 );
             }
@@ -863,11 +896,91 @@ function closeMeetingDetailsModal() {
     );
 }
 
+function getDateTimeLocalValueInTimezone(
+    date,
+    timeZone
+) {
+
+    if (!date || !timeZone) {
+        return '';
+    }
+
+    const parts =
+        new Intl.DateTimeFormat(
+            'en-CA',
+            {
+                timeZone: timeZone,
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hourCycle: 'h23'
+            }
+        ).formatToParts(date);
+
+
+    const values = {};
+
+    parts.forEach(
+        part => {
+
+            if (part.type !== 'literal') {
+                values[part.type] =
+                    part.value;
+            }
+        }
+    );
+
+
+    return (
+        values.year +
+        '-' +
+        values.month +
+        '-' +
+        values.day +
+        'T' +
+        values.hour +
+        ':' +
+        values.minute
+    );
+}
+
 function openScheduleMeetingModal() {
 
     if (!scheduleMeetingModal) {
         return;
     }
+
+    /*
+ * Normal Schedule Meeting button always
+ * opens the form in CREATE mode.
+ */
+meetingFormMode =
+    'create';
+
+editingMeetingSysId =
+    '';
+
+    if (scheduleMeetingHeading) {
+
+    scheduleMeetingHeading.textContent =
+        'Schedule Meeting';
+}
+
+
+if (scheduleMeetingSubtitle) {
+
+    scheduleMeetingSubtitle.textContent =
+        'Create a new ServiceCall meeting.';
+}
+
+
+if (scheduleMeetingSubmitButton) {
+
+    scheduleMeetingSubmitButton.textContent =
+        'Schedule Meeting';
+}
 
     if (scheduleMeetingTimezone) {
 
@@ -890,6 +1003,55 @@ function openScheduleMeetingModal() {
         scheduleMeetingDescription.value = '';
     }
 
+    /*
+ * Default meeting times are based on
+ * the authenticated ServiceNow user's
+ * timezone, NOT the laptop timezone.
+ */
+if (
+    currentMeetingTimezone &&
+    scheduleMeetingStart &&
+    scheduleMeetingEnd
+) {
+
+    const now =
+        new Date();
+
+    /*
+     * Default start = 5 minutes from now.
+     */
+    const defaultStart =
+        new Date(
+            now.getTime() +
+            (5 * 60 * 1000)
+        );
+
+    /*
+     * Default end = 35 minutes from now,
+     * giving a 30-minute meeting.
+     */
+    const defaultEnd =
+        new Date(
+            now.getTime() +
+            (35 * 60 * 1000)
+        );
+
+
+    scheduleMeetingStart.value =
+        getDateTimeLocalValueInTimezone(
+            defaultStart,
+            currentMeetingTimezone
+        );
+
+
+    scheduleMeetingEnd.value =
+        getDateTimeLocalValueInTimezone(
+            defaultEnd,
+            currentMeetingTimezone
+        );
+
+} else {
+
     if (scheduleMeetingStart) {
         scheduleMeetingStart.value = '';
     }
@@ -897,6 +1059,7 @@ function openScheduleMeetingModal() {
     if (scheduleMeetingEnd) {
         scheduleMeetingEnd.value = '';
     }
+}
 
     selectedMeetingPeople = [];
 
@@ -973,6 +1136,284 @@ function closeScheduleMeetingModal() {
     if (scheduleMeetingPeopleResults) {
         scheduleMeetingPeopleResults.style.display =
             'none';
+    }
+}
+
+
+function meetingDisplayValueToDateTimeLocal(
+    value
+) {
+
+    const text =
+        String(
+            value || ''
+        ).trim();
+
+
+    if (!text) {
+        return '';
+    }
+
+    return text
+        .replace(
+            ' ',
+            'T'
+        )
+        .substring(
+            0,
+            16
+        );
+}
+
+async function openEditMeetingModal(
+    meetingSysId
+) {
+
+    if (
+        !meetingSysId ||
+        !scheduleMeetingModal
+    ) {
+        return;
+    }
+
+
+    /*
+     * EDIT mode.
+     */
+    meetingFormMode =
+        'edit';
+
+    editingMeetingSysId =
+        meetingSysId;
+
+
+    /*
+     * Change the existing modal UI.
+     */
+    if (scheduleMeetingHeading) {
+
+        scheduleMeetingHeading.textContent =
+            'Edit Meeting';
+    }
+
+
+    if (scheduleMeetingSubtitle) {
+
+        scheduleMeetingSubtitle.textContent =
+            'Update this ServiceCall meeting.';
+    }
+
+
+    if (scheduleMeetingSubmitButton) {
+
+        scheduleMeetingSubmitButton.textContent =
+            'Loading...';
+
+        scheduleMeetingSubmitButton.disabled =
+            true;
+    }
+
+
+    if (scheduleMeetingMessage) {
+
+        scheduleMeetingMessage.textContent =
+            '';
+    }
+
+
+    /*
+     * Clear old participant search results.
+     */
+    if (scheduleMeetingPeopleSearch) {
+
+        scheduleMeetingPeopleSearch.value =
+            '';
+    }
+
+
+    if (scheduleMeetingPeopleResults) {
+
+        scheduleMeetingPeopleResults.innerHTML =
+            '';
+
+        scheduleMeetingPeopleResults.style.display =
+            'none';
+    }
+
+
+    /*
+     * Open modal immediately while details load.
+     */
+    scheduleMeetingModal.classList.add(
+        'open'
+    );
+
+    scheduleMeetingModal.setAttribute(
+        'aria-hidden',
+        'false'
+    );
+
+
+    try {
+
+        const result =
+            await window
+                .serviceCall
+                .getMeetingDetails(
+                    meetingSysId
+                );
+
+
+        if (
+            !result ||
+            result.success !== true
+        ) {
+
+            throw new Error(
+                result &&
+                result.message
+                    ? result.message
+                    : 'Unable to load meeting.'
+            );
+        }
+
+
+        console.log(
+            'Editing meeting:',
+            result
+        );
+
+
+        /*
+         * Title + Description
+         */
+        if (scheduleMeetingTitle) {
+
+            scheduleMeetingTitle.value =
+                result.title || '';
+        }
+
+
+        if (scheduleMeetingDescription) {
+
+            scheduleMeetingDescription.value =
+                result.description || '';
+        }
+
+
+        /*
+         * Meeting Details API currently returns:
+         *
+         * YYYY-MM-DD HH:mm:ss
+         *
+         * datetime-local requires:
+         *
+         * YYYY-MM-DDTHH:mm
+         */
+        if (scheduleMeetingStart) {
+
+            scheduleMeetingStart.value =
+                meetingDisplayValueToDateTimeLocal(
+                    result.scheduled_start
+                );
+        }
+
+
+        if (scheduleMeetingEnd) {
+
+            scheduleMeetingEnd.value =
+                meetingDisplayValueToDateTimeLocal(
+                    result.scheduled_end
+                );
+        }
+
+
+        /*
+         * Display authenticated user's
+         * ServiceNow timezone.
+         */
+        if (scheduleMeetingTimezone) {
+
+            scheduleMeetingTimezone.textContent =
+                currentMeetingTimezone ||
+                'Unavailable';
+        }
+
+
+        /*
+         * Populate existing attendees.
+         *
+         * Do not add the organizer as a
+         * selectable attendee.
+         */
+        selectedMeetingPeople =
+            Array.isArray(
+                result.participants
+            )
+                ? result.participants
+                    .filter(
+                        participant =>
+                            participant.role !==
+                            'organizer'
+                    )
+                    .map(
+                        participant => ({
+                            sys_id:
+                                participant.user_sys_id,
+
+                            name:
+                                participant.user_name
+                        })
+                    )
+                : [];
+
+
+        /*
+         * Re-render selected participant chips.
+         */
+        renderSelectedMeetingPeople();
+
+
+        if (scheduleMeetingSubmitButton) {
+
+            scheduleMeetingSubmitButton.disabled =
+                false;
+
+            scheduleMeetingSubmitButton.textContent =
+                'Save Changes';
+        }
+
+
+        if (scheduleMeetingTitle) {
+
+            scheduleMeetingTitle.focus();
+        }
+
+
+    } catch (error) {
+
+        console.error(
+            'Unable to open Edit Meeting:',
+            error
+        );
+
+
+        if (scheduleMeetingMessage) {
+
+            scheduleMeetingMessage.textContent =
+                error.message ||
+                'Unable to load meeting.';
+        }
+
+
+        if (scheduleMeetingSubmitButton) {
+
+            scheduleMeetingSubmitButton.disabled =
+                true;
+
+            scheduleMeetingSubmitButton.textContent =
+                'Save Changes';
+        }
     }
 }
 
@@ -1504,6 +1945,43 @@ detailsButton.addEventListener(
 actions.appendChild(
     detailsButton
 );
+
+/* =========================================
+   EDIT MEETING
+========================================= */
+
+if (
+    meeting.can_edit === true
+) {
+
+    const button =
+        document.createElement(
+            'button'
+        );
+
+    button.className =
+        'secondary-button';
+
+    button.textContent =
+        'Edit';
+
+
+    button.addEventListener(
+    'click',
+
+    async () => {
+
+        await openEditMeetingModal(
+            meeting.meeting_sys_id
+        );
+    }
+);
+
+
+    actions.appendChild(
+        button
+    );
+}
 
 
             if (
@@ -2430,29 +2908,133 @@ else {
     );
 }
 
+/* -------------------------------------------------
+   MEETINGS AUTO REFRESH
+------------------------------------------------- */
+
+function startMeetingsAutoRefresh() {
+
+    /*
+     * Prevent multiple timers from
+     * being created.
+     */
+    if (meetingsAutoRefreshTimer) {
+        return;
+    }
+
+
+    meetingsAutoRefreshTimer =
+        setInterval(
+            async () => {
+
+                /*
+                 * Refresh only when the
+                 * Meetings page is actually open.
+                 */
+                const meetingsView =
+                    document.getElementById(
+                        'meetingsView'
+                    );
+
+
+                if (
+                    !meetingsView ||
+                    !meetingsView.classList.contains(
+                        'active'
+                    )
+                ) {
+                    return;
+                }
+
+
+                /*
+                 * Don't disturb the user while
+                 * the Schedule Meeting modal
+                 * is open.
+                 */
+                if (
+                    scheduleMeetingModal &&
+                    scheduleMeetingModal.classList.contains(
+                        'open'
+                    )
+                ) {
+                    return;
+                }
+
+
+                try {
+
+                    console.log(
+                        'Auto-refreshing meetings...'
+                    );
+
+                    await loadMeetings(true);
+
+                } catch (error) {
+
+                    console.error(
+                        'Meeting auto-refresh failed:',
+                        error
+                    );
+                }
+
+            },
+            15000
+        );
+}
+
+
+function stopMeetingsAutoRefresh() {
+
+    if (!meetingsAutoRefreshTimer) {
+        return;
+    }
+
+
+    clearInterval(
+        meetingsAutoRefreshTimer
+    );
+
+
+    meetingsAutoRefreshTimer = null;
+}
+
 
         /* -------------------------------------------------
            LOAD MEETINGS
         ------------------------------------------------- */
 
-        async function loadMeetings() {
+        async function loadMeetings(
+    silent = false
+) {
 
-            if (!meetingsContainer) {
-                return;
-            }
-
-            if (meetingPagination) {
-
-    meetingPagination.innerHTML =
-        '';
-}
+    if (!meetingsContainer) {
+        return;
+    }
 
 
-            meetingsContainer.innerHTML = `
-                <div class="loading">
-                    Loading your meetings...
-                </div>
-            `;
+    /*
+     * Normal/manual load:
+     * show loading state.
+     *
+     * Background refresh:
+     * keep the existing UI visible.
+     */
+    if (!silent) {
+
+        if (meetingPagination) {
+
+            meetingPagination.innerHTML =
+                '';
+        }
+
+
+        meetingsContainer.innerHTML = `
+            <div class="loading">
+                Loading your meetings...
+            </div>
+        `;
+    }
 
 
             try {
@@ -2485,6 +3067,11 @@ currentMeetingTimezone =
         result.user_timezone ||
         ''
     ).trim();
+
+    console.log(
+    'ServiceNow user timezone:',
+    currentMeetingTimezone
+);
 
 
 if (scheduleMeetingTimezone) {
@@ -2564,18 +3151,25 @@ renderMeetingPagination(
 
             } catch (error) {
 
-                console.error(
-                    'Unable to load meetings:',
-                    error
-                );
+    console.error(
+        'Unable to load meetings:',
+        error
+    );
 
 
-                meetingsContainer.innerHTML = `
-                    <div class="empty-state">
-                        Unable to load your meetings.
-                    </div>
-                `;
-            }
+    /*
+     * During a silent background refresh,
+     * keep the existing meeting cards visible.
+     */
+    if (!silent) {
+
+        meetingsContainer.innerHTML = `
+            <div class="empty-state">
+                Unable to load your meetings.
+            </div>
+        `;
+    }
+}
         }
 
 
@@ -3104,18 +3698,35 @@ if (scheduleMeetingSubmitButton) {
             }
 
 
-            if (
-                new Date(end) <=
-                new Date(start)
-            ) {
+            /*
+ * datetime-local produces:
+ * YYYY-MM-DDTHH:mm
+ *
+ * Start and end represent wall-clock values
+ * in the SAME ServiceNow user timezone,
+ * so compare them directly.
+ *
+ * Do NOT use new Date() here because that
+ * would interpret them using the computer's
+ * local timezone.
+ */
+if (end <= start) {
 
-                scheduleMeetingMessage.textContent =
-                    'End time must be after the start time.';
+    scheduleMeetingMessage.textContent =
+        'End time must be after the start time.';
 
-                scheduleMeetingEnd.focus();
+    scheduleMeetingEnd.focus();
 
-                return;
-            }
+    return;
+}
+
+if (!currentMeetingTimezone) {
+
+    scheduleMeetingMessage.textContent =
+        'Unable to determine your ServiceNow time zone. Please refresh Meetings and try again.';
+
+    return;
+}
 
 
             if (
@@ -3144,21 +3755,25 @@ if (scheduleMeetingSubmitButton) {
              * Build meeting payload.
              */
             const meetingData = {
-                title:
-                    title,
 
-                description:
-                    description,
+    title:
+        title,
 
-                scheduled_start:
-                    start,
+    description:
+        description,
 
-                scheduled_end:
-                    end,
+    scheduled_start:
+        start,
 
-                participants:
-                    participants
-            };
+    scheduled_end:
+        end,
+
+    timezone:
+        currentMeetingTimezone,
+
+    participants:
+        participants
+};
 
 
             console.log(
@@ -3180,6 +3795,20 @@ if (scheduleMeetingSubmitButton) {
 
 
             try {
+
+                console.log(
+    'Meeting timezone test:',
+    {
+        start: start,
+        end: end,
+        timezone:
+            currentMeetingTimezone,
+        browserTimezone:
+            Intl.DateTimeFormat()
+                .resolvedOptions()
+                .timeZone
+    }
+);
 
                 const result =
                     await window.serviceCall.createMeeting(
