@@ -72,6 +72,79 @@ const meetingStatusFilter =
         'meetingStatusFilter'
     );
 
+/* -------------------------------------------------
+   NOTIFICATION ELEMENTS
+------------------------------------------------- */
+
+const notificationsContainer =
+    document.getElementById(
+        'notificationsContainer'
+    );
+
+
+const notificationPagination =
+    document.getElementById(
+        'notificationPagination'
+    );
+
+
+const notificationUnreadBadge =
+    document.getElementById(
+        'notificationUnreadBadge'
+    );
+
+
+const refreshNotificationsButton =
+    document.getElementById(
+        'refreshNotificationsButton'
+    );
+
+
+const markAllNotificationsReadButton =
+    document.getElementById(
+        'markAllNotificationsReadButton'
+    );
+
+
+const notificationFilterButtons =
+    document.querySelectorAll(
+        '.notification-filter'
+    );
+
+
+const notificationsNavButton =
+    document.querySelector(
+        '[data-view="notificationsView"]'
+    );
+
+const notificationSearchInput =
+    document.getElementById(
+        'notificationSearchInput'
+    );
+
+
+const notificationSearchClear =
+    document.getElementById(
+        'notificationSearchClear'
+    );
+
+
+let currentNotificationPage = 1;
+
+let currentNotificationFilter = 'all';
+
+let notificationAutoRefreshTimer = null;
+
+let currentNotificationSearch = '';
+
+let notificationSearchTimer = null;
+
+let knownNotificationIds =
+    new Set();
+
+let notificationsInitialized =
+    false;
+
 
 let currentMeetingPage = 1;
 
@@ -720,25 +793,63 @@ if (
 
 
                         /*
-                         * Update topbar title.
-                         */
-                        const pageName =
-                            button.textContent.trim();
+ * Do not use the entire button text because
+ * some navigation buttons can contain badges.
+ *
+ * Example:
+ *
+ * Notifications + unread badge "3"
+ *
+ * should still produce the page title:
+ *
+ * Notifications
+ */
+let pageName = '';
 
 
-                        if (currentPageTitle) {
+const explicitPageNames = {
 
-                            currentPageTitle.textContent =
-                                pageName;
-                        }
+    homeView:
+        'Home',
+
+    peopleView:
+        'People',
+
+    meetingsView:
+        'Meetings',
+
+    notificationsView:
+        'Notifications',
+
+    chatView:
+        'Chat',
+
+    historyView:
+        'History',
+
+    recordingsView:
+        'Recordings',
+
+    settingsView:
+        'Settings'
+};
 
 
-                        /*
-                         * Meetings are loaded from
-                         * ServiceNow whenever the user
-                         * opens the Meetings page.
-                         */
-                        if (
+pageName =
+    explicitPageNames[
+        targetView
+    ] ||
+    button.textContent.trim();
+
+
+if (currentPageTitle) {
+
+    currentPageTitle.textContent =
+        pageName;
+}
+
+
+                       if (
     targetView ===
     'meetingsView'
 ) {
@@ -750,6 +861,27 @@ if (
 } else {
 
     stopMeetingsAutoRefresh();
+}
+
+
+/*
+ * Notifications are different from Meetings.
+ *
+ * Their background monitor runs globally,
+ * but opening the Notifications page performs
+ * a normal visible refresh.
+ */
+if (
+    targetView ===
+    'notificationsView'
+) {
+
+    currentNotificationPage =
+        1;
+
+    await loadNotifications(
+        false
+    );
 }
                     }
                 );
@@ -4535,6 +4667,1489 @@ else if (
         }
     );
 }
+
+/* =======================================================
+   SERVICECALL NOTIFICATIONS
+======================================================= */
+
+
+/* -------------------------------------------------
+   NOTIFICATION TYPE HELPERS
+------------------------------------------------- */
+
+function getNotificationCategory(
+    notification
+) {
+
+    const type =
+        String(
+            notification &&
+            notification.type
+                ? notification.type
+                : ''
+        )
+            .toLowerCase()
+            .trim();
+
+
+    if (
+        type.includes(
+            'meeting'
+        )
+    ) {
+
+        return 'meeting';
+    }
+
+
+    if (
+        type.includes(
+            'chat'
+        ) ||
+        type.includes(
+            'message'
+        )
+    ) {
+
+        return 'chat';
+    }
+
+
+    if (
+        type.includes(
+            'call'
+        ) ||
+        type.includes(
+            'recording'
+        )
+    ) {
+
+        return 'call';
+    }
+
+
+    return 'system';
+}
+
+
+/* -------------------------------------------------
+   NOTIFICATION ICON
+------------------------------------------------- */
+
+function getNotificationIcon(
+    notification
+) {
+
+    const category =
+        getNotificationCategory(
+            notification
+        );
+
+
+    switch (
+        category
+    ) {
+
+        case 'meeting':
+            return '📅';
+
+        case 'chat':
+            return '💬';
+
+        case 'call':
+            return '☎';
+
+        default:
+            return '🔔';
+    }
+}
+
+
+/* -------------------------------------------------
+   NOTIFICATION TIME
+------------------------------------------------- */
+
+function formatNotificationTime(
+    notification
+) {
+
+    if (!notification) {
+        return '';
+    }
+
+
+    return (
+        notification.created_at_display ||
+        notification.created_at ||
+        ''
+    );
+}
+
+
+/* -------------------------------------------------
+   UPDATE UNREAD BADGE
+------------------------------------------------- */
+
+function updateNotificationUnreadBadge(
+    unreadCount
+) {
+
+    if (
+        !notificationUnreadBadge
+    ) {
+        return;
+    }
+
+
+    const count =
+        Math.max(
+            0,
+            parseInt(
+                unreadCount,
+                10
+            ) || 0
+        );
+
+
+    if (
+        count === 0
+    ) {
+
+        notificationUnreadBadge.style.display =
+            'none';
+
+        notificationUnreadBadge.textContent =
+            '0';
+
+
+        if (
+            markAllNotificationsReadButton
+        ) {
+
+            markAllNotificationsReadButton.style.display =
+                'none';
+        }
+
+
+        return;
+    }
+
+
+    notificationUnreadBadge.textContent =
+        count > 99
+            ? '99+'
+            : String(
+                count
+            );
+
+
+    notificationUnreadBadge.style.display =
+        'flex';
+
+
+    /*
+     * Mark All will become functional after
+     * we create the backend read API.
+     *
+     * Keep it hidden until then so we don't
+     * show the user a dead button.
+     */
+    if (
+        markAllNotificationsReadButton
+    ) {
+
+        markAllNotificationsReadButton.style.display =
+            'none';
+    }
+}
+
+
+/* -------------------------------------------------
+   BRIEF NEW-NOTIFICATION PULSE
+------------------------------------------------- */
+
+function pulseNotificationsNavigation() {
+
+    if (
+        !notificationsNavButton
+    ) {
+        return;
+    }
+
+
+    notificationsNavButton.classList.remove(
+        'notification-arrived'
+    );
+
+
+    /*
+     * Force a reflow so the animation can
+     * restart even if another notification
+     * arrives shortly afterwards.
+     */
+    void notificationsNavButton.offsetWidth;
+
+
+    notificationsNavButton.classList.add(
+        'notification-arrived'
+    );
+
+
+    setTimeout(
+        () => {
+
+            notificationsNavButton.classList.remove(
+                'notification-arrived'
+            );
+
+        },
+        2200
+    );
+}
+
+/* -------------------------------------------------
+   HIGHLIGHT NOTIFICATION SEARCH MATCH
+------------------------------------------------- */
+
+function highlightNotificationSearch(
+    text,
+    search
+) {
+
+    const value =
+        String(
+            text || ''
+        );
+
+
+    const searchValue =
+        String(
+            search || ''
+        ).trim();
+
+
+    /*
+     * No active search.
+     */
+    if (!searchValue) {
+
+        return escapeHtml(
+            value
+        );
+    }
+
+
+    /*
+     * Escape the original text first
+     * so notification content cannot
+     * inject HTML.
+     */
+    const safeText =
+        escapeHtml(
+            value
+        );
+
+
+    /*
+     * Escape special RegExp characters
+     * entered by the user.
+     */
+    const safeSearch =
+        searchValue.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            '\\$&'
+        );
+
+
+    const expression =
+        new RegExp(
+            '(' + safeSearch + ')',
+            'gi'
+        );
+
+
+    return safeText.replace(
+        expression,
+        '<mark class="notification-search-highlight">$1</mark>'
+    );
+}
+
+/* -------------------------------------------------
+   CREATE NOTIFICATION CARD
+------------------------------------------------- */
+
+function createNotificationCard(
+    notification,
+    animateArrival = false
+) {
+
+    const card =
+        document.createElement(
+            'div'
+        );
+
+
+    card.className =
+        'notification-card';
+
+
+    if (
+        notification.read === true
+    ) {
+
+        card.classList.add(
+            'read'
+        );
+
+    } else {
+
+        card.classList.add(
+            'unread'
+        );
+    }
+
+
+    if (
+        animateArrival
+    ) {
+
+        card.classList.add(
+            'notification-card-arriving'
+        );
+    }
+
+
+    /*
+     * Unread indicator.
+     */
+    if (
+        notification.read !== true
+    ) {
+
+        const unreadDot =
+            document.createElement(
+                'div'
+            );
+
+
+        unreadDot.className =
+            'notification-unread-dot';
+
+
+        card.appendChild(
+            unreadDot
+        );
+    }
+
+
+    /*
+     * Icon.
+     */
+    const icon =
+        document.createElement(
+            'div'
+        );
+
+
+    icon.className =
+        'notification-icon';
+
+
+    icon.textContent =
+        getNotificationIcon(
+            notification
+        );
+
+
+    card.appendChild(
+        icon
+    );
+
+
+    /*
+     * Main body.
+     */
+    const body =
+        document.createElement(
+            'div'
+        );
+
+
+    body.className =
+        'notification-body';
+
+
+    const titleRow =
+        document.createElement(
+            'div'
+        );
+
+
+    titleRow.className =
+        'notification-title-row';
+
+
+    const title =
+        document.createElement(
+            'div'
+        );
+
+
+    title.className =
+        'notification-title';
+
+
+    title.innerHTML =
+    highlightNotificationSearch(
+        notification.title ||
+        notification.type_display ||
+        'ServiceCall notification',
+
+        currentNotificationSearch
+    );
+
+
+    const time =
+        document.createElement(
+            'div'
+        );
+
+
+    time.className =
+        'notification-time';
+
+
+    time.textContent =
+        formatNotificationTime(
+            notification
+        );
+
+
+    titleRow.appendChild(
+        title
+    );
+
+
+    titleRow.appendChild(
+        time
+    );
+
+
+    body.appendChild(
+        titleRow
+    );
+
+
+    /*
+     * Message.
+     */
+    if (
+        notification.message
+    ) {
+
+        const notificationMessage =
+            document.createElement(
+                'div'
+            );
+
+
+        notificationMessage.className =
+            'notification-message';
+
+
+        notificationMessage.innerHTML =
+    highlightNotificationSearch(
+        notification.message,
+        currentNotificationSearch
+    );
+
+
+        body.appendChild(
+            notificationMessage
+        );
+    }
+
+
+    /*
+     * Actions.
+     */
+    const actions =
+        document.createElement(
+            'div'
+        );
+
+
+    actions.className =
+        'notification-actions';
+
+
+    /*
+     * OPEN MEETING
+     *
+     * Reuses the existing secure meeting
+     * details flow.
+     */
+    if (
+        notification.action_type ===
+            'open_meeting' &&
+        notification.meeting_sys_id
+    ) {
+
+        const openMeetingButton =
+            document.createElement(
+                'button'
+            );
+
+
+        openMeetingButton.type =
+            'button';
+
+
+        openMeetingButton.className =
+            'notification-action-button primary';
+
+
+        openMeetingButton.textContent =
+            'Open Meeting';
+
+
+        openMeetingButton.addEventListener(
+            'click',
+
+            async () => {
+
+                openMeetingButton.disabled =
+                    true;
+
+
+                openMeetingButton.textContent =
+                    'Opening...';
+
+
+                try {
+
+                    await openMeetingFromDeepLink(
+                        notification
+                            .meeting_sys_id
+                    );
+
+
+                } catch (error) {
+
+                    console.error(
+                        'Unable to open notification meeting:',
+                        error
+                    );
+
+                } finally {
+
+                    openMeetingButton.disabled =
+                        false;
+
+
+                    openMeetingButton.textContent =
+                        'Open Meeting';
+                }
+            }
+        );
+
+
+        actions.appendChild(
+            openMeetingButton
+        );
+    }
+
+
+    /*
+     * Only append the action row if
+     * something was actually added.
+     */
+    if (
+        actions.children.length > 0
+    ) {
+
+        body.appendChild(
+            actions
+        );
+    }
+
+
+    card.appendChild(
+        body
+    );
+
+
+    return card;
+}
+
+
+/* -------------------------------------------------
+   RENDER NOTIFICATIONS
+------------------------------------------------- */
+
+function renderNotifications(
+    notifications,
+    newlyArrivedIds = new Set()
+) {
+
+    if (
+        !notificationsContainer
+    ) {
+        return;
+    }
+
+
+    notificationsContainer.innerHTML =
+        '';
+
+
+    /*
+     * -----------------------------------------
+     * FILTER BY READ STATE
+     * -----------------------------------------
+     *
+     * all
+     *     Every notification.
+     *
+     * unread
+     *     Only notifications that have not
+     *     been opened/read.
+     *
+     * read
+     *     Only notifications already read.
+     */
+
+    const filteredNotifications =
+        notifications.filter(
+            notification => {
+
+                /*
+                 * ALL
+                 */
+                if (
+                    currentNotificationFilter ===
+                    'all'
+                ) {
+
+                    return true;
+                }
+
+
+                /*
+                 * UNREAD
+                 */
+                if (
+                    currentNotificationFilter ===
+                    'unread'
+                ) {
+
+                    return (
+                        notification.read !==
+                        true
+                    );
+                }
+
+
+                /*
+                 * READ
+                 */
+                if (
+                    currentNotificationFilter ===
+                    'read'
+                ) {
+
+                    return (
+                        notification.read ===
+                        true
+                    );
+                }
+
+
+                return true;
+            }
+        );
+
+
+    /*
+     * -----------------------------------------
+     * EMPTY STATE
+     * -----------------------------------------
+     */
+
+    if (
+        filteredNotifications.length ===
+        0
+    ) {
+
+        let emptyMessage =
+            'You don\'t have any ServiceCall notifications yet.';
+
+
+        if (
+            currentNotificationFilter ===
+            'unread'
+        ) {
+
+            emptyMessage =
+                'You have no unread notifications.';
+        }
+
+
+        if (
+            currentNotificationFilter ===
+            'read'
+        ) {
+
+            emptyMessage =
+                'You have no read notifications.';
+        }
+
+
+        notificationsContainer.innerHTML = `
+            <div class="notification-empty">
+                ${emptyMessage}
+            </div>
+        `;
+
+
+        return;
+    }
+
+
+    /*
+     * -----------------------------------------
+     * RENDER
+     * -----------------------------------------
+     */
+
+    filteredNotifications.forEach(
+        notification => {
+
+            notificationsContainer.appendChild(
+                createNotificationCard(
+                    notification,
+
+                    newlyArrivedIds.has(
+                        notification.sys_id
+                    )
+                )
+            );
+        }
+    );
+}
+
+/* -------------------------------------------------
+   NOTIFICATION PAGINATION
+------------------------------------------------- */
+
+function renderNotificationPagination(
+    result
+) {
+
+    if (
+        !notificationPagination
+    ) {
+        return;
+    }
+
+
+    notificationPagination.innerHTML =
+        '';
+
+
+    const page =
+        parseInt(
+            result.page,
+            10
+        ) || 1;
+
+
+    const hasMore =
+        result.has_more === true;
+
+
+    /*
+     * With the current notification API,
+     * we know the current page and whether
+     * another page exists.
+     *
+     * Therefore use simple Previous/Next
+     * pagination instead of pretending we
+     * know a total page count.
+     */
+    if (
+        page <= 1 &&
+        !hasMore
+    ) {
+
+        return;
+    }
+
+
+    const previousButton =
+        document.createElement(
+            'button'
+        );
+
+
+    previousButton.type =
+        'button';
+
+
+    previousButton.className =
+        'meeting-page-button';
+
+
+    previousButton.textContent =
+        '‹ Previous';
+
+
+    previousButton.disabled =
+        page <= 1;
+
+
+    previousButton.addEventListener(
+        'click',
+
+        async () => {
+
+            if (
+                page <= 1
+            ) {
+                return;
+            }
+
+
+            currentNotificationPage =
+                page - 1;
+
+
+            await loadNotifications(
+                false
+            );
+        }
+    );
+
+
+    notificationPagination.appendChild(
+        previousButton
+    );
+
+
+    const pageInfo =
+        document.createElement(
+            'span'
+        );
+
+
+    pageInfo.className =
+        'meeting-page-info';
+
+
+    pageInfo.textContent =
+        'Page ' +
+        page;
+
+
+    notificationPagination.appendChild(
+        pageInfo
+    );
+
+
+    const nextButton =
+        document.createElement(
+            'button'
+        );
+
+
+    nextButton.type =
+        'button';
+
+
+    nextButton.className =
+        'meeting-page-button';
+
+
+    nextButton.textContent =
+        'Next ›';
+
+
+    nextButton.disabled =
+        !hasMore;
+
+
+    nextButton.addEventListener(
+        'click',
+
+        async () => {
+
+            if (
+                !hasMore
+            ) {
+                return;
+            }
+
+
+            currentNotificationPage =
+                page + 1;
+
+
+            await loadNotifications(
+                false
+            );
+        }
+    );
+
+
+    notificationPagination.appendChild(
+        nextButton
+    );
+}
+
+
+/* -------------------------------------------------
+   LOAD NOTIFICATIONS
+------------------------------------------------- */
+
+async function loadNotifications(
+    silent = false
+) {
+
+    if (
+        !notificationsContainer
+    ) {
+        return;
+    }
+
+
+    /*
+     * Manual/open-page refresh:
+     * show a loading state.
+     *
+     * Background refresh:
+     * leave the existing UI untouched
+     * until fresh data arrives.
+     */
+    if (
+        !silent
+    ) {
+
+        notificationsContainer.innerHTML = `
+            <div class="loading">
+                Loading notifications...
+            </div>
+        `;
+
+
+        if (
+            notificationPagination
+        ) {
+
+            notificationPagination.innerHTML =
+                '';
+        }
+    }
+
+
+    try {
+
+        const result =
+    await window.serviceCall
+        .getNotifications(
+            currentNotificationPage,
+            20,
+            currentNotificationSearch
+        );
+
+
+        if (
+            !result ||
+            result.success !== true
+        ) {
+
+            throw new Error(
+                result &&
+                result.message
+                    ? result.message
+                    : 'Unable to retrieve notifications.'
+            );
+        }
+
+
+        const notifications =
+            Array.isArray(
+                result.notifications
+            )
+                ? result.notifications
+                : [];
+
+
+        /*
+         * Update unread count globally,
+         * regardless of which page the
+         * user currently has open.
+         */
+        updateNotificationUnreadBadge(
+            result.unread_count
+        );
+
+
+        const newlyArrivedIds =
+            new Set();
+
+
+        /*
+         * IMPORTANT:
+         *
+         * The first successful load establishes
+         * our baseline.
+         *
+         * Existing notifications must NOT all
+         * pulse as though they just arrived.
+         */
+        if (
+            notificationsInitialized
+        ) {
+
+            notifications.forEach(
+                notification => {
+
+                    const sysId =
+                        String(
+                            notification.sys_id ||
+                            ''
+                        ).trim();
+
+
+                    if (
+                        sysId &&
+                        !knownNotificationIds.has(
+                            sysId
+                        )
+                    ) {
+
+                        newlyArrivedIds.add(
+                            sysId
+                        );
+                    }
+                }
+            );
+        }
+
+
+        /*
+         * Remember everything returned by
+         * this API response.
+         */
+        notifications.forEach(
+            notification => {
+
+                const sysId =
+                    String(
+                        notification.sys_id ||
+                        ''
+                    ).trim();
+
+
+                if (
+                    sysId
+                ) {
+
+                    knownNotificationIds.add(
+                        sysId
+                    );
+                }
+            }
+        );
+
+
+        notificationsInitialized =
+            true;
+
+
+        /*
+         * Only pulse when something genuinely
+         * new arrived after initialization.
+         */
+        if (
+            newlyArrivedIds.size > 0
+        ) {
+
+            pulseNotificationsNavigation();
+        }
+
+
+        /*
+         * Only render the notification list
+         * when the Notifications page is open
+         * OR when this was an explicit load.
+         *
+         * Background polling while on Home,
+         * Meetings, Chat, etc. therefore only
+         * updates the badge/pulse.
+         */
+        const notificationsView =
+            document.getElementById(
+                'notificationsView'
+            );
+
+
+        if (
+            !silent ||
+            (
+                notificationsView &&
+                notificationsView.classList.contains(
+                    'active'
+                )
+            )
+        ) {
+
+            renderNotifications(
+                notifications,
+                newlyArrivedIds
+            );
+
+
+            renderNotificationPagination(
+                result
+            );
+        }
+
+
+    } catch (error) {
+
+        console.error(
+            'Unable to load notifications:',
+            error
+        );
+
+
+        /*
+         * Never destroy existing cards because
+         * a silent background refresh failed.
+         */
+        if (
+            !silent
+        ) {
+
+            notificationsContainer.innerHTML = `
+                <div class="notification-empty">
+                    Unable to load your notifications.
+                </div>
+            `;
+        }
+    }
+}
+
+
+/* -------------------------------------------------
+   MANUAL REFRESH
+------------------------------------------------- */
+
+if (
+    refreshNotificationsButton
+) {
+
+    refreshNotificationsButton.addEventListener(
+        'click',
+
+        async () => {
+
+            refreshNotificationsButton.disabled =
+                true;
+
+
+            const originalText =
+                refreshNotificationsButton
+                    .textContent;
+
+
+            refreshNotificationsButton.textContent =
+                'Refreshing...';
+
+
+            try {
+
+                await loadNotifications(
+                    true
+                );
+
+            } finally {
+
+                refreshNotificationsButton.disabled =
+                    false;
+
+
+                refreshNotificationsButton.textContent =
+                    originalText;
+            }
+        }
+    );
+}
+
+/* -------------------------------------------------
+   NOTIFICATION SEARCH
+------------------------------------------------- */
+
+if (notificationSearchInput) {
+
+    notificationSearchInput.addEventListener(
+        'input',
+        () => {
+
+            const searchValue =
+                notificationSearchInput
+                    .value
+                    .trim();
+
+
+            /*
+             * Show / hide clear button.
+             */
+            if (notificationSearchClear) {
+
+                notificationSearchClear.style.display =
+                    searchValue
+                        ? 'flex'
+                        : 'none';
+            }
+
+
+            /*
+             * Cancel previous pending search.
+             */
+            if (notificationSearchTimer) {
+
+                clearTimeout(
+                    notificationSearchTimer
+                );
+            }
+
+
+            /*
+             * Wait briefly before searching
+             * so we don't call ServiceNow on
+             * every keystroke.
+             */
+            notificationSearchTimer =
+                setTimeout(
+                    async () => {
+
+                        currentNotificationSearch =
+                            searchValue;
+
+
+                        /*
+                         * New search always begins
+                         * from page 1.
+                         */
+                        currentNotificationPage =
+                            1;
+
+
+                        await loadNotifications(
+                            true
+                        );
+
+                    },
+                    300
+                );
+        }
+    );
+}
+
+
+/* -------------------------------------------------
+   CLEAR NOTIFICATION SEARCH
+------------------------------------------------- */
+
+if (notificationSearchClear) {
+
+    notificationSearchClear.addEventListener(
+        'click',
+
+        async () => {
+
+            if (notificationSearchTimer) {
+
+                clearTimeout(
+                    notificationSearchTimer
+                );
+
+                notificationSearchTimer =
+                    null;
+            }
+
+
+            if (notificationSearchInput) {
+
+                notificationSearchInput.value =
+                    '';
+
+                notificationSearchInput.focus();
+            }
+
+
+            notificationSearchClear.style.display =
+                'none';
+
+
+            currentNotificationSearch =
+                '';
+
+            currentNotificationPage =
+                1;
+
+
+            await loadNotifications(
+                true
+            );
+        }
+    );
+}
+
+
+/* -------------------------------------------------
+   NOTIFICATION FILTERS
+------------------------------------------------- */
+
+notificationFilterButtons.forEach(
+    button => {
+
+        button.addEventListener(
+            'click',
+
+            async () => {
+
+                /*
+                 * Remove selected state from
+                 * every filter.
+                 */
+                notificationFilterButtons.forEach(
+                    filterButton => {
+
+                        filterButton.classList.remove(
+                            'active'
+                        );
+                    }
+                );
+
+
+                /*
+                 * Select the clicked filter.
+                 */
+                button.classList.add(
+                    'active'
+                );
+
+
+                currentNotificationFilter =
+                    String(
+                        button.dataset
+                            .notificationFilter ||
+                        'all'
+                    )
+                        .toLowerCase()
+                        .trim();
+
+
+                /*
+                 * Whenever the filter changes,
+                 * begin again from page 1.
+                 */
+                currentNotificationPage =
+                    1;
+
+
+                /*
+                 * Reload silently.
+                 *
+                 * Existing content stays visible
+                 * until the fresh response arrives.
+                 */
+                await loadNotifications(
+                    true
+                );
+            }
+        );
+    }
+);
+
+
+/* -------------------------------------------------
+   GLOBAL NOTIFICATION AUTO REFRESH
+------------------------------------------------- */
+
+function startNotificationsAutoRefresh() {
+
+    if (
+        notificationAutoRefreshTimer
+    ) {
+        return;
+    }
+
+
+    /*
+     * Establish baseline immediately.
+     *
+     * This is silent because ServiceCall may
+     * currently be displaying Home/Meetings/etc.
+     */
+    loadNotifications(
+        true
+    );
+
+
+    notificationAutoRefreshTimer =
+        setInterval(
+            async () => {
+
+                try {
+
+                    /*
+                     * Background monitoring always
+                     * checks page 1 because that's
+                     * where newly created notifications
+                     * appear.
+                     *
+                     * Preserve the user's pagination.
+                     */
+                    const originalPage =
+                        currentNotificationPage;
+
+
+                    currentNotificationPage =
+                        1;
+
+
+                    await loadNotifications(
+                        true
+                    );
+
+
+                    currentNotificationPage =
+                        originalPage;
+
+
+                } catch (error) {
+
+                    console.error(
+                        'Notification auto-refresh failed:',
+                        error
+                    );
+                }
+
+            },
+            15000
+        );
+}
+
+
+/*
+ * Start notification monitoring for the
+ * lifetime of the ServiceCall renderer.
+ */
+startNotificationsAutoRefresh();
 
 const refreshRecordingsButton =
     document.getElementById(
