@@ -615,7 +615,7 @@ if (
                         connectionStatus.message ||
                         '';
                 }
-
+            await loadMyPresence();
 
             } else {
 
@@ -8037,20 +8037,6 @@ presenceOptions.forEach(
                         result.effective_status ||
                         status
                     );
-
-
-                    /*
-                     * Clear any previous
-                     * OOF reason locally.
-                     */
-
-                    if (
-                        oofReasonInput
-                    ) {
-
-                        oofReasonInput.value =
-                            '';
-                    }
 
 
                     if (
