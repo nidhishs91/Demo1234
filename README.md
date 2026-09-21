@@ -1,4099 +1,6727 @@
-<!DOCTYPE html>
-<html lang="en">
+const {
+    app,
+    BrowserWindow,
+    ipcMain,
+    shell,
+    Tray,
+    Menu,
+    desktopCapturer,
+    dialog,
+} = require('electron');
 
-<head>
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const http = require('http');
+const os = require('os');
 
-    <meta charset="UTF-8">
+const {
+    convertWebmToMp3,
+    convertWebmToMp4
+} = require(
+    './media-converter'
+);
 
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+let mainWindow = null;
+let callbackServer = null;
+let heartbeatTimer = null;
+let tray = null;
+let isQuitting = false;
+let incomingCallTimer = null;
+let activeIncomingCallId = null;
+let outgoingCallTimer = null;
+let activeOutgoingCallId = null;
+let activeCallWindowId = null;
+let callWindowClosing = false;
+const intentionallyLeftCallIds = new Set();
 
-    <title>
-        ServiceCall Desktop
-    </title>
+const CALLBACK_HOST = '127.0.0.1';
+const CALLBACK_PORT = 42813;
+const SERVICECALL_PROTOCOL = 'servicecall';
+
+let notificationPopupWindow = null;
+
+/* -------------------------------------------------------
+   CONFIG
+------------------------------------------------------- */
+
+function getConfigPath() {
+
+    return path.join(
+        app.getPath('userData'),
+        'servicecall-config.json'
+    );
+}
 
 
-    <style>
-        * {
-            box-sizing: border-box;
+function saveConfig(config) {
+
+    fs.writeFileSync(
+        getConfigPath(),
+        JSON.stringify(
+            config,
+            null,
+            2
+        ),
+        'utf8'
+    );
+}
+
+
+function loadConfig() {
+
+    const configPath =
+        getConfigPath();
+
+    if (!fs.existsSync(configPath)) {
+        return {};
+    }
+
+    return JSON.parse(
+        fs.readFileSync(
+            configPath,
+            'utf8'
+        )
+    );
+}
+
+function getOrCreateDeviceId() {
+
+    const config =
+        loadConfig();
+
+    if (config.deviceId) {
+        return config.deviceId;
+    }
+
+    const deviceId =
+        crypto.randomUUID();
+
+    config.deviceId =
+        deviceId;
+
+    saveConfig(config);
+
+    return deviceId;
+}
+
+async function sendHeartbeatOnce() {
+
+    const config =
+        loadConfig();
+
+    if (!config.instanceUrl) {
+        throw new Error(
+            'ServiceNow instance is not configured.'
+        );
+    }
+
+    if (!config.accessToken) {
+        throw new Error(
+            'ServiceNow access token was not found.'
+        );
+    }
+
+    const validAccessToken = await ensureValidAccessToken();
+
+    const heartbeatUrl =
+        config.instanceUrl +
+        config.heartbeatPath;
+
+    const payload = {
+        device_id:
+            getOrCreateDeviceId(),
+
+        device_name:
+            os.hostname(),
+
+        platform:
+            process.platform === 'win32'
+                ? 'Windows'
+                : process.platform,
+
+        app_version:
+            app.getVersion()
+    };
+
+    let response =
+    await fetch(
+        heartbeatUrl,
+        {
+            method: 'POST',
+ 
+            headers: {
+                'Authorization':
+                    'Bearer ' +
+                    validAccessToken,
+ 
+                'Content-Type':
+                    'application/json',
+ 
+                'Accept':
+                    'application/json'
+            },
+ 
+            body:
+                JSON.stringify(
+                    payload
+                )
         }
+    );
+ 
+ 
+/*
+* If the short-lived access token expired,
+* automatically renew it and retry heartbeat once.
+*/
+if (
+    response.status === 401 ||
+    response.status === 403
+) {
+ 
+    console.log(
+        'Heartbeat authorization expired. Attempting automatic renewal...'
+    );
+ 
+ 
+    try {
+ 
+        const newAccessToken =
+            await refreshAccessToken();
+ 
+ 
+        response =
+            await fetch(
+                heartbeatUrl,
+                {
+                    method: 'POST',
+ 
+                    headers: {
+                        'Authorization':
+                            'Bearer ' +
+                            newAccessToken,
+ 
+                        'Content-Type':
+                            'application/json',
+ 
+                        'Accept':
+                            'application/json'
+                    },
+ 
+                    body:
+                        JSON.stringify(
+                            payload
+                        )
+                }
+            );
+ 
+ 
+    } catch (refreshError) {
+ 
+        const authError =
+            new Error(
+                'Your ServiceCall authorization has expired. Please sign in again.'
+            );
+ 
+        authError.code =
+            'AUTHENTICATION_REQUIRED';
+ 
+        throw authError;
+    }
+}
+
+    const responseText =
+        await response.text();
+
+    let data;
+
+    try {
+
+        data =
+            JSON.parse(
+                responseText
+            );
+
+    } catch (error) {
+
+        throw new Error(
+            'Heartbeat API returned an invalid response.'
+        );
+    }
+
+    if (!response.ok) {
+
+    console.error(
+        'Heartbeat HTTP status:',
+        response.status
+    );
+
+    console.error(
+        'Heartbeat response:',
+        JSON.stringify(
+            data,
+            null,
+            2
+        )
+    );
+
+    if (
+    response.status === 401 ||
+    response.status === 403
+) {
 
+    const authError =
+        new Error(
+            'Your ServiceNow session has expired. Please sign in again.'
+        );
 
-        body {
-            margin: 0;
-
-            font-family:
-                Inter,
-                "Segoe UI",
-                Arial,
-                sans-serif;
-
-            background: #f5f7f7;
-            color: #182825;
-
-            overflow: hidden;
-        }
-
-
-        button,
-        input {
-            font: inherit;
-        }
-
-
-        .app {
-            display: flex;
-
-            height: 100vh;
-            width: 100vw;
-        }
-
-
-        /* =================================================
-           SIDEBAR
-        ================================================= */
-
-        .sidebar {
-            width: 220px;
-            min-width: 220px;
-
-            background: #102f2b;
-            color: white;
-
-            display: flex;
-            flex-direction: column;
-
-            padding: 22px 14px;
-        }
-
-
-        .brand {
-            display: flex;
-            align-items: center;
-
-            gap: 11px;
-
-            padding: 0 10px 28px;
-        }
-
-
-        .brand-mark {
-            width: 34px;
-            height: 34px;
-
-            border-radius: 10px;
-
-            background: #55d6a9;
-            color: #10332c;
-
-            display: flex;
-            align-items: center;
-            justify-content: center;
-
-            font-weight: 800;
-            font-size: 17px;
-        }
-
-
-        .brand-name {
-            font-size: 18px;
-            font-weight: 700;
-        }
-
-
-        .navigation {
-            display: flex;
-            flex-direction: column;
-
-            gap: 5px;
-        }
-
-
-        .nav-button {
-            width: 100%;
-
-            border: 0;
-
-            background: transparent;
-            color: #cfe0dc;
-
-            text-align: left;
-
-            padding: 11px 13px;
-
-            border-radius: 9px;
-
-            cursor: pointer;
-
-            transition:
-                background 0.15s ease,
-                color 0.15s ease;
-        }
-
-
-        .nav-button:hover {
-            background:
-                rgba(255,
-                    255,
-                    255,
-                    0.07);
-
-            color: white;
-        }
-
-
-        .nav-button.active {
-            background: #1d4d44;
-
-            color: white;
-
-            font-weight: 600;
-        }
-
-
-        .sidebar-bottom {
-            margin-top: auto;
-        }
-
-
-        /* =================================================
-           MAIN AREA
-        ================================================= */
-
-        .main {
-            flex: 1;
-
-            min-width: 0;
-
-            display: flex;
-            flex-direction: column;
-        }
-
-
-        .topbar {
-            height: 68px;
-            min-height: 68px;
-
-            background: white;
-
-            border-bottom:
-                1px solid #e4e9e7;
-
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-
-            padding: 0 30px;
-        }
-
-
-        .topbar-title {
-            font-size: 18px;
-            font-weight: 650;
-        }
-
-
-        .connection-pill {
-            padding: 7px 12px;
-
-            border-radius: 999px;
-
-            background: #edf3f1;
-            color: #49635d;
-
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-
-        .connection-pill.connected {
-            background: #e3f7ef;
-            color: #147357;
-        }
-
-        /* =================================================
-   TOP BAR PRESENCE
-================================================= */
-
-        .topbar-right {
-            display: flex;
-            align-items: center;
-
-            gap: 12px;
-        }
-
-
-        /* -------------------------------------------------
-   PRESENCE CONTROL
-------------------------------------------------- */
-
-        .presence-control {
-            position: relative;
-        }
-
-
-        .presence-button {
-            height: 36px;
-
-            display: flex;
-            align-items: center;
-
-            gap: 8px;
-
-            padding: 0 12px;
-
-            border:
-                1px solid #d8e2df;
-
-            border-radius: 999px;
-
-            background: white;
-            color: #29463f;
-
-            font-size: 12px;
-            font-weight: 650;
-
-            cursor: pointer;
-
-            transition:
-                background 0.15s ease,
-                border-color 0.15s ease;
-        }
-
-
-        .presence-button:hover {
-            background: #f5f9f7;
-
-            border-color: #bccdc8;
-        }
-
-
-        .presence-dot,
-        .presence-option-dot {
-            width: 9px;
-            height: 9px;
-
-            flex-shrink: 0;
-
-            border-radius: 50%;
-        }
-
-
-        .presence-dot.available,
-        .presence-option-dot.available {
-            background: #22a06b;
-        }
-
-
-        .presence-dot.busy,
-        .presence-option-dot.busy {
-            background: #d94c4c;
-        }
-
-
-        .presence-dot.away,
-        .presence-option-dot.away {
-            background: #e0a21a;
-        }
-
-
-        .presence-dot.out-of-office,
-        .presence-option-dot.out-of-office {
-            background: #7c63c7;
-        }
-
-
-        .presence-dot.in-call {
-            background: #d94c4c;
-        }
-
-
-        .presence-dot.offline {
-            background: #8c9995;
-        }
-
-
-        .presence-chevron {
-            margin-left: 2px;
-
-            color: #71827d;
-
-            font-size: 10px;
-        }
-
-
-        /* -------------------------------------------------
-   PRESENCE MENU
-------------------------------------------------- */
-
-        .presence-menu {
-            position: absolute;
-
-            z-index: 2000;
-
-            top: calc(100% + 8px);
-            right: 0;
-
-            width: 260px;
-
-            padding: 7px;
-
-            background: white;
-
-            border:
-                1px solid #dce5e2;
-
-            border-radius: 12px;
-
-            box-shadow:
-                0 14px 35px rgba(16, 47, 43, 0.15);
-        }
-
-
-        .presence-option {
-            width: 100%;
-
-            display: flex;
-            align-items: center;
-
-            gap: 10px;
-
-            padding: 10px 11px;
-
-            border: 0;
-
-            border-radius: 8px;
-
-            background: transparent;
-            color: #29463f;
-
-            text-align: left;
-
-            font-size: 13px;
-            font-weight: 600;
-
-            cursor: pointer;
-        }
-
-
-        .presence-option:hover {
-            background: #f0f6f4;
-        }
-
-
-        /* -------------------------------------------------
-   OUT OF OFFICE REASON
-------------------------------------------------- */
-
-        .oof-reason-panel {
-            margin-top: 7px;
-
-            padding: 12px;
-
-            border-top:
-                1px solid #e7ecea;
-        }
-
-
-        .oof-reason-label {
-            display: block;
-
-            margin-bottom: 7px;
-
-            color: #405b54;
-
-            font-size: 12px;
-            font-weight: 650;
-        }
-
-
-        .oof-reason-input {
-            width: 100%;
-
-            min-height: 72px;
-
-            padding: 9px 10px;
-
-            border:
-                1px solid #d3dedb;
-
-            border-radius: 8px;
-
-            outline: none;
-
-            resize: vertical;
-
-            font-family: inherit;
-            font-size: 12px;
-
-            color: #29463f;
-        }
-
-
-        .oof-reason-input:focus {
-            border-color: #3d917c;
-
-            box-shadow:
-                0 0 0 3px rgba(61, 145, 124, 0.10);
-        }
-
-
-        .oof-reason-actions {
-            display: flex;
-
-            justify-content: flex-end;
-
-            gap: 7px;
-
-            margin-top: 9px;
-        }
-
-
-        .oof-reason-cancel,
-        .oof-reason-save {
-            padding: 7px 11px;
-
-            border-radius: 7px;
-
-            font-size: 11px;
-            font-weight: 650;
-
-            cursor: pointer;
-        }
-
-
-        .oof-reason-cancel {
-            border:
-                1px solid #d1dcda;
-
-            background: white;
-            color: #536963;
-        }
-
-
-        .oof-reason-save {
-            border:
-                1px solid #126e5a;
-
-            background: #126e5a;
-            color: white;
-        }
-
-
-        .oof-reason-save:hover {
-            background: #0e5e4d;
-        }
-
-        .content {
-            flex: 1;
-
-            overflow-y: auto;
-
-            padding: 30px;
-        }
-
-
-        .view {
-            display: none;
-        }
-
-
-        .view.active {
-            display: block;
-        }
-
-
-        /* =================================================
-           GENERIC
-        ================================================= */
-
-        .page-heading {
-            display: flex;
-
-            justify-content: space-between;
-            align-items: flex-start;
-
-            gap: 20px;
-
-            margin-bottom: 26px;
-        }
-
-
-        .page-heading h1 {
-            margin: 0 0 7px;
-
-            font-size: 28px;
-        }
-
-
-        .page-heading p {
-            margin: 0;
-
-            color: #687a76;
-
-            font-size: 14px;
-        }
-
-
-        .primary-button {
-            border: 0;
-
-            background: #126e5a;
-            color: white;
-
-            padding: 11px 17px;
-
-            border-radius: 8px;
-
-            font-weight: 600;
-
-            cursor: pointer;
-
-            transition:
-                background 0.15s ease,
-                transform 0.15s ease;
-        }
-
-
-        .primary-button:hover {
-            background: #0e5e4d;
-        }
-
-
-        .secondary-button {
-            border:
-                1px solid #cfdad7;
-
-            background: white;
-            color: #25463f;
-
-            padding: 10px 16px;
-
-            border-radius: 8px;
-
-            font-weight: 600;
-
-            cursor: pointer;
-
-            transition:
-                background 0.15s ease,
-                border-color 0.15s ease;
-        }
-
-
-        .secondary-button:hover {
-            background: #f6f9f8;
-            border-color: #b9cac5;
-        }
-
-
-        .card {
-            background: white;
-
-            border:
-                1px solid #e1e7e5;
-
-            border-radius: 13px;
-
-            padding: 22px;
-
-            box-shadow:
-                0 2px 8px rgba(23,
-                    51,
-                    45,
-                    0.035);
-        }
-
-
-        /* =================================================
-           HOME
-        ================================================= */
-
-        .welcome-card {
-            background:
-                linear-gradient(120deg,
-                    #143f37,
-                    #1a6958);
-
-            color: white;
-
-            border-radius: 16px;
-
-            padding: 30px;
-        }
-
-
-        .welcome-card h1 {
-            margin: 0 0 10px;
-        }
-
-
-        .welcome-card p {
-            margin: 0;
-
-            color: #d4ebe5;
-
-            max-width: 600px;
-
-            line-height: 1.6;
-        }
-
-
-        .home-actions {
-            margin-top: 22px;
-
-            display: flex;
-
-            gap: 10px;
-        }
-
-
-        /* =================================================
-           MEETINGS
-        ================================================= */
-
-        .meeting-section-title {
-            margin: 27px 0 13px;
-
-            font-size: 15px;
-            font-weight: 700;
-
-            color: #344c47;
-        }
-
-
-        /* -------------------------------------------------
-           MEETING TOOLBAR
-        ------------------------------------------------- */
-
-        .meetings-toolbar {
-            display: flex;
-
-            align-items: center;
-            justify-content: space-between;
-
-            gap: 16px;
-
-            margin-bottom: 18px;
+    authError.code =
+        'AUTHENTICATION_REQUIRED';
+
+    throw authError;
+}
+
+    var errorMessage =
+        'Heartbeat failed with HTTP ' +
+        response.status;
+
+    if (
+        data &&
+        typeof data.error === 'object' &&
+        data.error
+    ) {
+
+        errorMessage =
+            data.error.message ||
+            data.error.detail ||
+            errorMessage;
+
+    } else if (
+        data &&
+        typeof data.error === 'string'
+    ) {
+
+        errorMessage =
+            data.error;
+
+    } else if (
+        data &&
+        typeof data.message === 'string'
+    ) {
+
+        errorMessage =
+            data.message;
+    }
+
+    throw new Error(
+        errorMessage
+    );
+}
+
+    return data;
+}
+
+async function checkIncomingCallOnce() {
+
+    try {
+
+        const result =
+            await serviceCallApiRequest(
+                '/incoming-call',
+                'GET'
+            );
+
+
+        if (
+            result &&
+            result.success &&
+            result.incoming_call
+        ) {
+
+            const incomingCallId =
+                result.call_sys_id;
+
+
+            if (
+    incomingCallId &&
+    !intentionallyLeftCallIds.has(
+        incomingCallId
+    ) &&
+    incomingCallId !==
+        activeIncomingCallId
+) {
+
+                activeIncomingCallId =
+                    incomingCallId;
+
+
+                console.log(
+                    'Incoming ServiceCall:',
+                    result
+                );
+
+
+                const isConference =
+                    result.is_conference === true ||
+                    result.call_type ===
+                        'conference';
+
+
+                /*
+                 * For an existing conference,
+                 * show the connected participant
+                 * summary returned by ServiceNow.
+                 *
+                 * Example:
+                 *
+                 * Nidhish, Divyani
+                 *
+                 * or
+                 *
+                 * Nidhish, Divyani +2
+                 */
+                const displayName =
+                    isConference
+                        ? (
+                            result.conference_display ||
+                            'Conference Call'
+                        )
+                        : (
+                            result.caller_name ||
+                            'Unknown User'
+                        );
+
+
+                const displayDepartment =
+                    isConference
+                        ? 'Conference Call'
+                        : (
+                            result.caller_department ||
+                            ''
+                        );
+
+
+                showCallWindow(
+                    'incoming',
+                    {
+                        callSysId:
+                            result.call_sys_id,
+
+                        callNumber:
+                            result.call_number,
+
+                        name:
+                            displayName,
+
+                        department:
+                            displayDepartment,
+
+                        isConference:
+                            isConference
+                    }
+                );
+            }
+
+
+            return;
         }
 
 
         /*
-         * Search container.
-         *
-         * Keeping the icon inside the same rounded
-         * surface makes the search feel more like
-         * a desktop application control.
+         * No incoming ringing invitation.
          */
+        activeIncomingCallId =
+            null;
 
-        .meeting-search-wrapper {
-            position: relative;
 
-            width: 100%;
-            max-width: 440px;
-        }
-
-
-        .meeting-search-icon {
-            position: absolute;
-
-            left: 15px;
-            top: 50%;
-
-            transform:
-                translateY(-50%);
-
-            width: 18px;
-            height: 18px;
-
-            color: #758782;
-
-            pointer-events: none;
-
-            transition:
-                color 0.18s ease;
-        }
-
-
-        .meeting-search {
-            width: 100%;
-
-            height: 44px;
-
-            padding:
-                0 42px 0 44px;
-
-            border:
-                1px solid #d6e0dd;
-
-            border-radius: 11px;
-
-            outline: none;
-
-            background: white;
-
-            color: #1c332e;
-
-            font-size: 14px;
-
-            box-shadow:
-                0 1px 3px rgba(16,
-                    47,
-                    43,
-                    0.025);
-
-            transition:
-                border-color 0.18s ease,
-                box-shadow 0.18s ease,
-                background 0.18s ease;
-        }
-
-
-        .meeting-search::placeholder {
-            color: #91a09c;
-        }
-
-
-        .meeting-search:hover {
-            border-color: #bccdc8;
-        }
-
-
-        .meeting-search:focus {
-            background: #ffffff;
-
-            border-color: #3d917c;
-
-            box-shadow:
-                0 0 0 3px rgba(61,
-                    145,
-                    124,
-                    0.11);
-        }
-
-
-        .meeting-search-wrapper:focus-within .meeting-search-icon {
-            color: #25745f;
-        }
-
-
-        /*
-         * Native search inputs can show their own
-         * clear control. We remove that because
-         * renderer.js can later provide one
-         * consistently across platforms.
-         */
-
-        .meeting-search::-webkit-search-cancel-button {
-            display: none;
-        }
-
-
-        .meeting-search-clear {
-            position: absolute;
-
-            right: 10px;
-            top: 50%;
-
-            transform:
-                translateY(-50%);
-
-            width: 27px;
-            height: 27px;
-
-            border: 0;
-
-            border-radius: 7px;
-
-            background: transparent;
-
-            color: #71817d;
-
-            display: none;
-
-            align-items: center;
-            justify-content: center;
-
-            font-size: 18px;
-            line-height: 1;
-
-            cursor: pointer;
-
-            transition:
-                background 0.15s ease,
-                color 0.15s ease;
-        }
-
-
-        .meeting-search-clear:hover {
-            background: #edf3f1;
-
-            color: #244a41;
-        }
-
-        /* -------------------------------------------------
-   MEETING STATUS FILTER
-------------------------------------------------- */
-
-        .meeting-status-filter-wrapper {
-            display: flex;
-
-            align-items: center;
-
-            gap: 9px;
-
-            flex-shrink: 0;
-        }
-
-
-        .meeting-status-filter-label {
-            color: #60736e;
-
-            font-size: 13px;
-            font-weight: 650;
-        }
-
-
-        .meeting-status-filter {
-            height: 44px;
-
-            min-width: 150px;
-
-            padding:
-                0 38px 0 13px;
-
-            border:
-                1px solid #d6e0dd;
-
-            border-radius: 11px;
-
-            outline: none;
-
-            background: white;
-
-            color: #29463f;
-
-            font-size: 14px;
-            font-weight: 600;
-
-            cursor: pointer;
-
-            box-shadow:
-                0 1px 3px rgba(16,
-                    47,
-                    43,
-                    0.025);
-
-            transition:
-                border-color 0.18s ease,
-                box-shadow 0.18s ease,
-                background 0.18s ease;
-        }
-
-
-        .meeting-status-filter:hover {
-            border-color: #bccdc8;
-        }
-
-
-        .meeting-status-filter:focus {
-            border-color: #3d917c;
-
-            box-shadow:
-                0 0 0 3px rgba(61,
-                    145,
-                    124,
-                    0.11);
-        }
-
-        /* -------------------------------------------------
-           MEETING LIST
-        ------------------------------------------------- */
-
-        .meetings-list {
-            display: grid;
-
-            gap: 12px;
-        }
-
-
-        .meeting-card {
-            background: white;
-
-            border:
-                1px solid #e0e7e5;
-
-            border-radius: 12px;
-
-            padding: 18px 20px;
-
-            display: flex;
-
-            align-items: center;
-            justify-content: space-between;
-
-            gap: 20px;
-
-            transition:
-                border-color 0.15s ease,
-                box-shadow 0.15s ease,
-                transform 0.15s ease;
-        }
-
-
-        .meeting-card:hover {
-            border-color: #cedbd7;
-
-            box-shadow:
-                0 3px 12px rgba(23,
-                    51,
-                    45,
-                    0.045);
-        }
-
-
-        .meeting-card-left {
-            min-width: 0;
-        }
-
-
-        .meeting-title {
-            font-size: 16px;
-            font-weight: 650;
-
-            margin-bottom: 6px;
-        }
-
-
-        .meeting-meta {
-            color: #71807d;
-
-            font-size: 13px;
-
-            line-height: 1.6;
-        }
-
-
-        .meeting-actions {
-            display: flex;
-
-            align-items: center;
-
-            gap: 8px;
-
-            flex-shrink: 0;
-        }
-
-
-        .meeting-status {
-            display: inline-flex;
-
-            align-items: center;
-
-            padding: 5px 9px;
-
-            border-radius: 999px;
-
-            background: #edf1f0;
-            color: #61716d;
-
-            font-size: 11px;
-            font-weight: 700;
-
-            text-transform: capitalize;
-        }
-
-
-        .meeting-status.in-progress {
-            background: #e2f7ee;
-            color: #137254;
-        }
-
-
-        .meeting-status.scheduled {
-            background: #e8f1fb;
-            color: #326a9e;
-        }
-
-
-        .empty-state {
-            background: white;
-
-            border:
-                1px dashed #ccd8d4;
-
-            border-radius: 12px;
-
-            padding: 35px;
-
-            text-align: center;
-
-            color: #75837f;
-        }
-
-
-        .loading {
-            padding: 25px;
-
-            text-align: center;
-
-            color: #71807d;
-        }
-
-
-        /* -------------------------------------------------
-           MEETING PAGINATION
-        ------------------------------------------------- */
-
-        .meeting-pagination {
-            display: flex;
-
-            align-items: center;
-            justify-content: center;
-
-            flex-wrap: wrap;
-
-            gap: 7px;
-
-            min-height: 38px;
-
-            margin-top: 20px;
-
-            padding-bottom: 10px;
-        }
-
-
-        .meeting-page-button {
-            min-width: 36px;
-            height: 36px;
-
-            padding: 0 10px;
-
-            border:
-                1px solid #d2ddda;
-
-            border-radius: 9px;
-
-            background: white;
-            color: #38534d;
-
-            font-size: 13px;
-            font-weight: 650;
-
-            cursor: pointer;
-
-            transition:
-                background 0.15s ease,
-                border-color 0.15s ease,
-                color 0.15s ease,
-                transform 0.15s ease;
-        }
-
-
-        .meeting-page-button:hover:not(:disabled) {
-            background: #eef5f2;
-
-            border-color: #b8cbc5;
-
-            color: #185d4d;
-        }
-
-
-        .meeting-page-button.active {
-            background: #126e5a;
-
-            border-color: #126e5a;
-
-            color: white;
-        }
-
-
-        .meeting-page-button:disabled {
-            opacity: 0.42;
-
-            cursor: default;
-        }
-
-
-        .meeting-page-info {
-            color: #71807d;
-
-            font-size: 12px;
-
-            margin: 0 5px;
-        }
-
-
-        /* =================================================
-   MEETING DETAILS MODAL
-================================================= */
-
-        .meeting-details-modal {
-            position: fixed;
-
-            inset: 0;
-
-            z-index: 1000;
-
-            display: none;
-
-            align-items: center;
-            justify-content: center;
-
-            padding: 28px;
-        }
-
-
-        .meeting-details-modal.open {
-            display: flex;
-        }
-
-
-        .meeting-details-backdrop {
-            position: absolute;
-
-            inset: 0;
-
-            background:
-                rgba(10,
-                    28,
-                    24,
-                    0.42);
-
-            backdrop-filter:
-                blur(2px);
-        }
-
-
-        .meeting-details-dialog {
-            position: relative;
-
-            width: min(680px,
-                    100%);
-
-            max-height:
-                calc(100vh - 56px);
-
-            background: white;
-
-            border:
-                1px solid #dce5e2;
-
-            border-radius: 16px;
-
-            box-shadow:
-                0 24px 70px rgba(10,
-                    37,
-                    31,
-                    0.20);
-
-            display: flex;
-            flex-direction: column;
-
-            overflow: hidden;
-        }
-
-
-        .meeting-details-header {
-            display: flex;
-
-            align-items: center;
-            justify-content: space-between;
-
-            gap: 20px;
-
-            padding: 20px 22px;
-
-            border-bottom:
-                1px solid #e7ecea;
-        }
-
-
-        .meeting-details-heading {
-            font-size: 17px;
-            font-weight: 700;
-
-            color: #193a32;
-        }
-
-
-        .meeting-details-number {
-            margin-top: 3px;
-
-            color: #7b8c87;
-
-            font-size: 12px;
-        }
-
-
-        .meeting-details-close {
-            width: 34px;
-            height: 34px;
-
-            border: 0;
-
-            border-radius: 9px;
-
-            background: transparent;
-
-            color: #667b75;
-
-            font-size: 22px;
-            line-height: 1;
-
-            cursor: pointer;
-        }
-
-
-        .meeting-details-close:hover {
-            background: #edf3f1;
-
-            color: #234a40;
-        }
-
-
-        .meeting-details-content {
-            overflow-y: auto;
-
-            padding: 22px;
-        }
-
-
-        .meeting-details-title-row {
-            display: flex;
-
-            align-items: flex-start;
-            justify-content: space-between;
-
-            gap: 18px;
-
-            margin-bottom: 22px;
-        }
-
-
-        .meeting-details-title {
-            margin: 0;
-
-            color: #193a32;
-
-            font-size: 22px;
-            line-height: 1.3;
-        }
-
-
-        .meeting-details-section {
-            padding: 19px 0;
-
-            border-top:
-                1px solid #edf1f0;
-        }
-
-
-        .meeting-details-section-title {
-            margin-bottom: 14px;
-
-            color: #294a42;
-
-            font-size: 14px;
-            font-weight: 700;
-        }
-
-
-        .meeting-details-label {
-            margin-bottom: 5px;
-
-            color: #7a8985;
-
-            font-size: 11px;
-            font-weight: 700;
-
-            text-transform: uppercase;
-
-            letter-spacing: 0.035em;
-        }
-
-
-        .meeting-details-value,
-        .meeting-details-description {
-            color: #2d4540;
-
-            font-size: 14px;
-
-            line-height: 1.55;
-
-            word-break: break-word;
-        }
-
-
-        .meeting-details-description {
-            white-space: pre-wrap;
-        }
-
-
-        .meeting-details-grid {
-            display: grid;
-
-            grid-template-columns:
-                repeat(2,
-                    minmax(0,
-                        1fr));
-
-            gap: 18px 28px;
-        }
-
-
-        .meeting-details-field {
-            min-width: 0;
-        }
-
-
-        .meeting-details-participants-header {
-            display: flex;
-
-            align-items: center;
-            justify-content: space-between;
-
-            gap: 12px;
-        }
-
-
-        .meeting-details-count {
-            min-width: 27px;
-            height: 27px;
-
-            padding: 0 8px;
-
-            border-radius: 999px;
-
-            background: #edf4f2;
-
-            color: #376158;
-
-            display: flex;
-            align-items: center;
-            justify-content: center;
-
-            font-size: 12px;
-            font-weight: 700;
-        }
-
-
-        .meeting-details-participants {
-            display: grid;
-
-            gap: 9px;
-        }
-
-
-        .meeting-details-participant {
-            display: flex;
-
-            align-items: center;
-            justify-content: space-between;
-
-            gap: 16px;
-
-            padding: 12px 13px;
-
-            border:
-                1px solid #e3e9e7;
-
-            border-radius: 10px;
-
-            background: #fafcfb;
-        }
-
-
-        .meeting-details-participant-main {
-            min-width: 0;
-        }
-
-
-        .meeting-details-participant-name {
-            color: #263f39;
-
-            font-size: 13px;
-            font-weight: 650;
-
-            overflow: hidden;
-
-            text-overflow: ellipsis;
-
-            white-space: nowrap;
-        }
-
-
-        .meeting-details-participant-role {
-            margin-top: 3px;
-
-            color: #7b8b87;
-
-            font-size: 11px;
-
-            text-transform: capitalize;
-        }
-
-
-        .meeting-details-participant-statuses {
-            display: flex;
-
-            align-items: center;
-            justify-content: flex-end;
-
-            flex-wrap: wrap;
-
-            gap: 6px;
-        }
-
-
-        .meeting-details-badge {
-            padding: 4px 8px;
-
-            border-radius: 999px;
-
-            background: #edf2f1;
-
-            color: #5e716c;
-
-            font-size: 10px;
-            font-weight: 700;
-
-            text-transform: capitalize;
-        }
-
-
-        .meeting-details-empty {
-            padding: 18px;
-
-            border:
-                1px dashed #d2dcda;
-
-            border-radius: 10px;
-
-            color: #7b8b87;
-
-            text-align: center;
-
-            font-size: 13px;
-        }
-
-
-        .meeting-details-footer {
-            display: flex;
-
-            justify-content: flex-end;
-
-            padding: 15px 22px;
-
-            border-top:
-                1px solid #e7ecea;
-
-            background: #fbfcfc;
-        }
-
-        /* =================================================
-   SCHEDULE MEETING MODAL
-================================================= */
-
-        .schedule-meeting-timezone {
-            display: flex;
-            align-items: center;
-
-            gap: 5px;
-
-            margin-top: -7px;
-            margin-bottom: 19px;
-
-            color: #71827d;
-
-            font-size: 12px;
-        }
-
-
-        .schedule-meeting-timezone-label {
-            font-weight: 650;
-
-            color: #526b65;
-        }
-
-        .schedule-meeting-modal {
-            position: fixed;
-
-            inset: 0;
-
-            z-index: 1010;
-
-            display: none;
+    } catch (error) {
 
-            align-items: center;
-            justify-content: center;
+        console.error(
+            'Incoming call check failed:',
+            error
+        );
 
-            padding: 28px;
-        }
-
-
-        .schedule-meeting-modal.open {
-            display: flex;
-        }
-
-
-        .schedule-meeting-backdrop {
-            position: absolute;
-
-            inset: 0;
-
-            background:
-                rgba(10,
-                    28,
-                    24,
-                    0.42);
-
-            backdrop-filter:
-                blur(2px);
-        }
-
-
-        .schedule-meeting-dialog {
-            position: relative;
-
-            width: min(700px,
-                    100%);
-
-            max-height:
-                calc(100vh - 56px);
-
-            background: white;
-
-            border:
-                1px solid #dce5e2;
-
-            border-radius: 16px;
-
-            box-shadow:
-                0 24px 70px rgba(10,
-                    37,
-                    31,
-                    0.20);
-
-            display: flex;
-            flex-direction: column;
-
-            overflow: hidden;
-        }
-
-
-        .schedule-meeting-header {
-            display: flex;
-
-            align-items: center;
-            justify-content: space-between;
-
-            gap: 20px;
-
-            padding: 20px 22px;
-
-            border-bottom:
-                1px solid #e7ecea;
-        }
-
-
-        .schedule-meeting-heading {
-            color: #193a32;
-
-            font-size: 18px;
-            font-weight: 700;
-        }
-
-
-        .schedule-meeting-subtitle {
-            margin-top: 4px;
-
-            color: #7b8c87;
-
-            font-size: 12px;
-        }
-
-
-        .schedule-meeting-close {
-            width: 34px;
-            height: 34px;
-
-            border: 0;
-
-            border-radius: 9px;
-
-            background: transparent;
-
-            color: #667b75;
-
-            font-size: 22px;
-            line-height: 1;
-
-            cursor: pointer;
-        }
-
-
-        .schedule-meeting-close:hover {
-            background: #edf3f1;
-
-            color: #234a40;
-        }
-
-
-        .schedule-meeting-content {
-            padding: 22px;
-
-            overflow-y: auto;
-        }
-
-
-        .schedule-meeting-field {
-            margin-bottom: 19px;
-        }
-
-
-        .schedule-meeting-label {
-            display: block;
-
-            margin-bottom: 7px;
-
-            color: #38544d;
-
-            font-size: 13px;
-            font-weight: 650;
-        }
-
-
-        .schedule-meeting-required {
-            color: #b34747;
-        }
-
-
-        .schedule-meeting-input,
-        .schedule-meeting-textarea {
-            width: 100%;
-
-            box-sizing: border-box;
-
-            border:
-                1px solid #d6e0dd;
-
-            border-radius: 10px;
-
-            outline: none;
-
-            background: white;
-
-            color: #29463f;
-
-            font-family: inherit;
-
-            font-size: 14px;
-
-            transition:
-                border-color 0.18s ease,
-                box-shadow 0.18s ease;
-        }
-
-
-        .schedule-meeting-input {
-            height: 44px;
-
-            padding: 0 13px;
-        }
-
-
-        .schedule-meeting-textarea {
-            min-height: 96px;
-
-            padding: 11px 13px;
-
-            resize: vertical;
-
-            line-height: 1.5;
-        }
-
-
-        .schedule-meeting-input:focus,
-        .schedule-meeting-textarea:focus {
-            border-color: #3d917c;
-
-            box-shadow:
-                0 0 0 3px rgba(61,
-                    145,
-                    124,
-                    0.11);
-        }
-
-
-        .schedule-meeting-time-grid {
-            display: grid;
-
-            grid-template-columns:
-                repeat(2,
-                    minmax(0,
-                        1fr));
-
-            gap: 16px;
-        }
-
-
-        .schedule-meeting-people-search-wrapper {
-            position: relative;
-        }
-
-
-        .schedule-meeting-people-results {
-            display: none;
-
-            position: absolute;
-
-            z-index: 20;
-
-            top: calc(100% + 6px);
-            left: 0;
-            right: 0;
-
-            max-height: 220px;
-
-            overflow-y: auto;
-
-            background: white;
-
-            border:
-                1px solid #dce5e2;
-
-            border-radius: 10px;
-
-            box-shadow:
-                0 12px 30px rgba(20,
-                    55,
-                    47,
-                    0.12);
-        }
-
-
-        .schedule-meeting-selected-people {
-            display: flex;
-
-            flex-wrap: wrap;
-
-            gap: 8px;
-
-            margin-top: 11px;
-        }
-
-
-        .schedule-meeting-no-people {
-            color: #83918d;
-
-            font-size: 12px;
-        }
-
-
-        .schedule-meeting-message {
-            min-height: 18px;
-
-            color: #a33f3f;
-
-            font-size: 12px;
-        }
-
 
-        .schedule-meeting-footer {
-            display: flex;
+        if (
+            error.code ===
+            'AUTHENTICATION_REQUIRED'
+        ) {
 
-            align-items: center;
-            justify-content: flex-end;
+            stopIncomingCallLoop();
 
-            gap: 10px;
 
-            padding: 15px 22px;
-
-            border-top:
-                1px solid #e7ecea;
-
-            background: #fbfcfc;
-        }
-
-        /* =================================================
-   NOTIFICATION SEARCH
-================================================= */
-
-        .notification-search-wrapper {
-            position: relative;
-
-            width: 100%;
-            max-width: 520px;
-
-            margin-bottom: 18px;
-        }
-
-
-        .notification-search-icon {
-            position: absolute;
-
-            left: 15px;
-            top: 50%;
-
-            transform: translateY(-50%);
-
-            width: 18px;
-            height: 18px;
-
-            color: #758782;
-
-            pointer-events: none;
-        }
-
-
-        .notification-search {
-            width: 100%;
-            height: 44px;
-
-            padding:
-                0 42px 0 44px;
-
-            border:
-                1px solid #d6e0dd;
-
-            border-radius: 11px;
-
-            outline: none;
-
-            background: white;
-            color: #1c332e;
-
-            font-size: 14px;
-
-            transition:
-                border-color 0.18s ease,
-                box-shadow 0.18s ease;
-        }
-
-
-        .notification-search::placeholder {
-            color: #91a09c;
-        }
-
-
-        .notification-search:hover {
-            border-color: #bccdc8;
-        }
-
-
-        .notification-search:focus {
-            border-color: #3d917c;
-
-            box-shadow:
-                0 0 0 3px rgba(61, 145, 124, 0.11);
-        }
-
-
-        .notification-search-wrapper:focus-within .notification-search-icon {
-            color: #25745f;
-        }
-
-
-        .notification-search::-webkit-search-cancel-button {
-            display: none;
-        }
-
-
-        .notification-search-clear {
-            position: absolute;
-
-            right: 10px;
-            top: 50%;
-
-            transform: translateY(-50%);
-
-            width: 27px;
-            height: 27px;
-
-            border: 0;
-            border-radius: 7px;
-
-            background: transparent;
-
-            color: #71817d;
-
-            display: none;
-
-            align-items: center;
-            justify-content: center;
-
-            font-size: 18px;
-
-            cursor: pointer;
-        }
-
-
-        .notification-search-clear:hover {
-            background: #edf3f1;
-
-            color: #244a41;
-        }
-
-        /* =================================================
-   NOTIFICATION SEARCH HIGHLIGHT
-================================================= */
-
-        .notification-search-highlight {
-            background: rgba(255, 193, 7, 0.28);
-            color: inherit;
-
-            padding: 0;
-            margin: 0;
-
-            border-radius: 2px;
-
-            box-decoration-break: clone;
-            -webkit-box-decoration-break: clone;
+            sendAuthStatus(
+                'authentication_required',
+                'Your ServiceCall authorization has expired. Please sign in to ServiceNow again.'
+            );
         }
+    }
+}
 
-        /* =================================================
-   NOTIFICATIONS
-================================================= */
+function stopIncomingCallLoop() {
 
-        .notification-nav-button {
-            display: flex;
+    if (incomingCallTimer) {
 
-            align-items: center;
-            justify-content: space-between;
+        clearInterval(
+            incomingCallTimer
+        );
 
-            gap: 10px;
-        }
-
-
-        .notification-unread-badge {
-            min-width: 20px;
-            height: 20px;
-
-            padding: 0 6px;
-
-            border-radius: 999px;
-
-            background: #55d6a9;
-            color: #10332c;
-
-            align-items: center;
-            justify-content: center;
-
-            font-size: 10px;
-            font-weight: 800;
-        }
-
-
-        .notification-toolbar {
-            display: flex;
-
-            align-items: center;
-            justify-content: space-between;
-
-            gap: 16px;
-
-            margin-bottom: 18px;
-        }
-
-
-        .notification-filters {
-            display: flex;
-
-            align-items: center;
-            flex-wrap: wrap;
-
-            gap: 7px;
-        }
-
-
-        .notification-filter {
-            border:
-                1px solid #d6e0dd;
-
-            background: white;
-            color: #506660;
-
-            padding: 8px 13px;
-
-            border-radius: 999px;
-
-            font-size: 12px;
-            font-weight: 650;
-
-            cursor: pointer;
-
-            transition:
-                background 0.15s ease,
-                border-color 0.15s ease,
-                color 0.15s ease;
-        }
-
-
-        .notification-filter:hover {
-            border-color: #b8cbc5;
-
-            background: #f5f9f7;
+        incomingCallTimer =
+            null;
+    }
+}
 
-            color: #235d4f;
-        }
-
-
-        .notification-filter.active {
-            border-color: #126e5a;
-
-            background: #126e5a;
-            color: white;
-        }
-
-
-        .notifications-list {
-            display: grid;
-
-            gap: 10px;
-        }
+function stopHeartbeatLoop() {
 
+    if (heartbeatTimer) {
 
-        .notification-card {
-            position: relative;
+        clearInterval(
+            heartbeatTimer
+        );
 
-            display: flex;
+        heartbeatTimer = null;
+    }
+}
 
-            align-items: flex-start;
 
-            gap: 14px;
+async function startHeartbeatLoop() {
 
-            padding: 17px 18px;
+    stopHeartbeatLoop();
 
-            background: white;
+    try {
 
-            border:
-                1px solid #e0e7e5;
+        const result =
+            await sendHeartbeatOnce();
 
-            border-radius: 12px;
+        console.log(
+            'ServiceCall heartbeat:',
+            result
+        );
 
-            transition:
-                border-color 0.15s ease,
-                box-shadow 0.15s ease,
-                background 0.15s ease;
-        }
+        sendAuthStatus(
+            'connected',
+            'ServiceCall Desktop is connected.'
+        );
 
+    } catch (error) {
 
-        .notification-card:hover {
-            border-color: #c8d7d3;
+        console.error(
+            'Initial heartbeat failed:',
+            error
+        );
 
-            box-shadow:
-                0 3px 12px rgba(23,
-                    51,
-                    45,
-                    0.045);
-        }
+        if (
+            error.code ===
+            'AUTHENTICATION_REQUIRED'
+        ) {
 
+            stopHeartbeatLoop();
 
-        .notification-card.unread {
-            background: #f5fbf8;
+            sendAuthStatus(
+                'authentication_required',
+                'Your ServiceNow session has expired. Please sign in again.'
+            );
 
-            border-color: #c9e4dc;
+            return;
         }
-
-
-        .notification-icon {
-            width: 40px;
-            height: 40px;
-
-            flex-shrink: 0;
-
-            border-radius: 11px;
-
-            background: #edf4f2;
-            color: #276656;
 
-            display: flex;
+        sendAuthStatus(
+            'warning',
+            'ServiceCall Desktop heartbeat failed: ' +
+            error.message
+        );
 
-            align-items: center;
-            justify-content: center;
+        return;
+    }
 
-            font-size: 18px;
-        }
-
+    heartbeatTimer =
+        setInterval(
+            async () => {
 
-        .notification-body {
-            min-width: 0;
+                try {
 
-            flex: 1;
-        }
+                    const result =
+                        await sendHeartbeatOnce();
 
+                    console.log(
+                        'ServiceCall heartbeat:',
+                        result
+                    );
 
-        .notification-title-row {
-            display: flex;
+                } catch (error) {
 
-            align-items: flex-start;
-            justify-content: space-between;
+                    console.error(
+                        'Heartbeat failed:',
+                        error
+                    );
 
-            gap: 15px;
-        }
+                    if (
+                        error.code ===
+                        'AUTHENTICATION_REQUIRED'
+                    ) {
 
+                        stopHeartbeatLoop();
 
-        .notification-title {
-            color: #213d36;
+                        sendAuthStatus(
+                            'authentication_required',
+                            'Your ServiceNow session has expired. Please sign in again.'
+                        );
 
-            font-size: 14px;
-            font-weight: 700;
-        }
+                        return;
+                    }
 
+                    sendAuthStatus(
+                        'warning',
+                        'ServiceCall Desktop heartbeat failed: ' +
+                        error.message
+                    );
+                }
 
-        .notification-time {
-            flex-shrink: 0;
+            },
+            30000
+        );
+}
 
-            color: #879590;
+function startIncomingCallLoop() {
 
-            font-size: 11px;
-        }
+    stopIncomingCallLoop();
 
+    checkIncomingCallOnce();
 
-        .notification-message {
-            margin-top: 5px;
+    incomingCallTimer =
+        setInterval(
+            checkIncomingCallOnce,
+            3000
+        );
+}
 
-            color: #667873;
+async function restoreSavedConnection() {
 
-            font-size: 13px;
+    const config =
+        loadConfig();
 
-            line-height: 1.5;
+    if (
+        !config.instanceUrl ||
+        !config.accessToken
+    ) {
 
-            word-break: break-word;
-        }
+        console.log(
+            'No saved ServiceCall connection found.'
+        );
 
+        return;
+    }
 
-        .notification-actions {
-            display: flex;
 
-            align-items: center;
-            flex-wrap: wrap;
+    console.log(
+        'Saved ServiceCall connection found. Restoring...'
+    );
 
-            gap: 8px;
 
-            margin-top: 11px;
-        }
+    try {
 
+        await startHeartbeatLoop();
 
-        .notification-unread-dot {
-            width: 8px;
-            height: 8px;
+        startIncomingCallLoop();
 
-            flex-shrink: 0;
+        startOutgoingCallLoop();
 
-            margin-top: 7px;
 
-            border-radius: 50%;
+        console.log(
+            'ServiceCall connection restored.'
+        );
 
-            background: #20a27c;
-        }
+    } catch (error) {
 
+        console.error(
+            'Unable to restore ServiceCall connection:',
+            error
+        );
 
-        .notification-empty {
-            padding: 45px 25px;
 
-            background: white;
+        sendAuthStatus(
+            'warning',
+            'Saved ServiceNow connection could not be restored: ' +
+            error.message
+        );
+    }
+}
 
-            border:
-                1px dashed #ccd8d4;
+/* -------------------------------------------------------
+   INSTANCE URL
+------------------------------------------------------- */
 
-            border-radius: 12px;
+function normalizeInstanceUrl(value) {
 
-            text-align: center;
+    if (!value) {
+        return '';
+    }
 
-            color: #75837f;
-        }
+    value =
+        value.trim();
 
+    if (
+        !value.startsWith(
+            'https://'
+        )
+    ) {
+        value =
+            'https://' + value;
+    }
 
-        /* Small action button used inside notification cards */
+    value =
+        value.replace(
+            /\/+$/,
+            ''
+        );
 
-        .notification-action-button {
-            border:
-                1px solid #cfdad7;
+    return value;
+}
 
-            background: white;
-            color: #25463f;
 
-            padding: 7px 11px;
+function isValidServiceNowUrl(value) {
 
-            border-radius: 7px;
+    try {
 
-            font-size: 11px;
-            font-weight: 650;
+        const parsed =
+            new URL(value);
 
-            cursor: pointer;
+        return (
+            parsed.protocol === 'https:' &&
+            parsed.hostname.endsWith(
+                '.service-now.com'
+            )
+        );
 
-            transition:
-                background 0.15s ease,
-                border-color 0.15s ease;
-        }
+    } catch (error) {
 
+        return false;
+    }
+}
 
-        .notification-action-button:hover {
-            background: #f1f7f4;
 
-            border-color: #b8cbc5;
-        }
+/* -------------------------------------------------------
+   PKCE
+------------------------------------------------------- */
 
+function base64UrlEncode(buffer) {
 
-        .notification-action-button.primary {
-            border-color: #126e5a;
+    return buffer
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+}
 
-            background: #126e5a;
-            color: white;
-        }
 
+function generateCodeVerifier() {
 
-        .notification-action-button.primary:hover {
-            background: #0e5e4d;
-        }
+    return base64UrlEncode(
+        crypto.randomBytes(64)
+    );
+}
 
 
-        /* Read notifications remain visible,
-   but visually quieter. */
+function generateCodeChallenge(
+    verifier
+) {
 
-        .notification-card.read {
-            background: white;
+    const hash =
+        crypto
+            .createHash('sha256')
+            .update(verifier)
+            .digest();
 
-            border-color: #e4eae8;
-        }
+    return base64UrlEncode(
+        hash
+    );
+}
 
 
-        .notification-card.read .notification-title {
-            font-weight: 600;
-        }
+function generateState() {
 
+    return base64UrlEncode(
+        crypto.randomBytes(32)
+    );
+}
 
-        .notification-card.read .notification-icon {
-            background: #f1f4f3;
 
-            color: #70817c;
-        }
+/* -------------------------------------------------------
+   SEND STATUS TO DESKTOP WINDOW
+------------------------------------------------------- */
 
-        /* =================================================
-   NOTIFICATION ARRIVAL ANIMATIONS
-================================================= */
+function sendAuthStatus(
+    status,
+    message
+) {
 
-        @keyframes notificationNavPulse {
+    if (
+        mainWindow &&
+        !mainWindow.isDestroyed()
+    ) {
 
-            0% {
-                box-shadow:
-                    0 0 0 0 rgba(85, 214, 169, 0);
+        mainWindow.webContents.send(
+            'servicecall-auth-status',
+            {
+                status: status,
+                message: message
             }
+        );
+    }
+}
 
-            25% {
-                background:
-                    rgba(85, 214, 169, 0.18);
 
-                box-shadow:
-                    0 0 0 4px rgba(85, 214, 169, 0.08);
+/* -------------------------------------------------------
+   TOKEN EXCHANGE
+------------------------------------------------------- */
+
+async function exchangeAuthorizationCode(
+    code,
+    returnedState
+) {
+
+    const config =
+        loadConfig();
+
+    if (
+        !config.oauthState ||
+        returnedState !==
+            config.oauthState
+    ) {
+
+        throw new Error(
+            'OAuth state validation failed.'
+        );
+    }
+
+    if (
+        !config.pkceCodeVerifier
+    ) {
+
+        throw new Error(
+            'PKCE code verifier was not found.'
+        );
+    }
+
+    const tokenUrl =
+        config.instanceUrl +
+        '/oauth_token.do';
+
+    const body =
+        new URLSearchParams();
+
+    body.set(
+        'grant_type',
+        'authorization_code'
+    );
+
+    body.set(
+        'code',
+        code
+    );
+
+    body.set(
+        'redirect_uri',
+        config.redirectUri
+    );
+
+    body.set(
+        'client_id',
+        config.oauthClientId
+    );
+
+    body.set(
+        'code_verifier',
+        config.pkceCodeVerifier
+    );
+
+    body.set(
+        'state',
+        returnedState
+    );
+
+    const response =
+        await fetch(
+            tokenUrl,
+            {
+                method: 'POST',
+
+                headers: {
+                    'Content-Type':
+                        'application/x-www-form-urlencoded'
+                },
+
+                body:
+                    body.toString()
             }
+        );
 
-            55% {
-                background:
-                    rgba(85, 214, 169, 0.08);
-            }
+    const responseText =
+        await response.text();
 
-            100% {
-                box-shadow:
-                    0 0 0 0 rgba(85, 214, 169, 0);
+    let tokenData;
+
+    try {
+
+        tokenData =
+            JSON.parse(
+                responseText
+            );
+
+    } catch (error) {
+
+        throw new Error(
+            'ServiceNow returned an invalid token response.'
+        );
+    }
+
+    if (
+        !response.ok ||
+        !tokenData.access_token
+    ) {
+
+        throw new Error(
+            tokenData.error_description ||
+            tokenData.error ||
+            'Unable to obtain OAuth access token.'
+        );
+    }
+
+    config.accessToken =
+        tokenData.access_token;
+
+    config.tokenType =
+        tokenData.token_type ||
+        'Bearer';
+
+    config.expiresIn =
+        tokenData.expires_in || 0;
+
+    config.tokenObtainedAt =
+        Date.now();
+
+    if (tokenData.refresh_token) {
+ 
+    config.refreshToken =
+        tokenData.refresh_token;
+ 
+    console.log(
+        'ServiceCall refresh token received successfully.'
+    );
+ 
+} else {
+ 
+    console.log(
+        'ServiceCall refresh token was NOT returned.'
+    );
+}
+
+    /*
+       We no longer need these after
+       successful authentication.
+    */
+
+    delete config.pkceCodeVerifier;
+delete config.oauthState;
+
+saveConfig(config);
+
+await startHeartbeatLoop();
+
+startIncomingCallLoop();
+startOutgoingCallLoop();
+return tokenData;
+}
+
+async function ensureValidAccessToken() {
+ 
+    const config =
+        loadConfig();
+ 
+ 
+    if (!config.accessToken) {
+ 
+        const error =
+            new Error(
+                'ServiceCall is not authenticated.'
+            );
+ 
+        error.code =
+            'AUTHENTICATION_REQUIRED';
+ 
+        throw error;
+    }
+ 
+ 
+    /*
+     * If expiry information is unavailable,
+     * keep using the current token.
+     *
+     * The normal 401/403 refresh mechanism
+     * remains our fallback.
+     */
+    if (
+        !config.expiresIn ||
+        !config.tokenObtainedAt
+    ) {
+        return config.accessToken;
+    }
+ 
+ 
+    const expiresAt =
+        config.tokenObtainedAt +
+        (Number(config.expiresIn) * 1000);
+ 
+ 
+    /*
+     * Refresh 60 seconds before actual expiry.
+     */
+    const refreshAt =
+        expiresAt - 60000;
+ 
+ 
+    if (Date.now() >= refreshAt) {
+ 
+        console.log(
+            'ServiceCall access token is close to expiry. Renewing automatically...'
+        );
+ 
+        return await refreshAccessToken();
+    }
+ 
+ 
+    return config.accessToken;
+}
+
+async function refreshAccessToken() {
+ 
+    const config =
+        loadConfig();
+ 
+    if (
+        !config.instanceUrl ||
+        !config.oauthClientId ||
+        !config.refreshToken
+    ) {
+ 
+        const error =
+            new Error(
+                'A ServiceCall refresh token is not available.'
+            );
+ 
+        error.code =
+            'REAUTHENTICATION_REQUIRED';
+ 
+        throw error;
+    }
+ 
+ 
+    console.log(
+        'ServiceCall access token expired. Attempting automatic renewal...'
+    );
+ 
+ 
+    const tokenUrl =
+        config.instanceUrl.replace(/\/$/, '') +
+        '/oauth_token.do';
+ 
+ 
+    const body =
+        new URLSearchParams();
+ 
+    body.set(
+        'grant_type',
+        'refresh_token'
+    );
+ 
+    body.set(
+        'refresh_token',
+        config.refreshToken
+    );
+ 
+    body.set(
+        'client_id',
+        config.oauthClientId
+    );
+ 
+ 
+    const response =
+        await fetch(
+            tokenUrl,
+            {
+                method: 'POST',
+ 
+                headers: {
+                    'Content-Type':
+                        'application/x-www-form-urlencoded',
+ 
+                    'Accept':
+                        'application/json'
+                },
+ 
+                body:
+                    body.toString()
             }
+        );
+ 
+ 
+    const responseText =
+        await response.text();
+ 
+ 
+    let tokenData;
+ 
+    try {
+ 
+        tokenData =
+            JSON.parse(
+                responseText
+            );
+ 
+    } catch (error) {
+ 
+        const refreshError =
+            new Error(
+                'ServiceNow returned an invalid token renewal response.'
+            );
+ 
+        refreshError.code =
+            'TOKEN_REFRESH_FAILED';
+ 
+        throw refreshError;
+    }
+ 
+ 
+    if (
+        !response.ok ||
+        !tokenData.access_token
+    ) {
+ 
+        console.error(
+            'ServiceCall automatic token renewal failed.'
+        );
+ 
+ 
+        const refreshError =
+            new Error(
+                tokenData.error_description ||
+                tokenData.error ||
+                'ServiceNow authorization must be renewed.'
+            );
+ 
+        refreshError.code =
+            'REAUTHENTICATION_REQUIRED';
+ 
+        throw refreshError;
+    }
+ 
+ 
+    /*
+     * Store the NEW short-lived access token.
+     */
+    config.accessToken =
+        tokenData.access_token;
+ 
+    config.tokenType =
+        tokenData.token_type ||
+        'Bearer';
+ 
+    config.expiresIn =
+        tokenData.expires_in || 0;
+ 
+    config.tokenObtainedAt =
+        Date.now();
+ 
+ 
+    /*
+     * Some OAuth servers rotate refresh tokens.
+     * If ServiceNow gives us a new one,
+     * replace the previous refresh token.
+     */
+    if (tokenData.refresh_token) {
+ 
+        config.refreshToken =
+            tokenData.refresh_token;
+    }
+ 
+ 
+    saveConfig(config);
+ 
+ 
+    console.log(
+        'ServiceCall access token renewed automatically.'
+    );
+ 
+ 
+    return config.accessToken;
+}
+ 
+/* -------------------------------------------------------
+   LOCAL OAUTH CALLBACK SERVER
+------------------------------------------------------- */
+
+function stopCallbackServer() {
+
+    if (callbackServer) {
+
+        try {
+            callbackServer.close();
+        } catch (error) {
+            // Ignore shutdown errors.
         }
 
+        callbackServer = null;
+    }
+}
 
-        .notification-nav-button.notification-arrived {
-            animation:
-                notificationNavPulse 0.7s ease 3;
+
+function startCallbackServer() {
+
+    return new Promise(
+        (resolve, reject) => {
+
+            stopCallbackServer();
+
+            callbackServer =
+                http.createServer(
+                    async (
+                        request,
+                        response
+                    ) => {
+
+                        try {
+
+                            const callbackUrl =
+                                new URL(
+                                    request.url,
+                                    `http://${CALLBACK_HOST}:${CALLBACK_PORT}`
+                                );
+
+                            if (
+                                callbackUrl.pathname !==
+                                '/callback'
+                            ) {
+
+                                response.writeHead(
+                                    404,
+                                    {
+                                        'Content-Type':
+                                            'text/plain'
+                                    }
+                                );
+
+                                response.end(
+                                    'Not found.'
+                                );
+
+                                return;
+                            }
+
+                            const oauthError =
+                                callbackUrl
+                                    .searchParams
+                                    .get(
+                                        'error'
+                                    );
+
+                            if (oauthError) {
+
+                                const description =
+                                    callbackUrl
+                                        .searchParams
+                                        .get(
+                                            'error_description'
+                                        ) ||
+                                    oauthError;
+
+                                response.writeHead(
+                                    400,
+                                    {
+                                        'Content-Type':
+                                            'text/html; charset=utf-8'
+                                    }
+                                );
+
+                                response.end(`
+                                    <html>
+                                        <body style="
+                                            font-family: Arial, sans-serif;
+                                            text-align: center;
+                                            padding-top: 80px;
+                                        ">
+                                            <h2>ServiceCall authorization was not completed.</h2>
+                                            <p>You can close this browser window.</p>
+                                        </body>
+                                    </html>
+                                `);
+
+                                sendAuthStatus(
+                                    'error',
+                                    description
+                                );
+
+                                stopCallbackServer();
+
+                                return;
+                            }
+
+                            const code =
+                                callbackUrl
+                                    .searchParams
+                                    .get(
+                                        'code'
+                                    );
+
+                            const state =
+                                callbackUrl
+                                    .searchParams
+                                    .get(
+                                        'state'
+                                    );
+
+                            if (
+                                !code ||
+                                !state
+                            ) {
+
+                                throw new Error(
+                                    'Authorization code or state was missing.'
+                                );
+                            }
+
+                            await exchangeAuthorizationCode(
+                                code,
+                                state
+                            );
+
+                            response.writeHead(
+                                200,
+                                {
+                                    'Content-Type':
+                                        'text/html; charset=utf-8'
+                                }
+                            );
+
+                            response.end(`
+                                <!DOCTYPE html>
+                                <html>
+                                <head>
+                                    <title>ServiceCall Desktop</title>
+                                </head>
+
+                                <body style="
+                                    margin: 0;
+                                    background: #f3f7f6;
+                                    font-family: Arial, sans-serif;
+                                    color: #1f2d2a;
+                                ">
+
+                                    <div style="
+                                        max-width: 520px;
+                                        margin: 100px auto;
+                                        padding: 40px;
+                                        background: white;
+                                        border-radius: 12px;
+                                        text-align: center;
+                                        box-shadow: 0 8px 28px rgba(0,0,0,0.08);
+                                    ">
+
+                                        <h1 style="
+                                            margin-bottom: 12px;
+                                        ">
+                                            ServiceCall Desktop
+                                        </h1>
+
+                                        <h2 style="
+                                            color: #0b6b58;
+                                        ">
+                                            Connected successfully
+                                        </h2>
+
+                                        <p>
+                                            Your ServiceNow account is now connected
+                                            to ServiceCall Desktop.
+                                        </p>
+
+                                        <p>
+                                            You can close this browser window
+                                            and return to ServiceCall Desktop.
+                                        </p>
+
+                                    </div>
+
+                                </body>
+                                </html>
+                            `);
+
+                            sendAuthStatus(
+                                'connected',
+                                'ServiceNow sign-in completed successfully.'
+                            );
+
+                            if (
+                                mainWindow &&
+                                !mainWindow.isDestroyed()
+                            ) {
+
+                                mainWindow.show();
+                                mainWindow.focus();
+                            }
+
+                            setTimeout(
+                                stopCallbackServer,
+                                1000
+                            );
+
+                        } catch (error) {
+
+                            response.writeHead(
+                                500,
+                                {
+                                    'Content-Type':
+                                        'text/html; charset=utf-8'
+                                }
+                            );
+
+                            response.end(`
+                                <html>
+                                    <body style="
+                                        font-family: Arial, sans-serif;
+                                        text-align: center;
+                                        padding-top: 80px;
+                                    ">
+                                        <h2>ServiceCall connection failed.</h2>
+                                        <p>
+                                            Return to ServiceCall Desktop
+                                            and try again.
+                                        </p>
+                                    </body>
+                                </html>
+                            `);
+
+                            sendAuthStatus(
+                                'error',
+                                error.message
+                            );
+
+                            stopCallbackServer();
+                        }
+                    }
+                );
+
+            callbackServer.on(
+                'error',
+                (error) => {
+
+                    callbackServer =
+                        null;
+
+                    reject(error);
+                }
+            );
+
+            callbackServer.listen(
+                CALLBACK_PORT,
+                CALLBACK_HOST,
+                () => {
+
+                    resolve();
+                }
+            );
+        }
+    );
+}
+
+
+/* -------------------------------------------------------
+   WINDOW
+------------------------------------------------------- */
+
+function registerServiceCallProtocol() {
+
+    if (process.defaultApp) {
+
+        if (
+            process.argv.length >= 2
+        ) {
+
+            app.setAsDefaultProtocolClient(
+                SERVICECALL_PROTOCOL,
+                process.execPath,
+                [
+                    path.resolve(
+                        process.argv[1]
+                    )
+                ]
+            );
         }
 
-
-        @keyframes notificationCardArrival {
-
-            from {
-                opacity: 0;
-
-                transform:
-                    translateY(-7px);
-            }
-
-            to {
-                opacity: 1;
-
-                transform:
-                    translateY(0);
-            }
-        }
-
-
-        .notification-card-arriving {
-            animation:
-                notificationCardArrival 0.28s ease-out;
-        }
-
-        /* =================================================
-   NOTIFICATION RESPONSIVE
-================================================= */
-
-        @media (max-width: 760px) {
-
-            .notification-toolbar {
-                align-items: stretch;
-
-                flex-direction: column;
-            }
-
-
-            .notification-filters {
-                width: 100%;
-            }
-
-
-            .notification-title-row {
-                flex-direction: column;
-
-                gap: 4px;
-            }
-
-
-            .notification-time {
-                flex-shrink: 1;
-            }
-
-
-            .notification-card {
-                padding: 15px;
-            }
-
-        }
-
-
-        /* =================================================
-           SETTINGS
-        ================================================= */
-
-        .settings-card {
-            max-width: 650px;
-        }
-
-
-        .field-label {
-            display: block;
-
-            margin-bottom: 8px;
-
-            font-size: 13px;
-            font-weight: 650;
-        }
-
-
-        .text-input {
-            width: 100%;
-
-            padding: 12px 13px;
-
-            border:
-                1px solid #ccd8d4;
-
-            border-radius: 8px;
-
-            outline: none;
-        }
-
-
-        .text-input:focus {
-            border-color: #3c8b78;
-        }
-
-
-        .settings-actions {
-            display: flex;
-
-            flex-wrap: wrap;
-
-            gap: 9px;
-
-            margin-top: 15px;
-        }
-
-
-        #instanceMessage {
-            margin-top: 16px;
-
-            color: #526762;
-
-            font-size: 13px;
-        }
-
-
-        /* =================================================
-           PLACEHOLDER PAGES
-        ================================================= */
-
-        .placeholder {
-            padding: 40px;
-
-            text-align: center;
-
-            color: #71807d;
-        }
-
-
-        /* =================================================
-           RESPONSIVE
-        ================================================= */
-
-        @media (max-width: 760px) {
-
-            .sidebar {
-                width: 175px;
-                min-width: 175px;
-            }
-
-
-            .content {
-                padding: 20px;
-            }
-
-
-            .meeting-card {
-                align-items: flex-start;
-
-                flex-direction: column;
-            }
-
-
-            .meeting-actions {
-                width: 100%;
-
-                flex-wrap: wrap;
-            }
-
-
-            .meetings-toolbar {
-                align-items: stretch;
-
-                flex-direction: column;
-            }
-
-
-            .meeting-search-wrapper {
-                max-width: none;
-            }
-
-            .meeting-status-filter-wrapper {
-                justify-content: flex-end;
-            }
-
-
-            .meeting-status-filter {
-                flex: 1;
-            }
-
-            .meeting-details-modal {
-                padding: 16px;
-            }
-
-
-            .meeting-details-dialog {
-                max-height:
-                    calc(100vh - 32px);
-            }
-
-
-            .meeting-details-grid {
-                grid-template-columns: 1fr;
-            }
-
-
-            .meeting-details-participant {
-                align-items: flex-start;
-
-                flex-direction: column;
-            }
-
-
-            .meeting-details-participant-statuses {
-                justify-content: flex-start;
-            }
-
-            .schedule-meeting-modal {
-                padding: 16px;
-            }
-
-
-            .schedule-meeting-dialog {
-                max-height:
-                    calc(100vh - 32px);
-            }
-
-
-            .schedule-meeting-time-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* =====================================================
-   NOTIFICATION LIST / DETAIL TRANSITION
+    } else {
+
+        app.setAsDefaultProtocolClient(
+            SERVICECALL_PROTOCOL
+        );
+    }
+}
+
+/* =====================================================
+   SERVICECALL DEEP LINK HANDLING
 ===================================================== */
 
-        #notificationsView {
-            position: relative;
-            overflow: hidden;
-        }
+let pendingDeepLink = null;
 
 
-        /*
- * Both notification screens use the
- * same content area.
+/*
+ * Extract a ServiceCall deep link from
+ * Electron command-line arguments.
  */
-        .notification-panel {
-            width: 100%;
-        }
+function getServiceCallDeepLink(
+    args
+) {
+
+    if (!Array.isArray(args)) {
+        return null;
+    }
 
 
-        /* -----------------------------------------------------
-   LIST PANEL
------------------------------------------------------ */
-
-        .notification-list-panel {
-            transform: translateX(0);
-            opacity: 1;
-
-            transition:
-                transform 220ms ease,
-                opacity 180ms ease;
-        }
+    const deepLink =
+        args.find(
+            arg =>
+                typeof arg === 'string' &&
+                arg.startsWith(
+                    'servicecall://'
+                )
+        );
 
 
-        /*
- * Move the list slightly left when
- * notification details are open.
- */
-        .notification-list-panel.detail-open {
-            display: none;
-            transform: translateX(-35px);
-            opacity: 0;
-            pointer-events: none;
-        }
+    return deepLink || null;
+}
 
 
-        /* -----------------------------------------------------
-   DETAIL PANEL
------------------------------------------------------ */
-
-        .notification-detail-panel {
-            display: none;
-
-            transform: translateX(45px);
-            opacity: 0;
-        }
-
-
-        /*
- * Temporary visible state.
+/*
+ * Handle the received deep link.
  *
- * JavaScript will add this when a
- * notification is opened.
+ * For now we only store and log it.
+ * Renderer navigation comes next.
  */
-        .notification-detail-panel.active {
-            display: block;
+function handleServiceCallDeepLink(
+    deepLink
+) {
 
-            animation:
-                notificationDetailEnter 220ms ease forwards;
-        }
+    if (
+        !deepLink ||
+        !deepLink.startsWith(
+            SERVICECALL_PROTOCOL +
+            '://'
+        )
+    ) {
+        return;
+    }
 
 
-        @keyframes notificationDetailEnter {
+    pendingDeepLink =
+        deepLink;
 
-            from {
-                transform: translateX(45px);
-                opacity: 0;
+
+    console.log(
+        'ServiceCall deep link received:',
+        deepLink
+    );
+
+
+    /*
+     * If the renderer is already loaded,
+     * send the link immediately.
+     */
+    if (
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        !mainWindow.webContents.isLoading()
+    ) {
+
+        mainWindow.webContents.send(
+            'servicecall-deep-link',
+            {
+                url:
+                    deepLink
             }
-
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-
-
-        /* -----------------------------------------------------
-   BACK BUTTON
------------------------------------------------------ */
-
-        .notification-detail-back {
-            appearance: none;
-
-            border: 0;
-            background: transparent;
-
-            padding: 0;
-            margin: 0 0 26px 0;
-
-            font-size: 14px;
-            font-weight: 600;
-
-            cursor: pointer;
-
-            color: inherit;
-
-            opacity: 0.72;
-
-            transition:
-                opacity 150ms ease,
-                transform 150ms ease;
-        }
-
-
-        .notification-detail-back:hover {
-            opacity: 1;
-            transform: translateX(-2px);
-        }
-
-
-        /* -----------------------------------------------------
-   DETAIL HEADER
------------------------------------------------------ */
-
-        .notification-detail-header {
-            display: flex;
-            align-items: flex-start;
-
-            gap: 18px;
-
-            padding-bottom: 24px;
-
-            border-bottom:
-                1px solid rgba(0, 0, 0, 0.08);
-        }
-
-
-        .notification-detail-icon {
-            width: 48px;
-            height: 48px;
-
-            flex: 0 0 48px;
-
-            display: flex;
-            align-items: center;
-            justify-content: center;
-
-            border-radius: 14px;
-
-            font-size: 22px;
-
-            background:
-                rgba(0, 0, 0, 0.045);
-        }
-
-
-        .notification-detail-heading {
-            min-width: 0;
-        }
-
-
-        .notification-detail-type {
-            margin-bottom: 6px;
-
-            font-size: 12px;
-            font-weight: 700;
-
-            text-transform: uppercase;
-
-            letter-spacing: 0.06em;
-
-            opacity: 0.55;
-        }
-
-
-        .notification-detail-title {
-            margin: 0;
-
-            font-size: 24px;
-            line-height: 1.3;
-
-            font-weight: 700;
-        }
-
-
-        .notification-detail-time {
-            margin-top: 8px;
-
-            font-size: 13px;
-
-            opacity: 0.58;
-        }
-
-
-        /* -----------------------------------------------------
-   MESSAGE
------------------------------------------------------ */
-
-        .notification-detail-content {
-            padding: 28px 0;
-        }
-
-
-        .notification-detail-message {
-            margin: 0;
-
-            max-width: 760px;
-
-            font-size: 15px;
-            line-height: 1.75;
-
-            white-space: pre-wrap;
-        }
-
-
-        /* -----------------------------------------------------
-   ACTIONS
------------------------------------------------------ */
-
-        .notification-detail-actions {
-            display: flex;
-
-            align-items: center;
-
-            gap: 10px;
-
-            flex-wrap: wrap;
-
-            margin-top: 8px;
-        }
-
-        /* =====================================================
-   NOTIFICATION BACK TRANSITION
-===================================================== */
-
-        .notification-detail-panel.closing {
-            display: block;
-
-            animation:
-                notificationDetailExit 180ms ease forwards;
-        }
-
-
-        @keyframes notificationDetailExit {
-
-            from {
-                transform: translateX(0);
-                opacity: 1;
-            }
-
-            to {
-                transform: translateX(35px);
-                opacity: 0;
-            }
-        }
+        );
 
 
         /*
- * Smoothly restore notification list.
+         * The renderer now owns this link,
+         * so it is no longer pending.
+         */
+        pendingDeepLink =
+            null;
+    }
+}
+
+function showMainWindow() {
+
+    if (
+        mainWindow &&
+        !mainWindow.isDestroyed()
+    ) {
+
+        if (
+            mainWindow.isMinimized()
+        ) {
+            mainWindow.restore();
+        }
+
+        mainWindow.show();
+        mainWindow.focus();
+
+        return;
+    }
+
+    createWindow();
+}
+
+function createWindow() {
+
+    mainWindow =
+        new BrowserWindow({
+            width: 900,
+            height: 650,
+
+            minWidth: 700,
+            minHeight: 500,
+
+            title:
+                'ServiceCall Desktop',
+
+            webPreferences: {
+
+                preload:
+                    path.join(
+                        __dirname,
+                        'preload.js'
+                    ),
+
+                contextIsolation:
+                    true,
+
+                nodeIntegration:
+                    false
+            }
+        });
+
+    mainWindow.loadFile(
+        'index.html'
+    );
+
+    mainWindow.on(
+    'close',
+    (event) => {
+
+        if (!isQuitting) {
+
+            event.preventDefault();
+
+            mainWindow.hide();
+        }
+    }
+);
+}
+
+/* =====================================================
+   SERVICECALL DESKTOP NOTIFICATION POPUP
+===================================================== */
+
+function showNotificationPopup(
+    notification
+) {
+
+    if (
+        !notification ||
+        !notification.sys_id
+    ) {
+        return;
+    }
+
+
+    /*
+     * For V1 we display one popup at a time.
+     *
+     * If another notification arrives while one
+     * is visible, close the old popup first.
+     *
+     * We can add stacking later.
+     */
+    if (
+        notificationPopupWindow &&
+        !notificationPopupWindow.isDestroyed()
+    ) {
+
+        notificationPopupWindow.destroy();
+
+        notificationPopupWindow =
+            null;
+    }
+
+
+    const {
+        screen
+    } = require(
+        'electron'
+    );
+
+
+    const display =
+        screen.getPrimaryDisplay();
+
+
+    const workArea =
+        display.workArea;
+
+
+    const popupWidth =
+        380;
+
+    const popupHeight =
+        150;
+
+    const margin =
+        18;
+
+
+    const popupX =
+        Math.round(
+            workArea.x +
+            workArea.width -
+            popupWidth -
+            margin
+        );
+
+
+    const popupY =
+        Math.round(
+            workArea.y +
+            workArea.height -
+            popupHeight -
+            margin
+        );
+
+
+    notificationPopupWindow =
+        new BrowserWindow({
+
+            width:
+                popupWidth,
+
+            height:
+                popupHeight,
+
+            x:
+                popupX,
+
+            y:
+                popupY,
+
+            frame:
+                false,
+
+            transparent:
+                true,
+
+            resizable:
+                false,
+
+            movable:
+                false,
+
+            minimizable:
+                false,
+
+            maximizable:
+                false,
+
+            fullscreenable:
+                false,
+
+            skipTaskbar:
+                true,
+
+            alwaysOnTop:
+                true,
+
+            show:
+                false,
+
+            focusable:
+                true,
+
+            webPreferences: {
+
+                preload:
+                    path.join(
+                        __dirname,
+                        'preload.js'
+                    ),
+
+                contextIsolation:
+                    true,
+
+                nodeIntegration:
+                    false
+            }
+        });
+
+
+    notificationPopupWindow.loadFile(
+        'notification-popup.html',
+        {
+            query: {
+
+                notificationSysId:
+                    String(
+                        notification.sys_id ||
+                        ''
+                    ),
+
+                type:
+                    String(
+                        notification.type_display ||
+                        notification.type ||
+                        'Notification'
+                    ),
+
+                title:
+                    String(
+                        notification.title ||
+                        'ServiceCall'
+                    ),
+
+                message:
+                    String(
+                        notification.message ||
+                        ''
+                    ),
+
+                meetingSysId:
+                    String(
+                        notification.meeting_sys_id ||
+                        ''
+                    ),
+
+                callSysId:
+                    String(
+                        notification.call_sys_id ||
+                        ''
+                    )
+            }
+        }
+    );
+
+
+    notificationPopupWindow.once(
+        'ready-to-show',
+        () => {
+
+            if (
+                !notificationPopupWindow ||
+                notificationPopupWindow.isDestroyed()
+            ) {
+                return;
+            }
+
+
+            /*
+             * Show without stealing keyboard focus
+             * from whatever the user is doing.
+             */
+            notificationPopupWindow.showInactive();
+        }
+    );
+
+
+    notificationPopupWindow.on(
+        'closed',
+        () => {
+
+            notificationPopupWindow =
+                null;
+        }
+    );
+}
+
+/* -------------------------------------------------------
+   TEMPORARY POPUP TEST
+------------------------------------------------------- */
+
+ipcMain.handle(
+    'servicecall-test-notification-popup',
+
+    async () => {
+
+        showNotificationPopup({
+
+            sys_id:
+                'test-notification',
+
+            type:
+                'meeting started',
+
+            type_display:
+                'Meeting Started',
+
+            title:
+                'Meeting started',
+
+            message:
+                '"ServiceCall Test Meeting" has started.',
+
+            meeting_sys_id:
+                '',
+
+            call_sys_id:
+                ''
+        });
+
+
+        return {
+            success: true
+        };
+    }
+);
+
+function createTray() {
+
+    if (tray) {
+        return;
+    }
+
+    /*
+       Temporary tray icon:
+       Electron will use the app icon later.
+       For now we can create the tray only
+       after we add a proper icon file.
+    */
+
+    const trayMenu =
+        Menu.buildFromTemplate([
+            {
+                label: 'Open ServiceCall',
+                click: () => {
+
+                    if (
+                        mainWindow &&
+                        !mainWindow.isDestroyed()
+                    ) {
+
+                        mainWindow.show();
+                        mainWindow.focus();
+                    }
+                }
+            },
+
+            {
+                type: 'separator'
+            },
+
+            {
+                label: 'Quit ServiceCall',
+                click: () => {
+
+                    isQuitting = true;
+
+                    stopHeartbeatLoop();
+                    stopCallbackServer();
+
+                    app.quit();
+                }
+            }
+        ]);
+
+    return trayMenu;
+}
+
+/* -------------------------------------------------------
+   SAVE INSTANCE
+------------------------------------------------------- */
+
+ipcMain.handle(
+    'servicecall-get-connection-status',
+
+    async () => {
+
+        const config =
+            loadConfig();
+
+        if (
+            config.instanceUrl &&
+            config.accessToken &&
+            heartbeatTimer
+        ) {
+
+            return {
+                connected: true,
+
+                message:
+                    'ServiceCall Desktop is connected.'
+            };
+        }
+
+        return {
+            connected: false,
+
+            message:
+                'Sign in to ServiceNow to connect ServiceCall Desktop.'
+        };
+    }
+);
+
+ipcMain.handle(
+    'servicecall-save-instance',
+
+    async (
+        event,
+        instanceUrl
+    ) => {
+
+        const normalizedUrl =
+            normalizeInstanceUrl(
+                instanceUrl
+            );
+
+        if (
+            !isValidServiceNowUrl(
+                normalizedUrl
+            )
+        ) {
+
+            return {
+                success: false,
+
+                message:
+                    'Please enter a valid ServiceNow instance URL, for example https://dev12345.service-now.com'
+            };
+        }
+
+        const config =
+            loadConfig();
+
+        config.instanceUrl =
+    normalizedUrl;
+
+const configUrl =
+    normalizedUrl +
+    '/api/x_1806573_servic_0/servicecall_desktop_api/config';
+
+const configResponse =
+    await fetch(
+        configUrl,
+        {
+            method: 'GET',
+
+            headers: {
+                'Accept':
+                    'application/json'
+            }
+        }
+    );
+
+const configText =
+    await configResponse.text();
+
+let serviceCallConfig;
+
+try {
+
+    serviceCallConfig =
+        JSON.parse(
+            configText
+        );
+
+} catch (error) {
+
+    return {
+        success: false,
+        message:
+            'The ServiceNow instance returned an invalid ServiceCall configuration.'
+    };
+}
+
+const result =
+    serviceCallConfig.result ||
+    serviceCallConfig;
+
+if (
+    !configResponse.ok ||
+    !result.success
+) {
+
+    return {
+        success: false,
+        message:
+            result.message ||
+            'Unable to retrieve ServiceCall configuration from this instance.'
+    };
+}
+
+if (
+    !result.oauth_client_id ||
+    !result.redirect_uri ||
+    !result.oauth_scope ||
+    !result.heartbeat_path
+) {
+
+    return {
+        success: false,
+        message:
+            'ServiceCall Desktop is not fully configured on this ServiceNow instance.'
+    };
+}
+
+config.oauthClientId =
+    result.oauth_client_id;
+
+config.redirectUri =
+    result.redirect_uri;
+
+config.oauthScope =
+    result.oauth_scope;
+
+config.heartbeatPath =
+    result.heartbeat_path;
+
+        saveConfig(config);
+
+        return {
+            success: true,
+
+            message:
+                'ServiceNow instance saved successfully.',
+
+            instanceUrl:
+                normalizedUrl
+        };
+    }
+);
+
+
+/* -------------------------------------------------------
+   GET INSTANCE
+------------------------------------------------------- */
+
+ipcMain.handle(
+    'servicecall-get-instance',
+
+    async () => {
+
+        const config =
+            loadConfig();
+
+        return {
+            success: true,
+
+            instanceUrl:
+                config.instanceUrl ||
+                ''
+        };
+    }
+);
+
+
+/* -------------------------------------------------------
+   START OAUTH LOGIN
+------------------------------------------------------- */
+
+ipcMain.handle(
+    'servicecall-start-login',
+
+    async () => {
+
+        try {
+
+            const config =
+                loadConfig();
+
+            if (
+                !config.instanceUrl ||
+                !config.oauthClientId
+            ) {
+
+                return {
+                    success: false,
+
+                    message:
+                        'Please save your ServiceNow instance first.'
+                };
+            }
+
+            /*
+               Start localhost listener BEFORE
+               opening the browser.
+            */
+
+            await startCallbackServer();
+
+            const codeVerifier =
+                generateCodeVerifier();
+
+            const codeChallenge =
+                generateCodeChallenge(
+                    codeVerifier
+                );
+
+            const state =
+                generateState();
+
+            config.pkceCodeVerifier =
+                codeVerifier;
+
+            config.oauthState =
+                state;
+
+            saveConfig(config);
+
+            const authorizeUrl =
+                new URL(
+                    config.instanceUrl +
+                    '/oauth_auth.do'
+                );
+
+            authorizeUrl
+                .searchParams
+                .set(
+                    'response_type',
+                    'code'
+                );
+
+            authorizeUrl
+                .searchParams
+                .set(
+                    'client_id',
+                    config.oauthClientId
+                );
+
+            authorizeUrl
+                .searchParams
+                .set(
+                    'redirect_uri',
+                    config.redirectUri
+                );
+
+            authorizeUrl
+                .searchParams
+                .set(
+                    'scope',
+                    config.oauthScope
+                );
+
+            authorizeUrl
+                .searchParams
+                .set(
+                    'code_challenge',
+                    codeChallenge
+                );
+
+            authorizeUrl
+                .searchParams
+                .set(
+                    'code_challenge_method',
+                    'S256'
+                );
+
+            authorizeUrl
+                .searchParams
+                .set(
+                    'state',
+                    state
+                );
+
+            await shell.openExternal(
+                authorizeUrl.toString()
+            );
+
+            return {
+                success: true,
+
+                message:
+                    'ServiceNow sign-in opened in your browser.'
+            };
+
+        } catch (error) {
+
+            stopCallbackServer();
+
+            return {
+                success: false,
+
+                message:
+                    error.message
+            };
+        }
+    }
+);
+
+const gotSingleInstanceLock =
+    app.requestSingleInstanceLock();
+
+
+if (!gotSingleInstanceLock) {
+
+    app.quit();
+
+} else {
+
+    app.on(
+        'second-instance',
+        (
+            event,
+            commandLine
+        ) => {
+
+            const deepLink =
+                getServiceCallDeepLink(
+                    commandLine
+                );
+
+
+            if (deepLink) {
+
+                handleServiceCallDeepLink(
+                    deepLink
+                );
+            }
+
+
+            showMainWindow();
+        }
+    );
+}
+
+app.whenReady().then(
+    async () => {
+
+        registerServiceCallProtocol();
+
+
+        /*
+         * Was ServiceCall launched by a
+         * servicecall:// URL?
+         */
+        const startupDeepLink =
+            getServiceCallDeepLink(
+                process.argv
+            );
+
+
+        if (startupDeepLink) {
+
+            handleServiceCallDeepLink(
+                startupDeepLink
+            );
+        }
+
+
+        createWindow();
+
+
+        await restoreSavedConnection();
+
+        app.on(
+            'activate',
+
+            () => {
+
+                if (
+                    BrowserWindow
+                        .getAllWindows()
+                        .length === 0
+                ) {
+
+                    createWindow();
+                }
+            }
+        );
+    }
+);
+
+app.on(
+    'window-all-closed',
+
+    () => {
+
+        // stopHeartbeatLoop();
+        // stopCallbackServer();
+
+        // if (
+        //     process.platform !==
+        //     'darwin'
+        // ) {
+
+        //     app.quit();
+        // }
+    }
+);
+
+app.on(
+    'before-quit',
+    () => {
+
+        isQuitting = true;
+
+
+        stopHeartbeatLoop();
+        stopIncomingCallLoop();
+        stopCallbackServer();
+        stopOutgoingCallLoop();
+    }
+);
+
+app.on(
+    'open-url',
+    (
+        event,
+        url
+    ) => {
+
+        event.preventDefault();
+
+
+        handleServiceCallDeepLink(
+            url
+        );
+
+
+        showMainWindow();
+    }
+);
+
+let callWindow = null;
+
+function showCallWindow(
+    mode,
+    callData
+) {
+
+    const callSysId =
+        callData.callSysId || '';
+
+
+    /*
+     * If this exact call window is already open,
+     * simply bring it to the front.
+     */
+    if (
+        callWindow &&
+        !callWindow.isDestroyed() &&
+        activeCallWindowId === callSysId
+    ) {
+
+        if (callWindow.isMinimized()) {
+            callWindow.restore();
+        }
+
+        callWindow.show();
+        callWindow.focus();
+
+        return;
+    }
+
+
+    /*
+     * Do not replace an existing active call
+     * with another incoming/outgoing call.
+     */
+    if (
+        callWindow &&
+        !callWindow.isDestroyed() &&
+        activeCallWindowId &&
+        activeCallWindowId !== callSysId
+    ) {
+
+        console.log(
+            'Another ServiceCall window is already active:',
+            activeCallWindowId
+        );
+
+        return;
+    }
+
+
+    activeCallWindowId =
+        callSysId;
+
+
+    callWindow =
+        new BrowserWindow({
+            width: 440,
+            height: 560,
+
+            minWidth: 440,
+            minHeight: 560,
+
+            resizable: false,
+
+            title:
+                'ServiceCall',
+
+            autoHideMenuBar:
+                true,
+
+            show:
+                false,
+
+            webPreferences: {
+
+                preload:
+                    path.join(
+                        __dirname,
+                        'preload.js'
+                    ),
+
+                contextIsolation:
+                    true,
+
+                nodeIntegration:
+                    false
+            }
+        });
+
+
+    callWindow.loadFile(
+    'call-window.html',
+    {
+        query: {
+
+            mode:
+                mode,
+
+            callSysId:
+                callSysId,
+
+            callNumber:
+                callData.callNumber ||
+                '',
+
+            name:
+                callData.name ||
+                'Unknown User',
+
+            department:
+                callData.department ||
+                '',
+
+            isConference:
+                callData.isConference
+                    ? 'true'
+                    : 'false',
+
+            /*
+             * MEETING CONTEXT
+             *
+             * Normal calls will simply receive
+             * isMeeting=false and empty values.
+             */
+            isMeeting:
+                callData.isMeeting
+                    ? 'true'
+                    : 'false',
+
+            meetingSysId:
+                callData.meetingSysId ||
+                '',
+
+            meetingNumber:
+                callData.meetingNumber ||
+                '',
+
+            meetingTitle:
+                callData.meetingTitle ||
+                ''
+        }
+    }
+);
+
+
+    callWindow.once(
+        'ready-to-show',
+        () => {
+
+            if (
+                callWindow &&
+                !callWindow.isDestroyed()
+            ) {
+
+                callWindow.show();
+                callWindow.focus();
+            }
+        }
+    );
+
+    callWindow.on(
+    'close',
+    async (event) => {
+
+        /*
+         * Allow the window to actually close
+         * after we finish our own handling.
+         */
+        if (callWindowClosing) {
+            return;
+        }
+
+
+        event.preventDefault();
+
+
+        /*
+         * No call sys_id means there is nothing
+         * to update in ServiceNow.
+         */
+        if (!callSysId) {
+
+            callWindowClosing = true;
+
+            callWindow.close();
+
+            return;
+        }
+
+
+        try {
+
+            const result =
+                await serviceCallApiRequest(
+                    '/call-status?call_sys_id=' +
+                    encodeURIComponent(
+                        callSysId
+                    ),
+                    'GET'
+                );
+
+
+            const state =
+                result.state || '';
+
+/*
+             * -------------------------------------------------
+             * RINGING / INVITED PARTICIPANT
+             * -------------------------------------------------
+             *
+             * Direct outgoing:
+             * X = Cancel Call
+             *
+             * Direct incoming:
+             * X = Decline Call
+             *
+             * Conference invitation:
+             * Call itself may already be connected,
+             * but this participant is still ringing.
+             * X = Decline conference invitation.
+             */
+            const participantStatus =
+                result.participant_status || '';
+
+
+            if (
+                participantStatus === 'ringing' ||
+                participantStatus === 'invited'
+            ) {
+
+                /*
+                 * Original caller cancelling
+                 * an unanswered direct call.
+                 */
+                if (
+                    mode === 'calling' &&
+                    state === 'ringing'
+                ) {
+
+                    await serviceCallApiRequest(
+                        '/cancel-call',
+                        'POST',
+                        {
+                            call_sys_id:
+                                callSysId
+                        }
+                    );
+
+                } else {
+
+                    /*
+                     * Direct incoming receiver
+                     * OR conference invite receiver.
+                     */
+                    await serviceCallApiRequest(
+                        '/decline-call',
+                        'POST',
+                        {
+                            call_sys_id:
+                                callSysId
+                        }
+                    );
+                }
+
+
+                callWindowClosing =
+                    true;
+
+                callWindow.close();
+
+                return;
+            }
+
+
+            /*
+             * -------------------------------------------------
+             * CONNECTED
+             * -------------------------------------------------
+             *
+             * X does NOT end or leave a connected call.
+             *
+             * It only hides the call window.
+             * The call/audio continues in the background.
+             */
+            if (
+                state === 'connected' &&
+                participantStatus === 'connected'
+            ) {
+
+                callWindow.hide();
+
+                return;
+            }
+
+
+            /*
+             * -------------------------------------------------
+             * TERMINAL STATES
+             * -------------------------------------------------
+             *
+             * The call has already finished,
+             * so the window can close normally.
+             */
+            if (
+                state === 'completed' ||
+                state === 'cancelled' ||
+                state === 'declined' ||
+                state === 'failed'
+            ) {
+
+                callWindowClosing =
+                    true;
+
+                callWindow.close();
+
+                return;
+            }
+
+
+            /*
+             * Unknown/unexpected state:
+             *
+             * Safest behavior is to hide the
+             * window rather than accidentally
+             * terminating a live call.
+             */
+            callWindow.hide();
+
+
+        } catch (error) {
+
+            console.error(
+                'ServiceCall window close handling failed:',
+                error
+            );
+
+
+            /*
+             * If ServiceNow cannot be reached,
+             * do NOT accidentally terminate
+             * a live call.
+             */
+            if (
+                callWindow &&
+                !callWindow.isDestroyed()
+            ) {
+
+                callWindow.hide();
+            }
+        }
+    }
+);
+
+
+    callWindow.on(
+        'closed',
+        () => {
+
+            callWindow =
+                null;
+
+            callWindowClosing =
+                false;
+
+            activeCallWindowId =
+                null;
+
+
+            if (
+                activeIncomingCallId ===
+                callSysId
+            ) {
+
+                activeIncomingCallId =
+                    null;
+            }
+
+
+            if (
+                activeOutgoingCallId ===
+                callSysId
+            ) {
+
+                activeOutgoingCallId =
+                    null;
+            }
+        }
+    );
+}
+        
+async function serviceCallApiRequest(
+    pathName,
+    method = 'GET',
+    body = null,
+    allowRefresh = true
+) {
+ 
+    let config =
+        loadConfig();
+
+    const validAccessToken =
+    await ensureValidAccessToken();
+ 
+    if (
+        !config ||
+        !config.instanceUrl ||
+        !config.accessToken
+    ) {
+        throw new Error(
+            'ServiceCall Desktop is not connected to ServiceNow.'
+        );
+    }
+ 
+ 
+    const url =
+        config.instanceUrl.replace(/\/$/, '') +
+        '/api/x_1806573_servic_0/servicecall_desktop_api' +
+        pathName;
+ 
+ 
+    const options = {
+        method: method,
+ 
+        headers: {
+            'Accept':
+                'application/json',
+ 
+            'Authorization':
+                'Bearer ' +
+                validAccessToken
+        }
+    };
+ 
+ 
+    if (body) {
+ 
+        options.headers['Content-Type'] =
+            'application/json';
+ 
+        options.body =
+            JSON.stringify(body);
+    }
+ 
+ 
+    let response =
+        await fetch(
+            url,
+            options
+        );
+ 
+ 
+    /*
+     * -------------------------------------------------
+     * ACCESS TOKEN EXPIRED
+     * -------------------------------------------------
+     *
+     * Try ONE automatic refresh.
+     *
+     * We only retry once so a bad/revoked refresh
+     * token cannot create an infinite loop.
+     */
+    if (
+        (
+            response.status === 401 ||
+            response.status === 403
+        ) &&
+        allowRefresh
+    ) {
+ 
+        console.log(
+            'ServiceCall API authorization expired. Trying automatic renewal...'
+        );
+ 
+ 
+        try {
+ 
+            const newAccessToken =
+                await refreshAccessToken();
+ 
+ 
+            /*
+             * Retry the ORIGINAL request using
+             * the newly issued access token.
+             */
+            options.headers['Authorization'] =
+                'Bearer ' +
+                newAccessToken;
+ 
+ 
+            response =
+                await fetch(
+                    url,
+                    options
+                );
+ 
+ 
+        } catch (refreshError) {
+ 
+            console.error(
+                'Automatic ServiceCall authorization renewal failed:',
+                refreshError.message
+            );
+ 
+ 
+            const error =
+                new Error(
+                    'Your ServiceCall authorization has expired. Please sign in to ServiceNow again.'
+                );
+ 
+            error.code =
+                'AUTHENTICATION_REQUIRED';
+ 
+            throw error;
+        }
+    }
+ 
+ 
+    let data = {};
+ 
+    try {
+ 
+        data =
+            await response.json();
+ 
+    } catch (error) {
+ 
+        data = {};
+    }
+ 
+ 
+    const result =
+        data.result || data;
+ 
+ 
+    /*
+     * If we're STILL unauthorized after refreshing,
+     * the long-lived authorization is no longer usable.
+     */
+    if (
+        response.status === 401 ||
+        response.status === 403
+    ) {
+ 
+        const error =
+            new Error(
+                'Your ServiceCall authorization has expired. Please sign in to ServiceNow again.'
+            );
+ 
+        error.code =
+            'AUTHENTICATION_REQUIRED';
+ 
+        throw error;
+    }
+ 
+ 
+    if (!response.ok) {
+ 
+        const error =
+            new Error(
+                result.message ||
+                'ServiceCall request failed.'
+            );
+ 
+        error.code =
+            result.code ||
+            'SERVICECALL_API_ERROR';
+ 
+        throw error;
+    }
+ 
+ 
+    return result;
+}
+
+ipcMain.handle(
+    'servicecall-accept-call',
+    async (
+        event,
+        callSysId
+    ) => {
+
+        return await serviceCallApiRequest(
+            '/accept-call',
+            'POST',
+            {
+                call_sys_id:
+                    callSysId
+            }
+        );
+    }
+);
+
+
+ipcMain.handle(
+    'servicecall-decline-call',
+    async (
+        event,
+        callSysId
+    ) => {
+
+        return await serviceCallApiRequest(
+            '/decline-call',
+            'POST',
+            {
+                call_sys_id:
+                    callSysId
+            }
+        );
+    }
+);
+
+
+ipcMain.handle(
+    'servicecall-cancel-call',
+    async (
+        event,
+        callSysId
+    ) => {
+
+        return await serviceCallApiRequest(
+            '/cancel-call',
+            'POST',
+            {
+                call_sys_id:
+                    callSysId
+            }
+        );
+    }
+);
+
+
+ipcMain.handle(
+    'servicecall-end-call',
+    async (
+        event,
+        callSysId
+    ) => {
+
+        return await serviceCallApiRequest(
+            '/end-call',
+            'POST',
+            {
+                call_sys_id:
+                    callSysId
+            }
+        );
+    }
+);
+
+
+ipcMain.handle(
+    'servicecall-get-call-status',
+    async (
+        event,
+        callSysId
+    ) => {
+
+        return await serviceCallApiRequest(
+            '/call-status?call_sys_id=' +
+            encodeURIComponent(
+                callSysId
+            ),
+            'GET'
+        );
+    }
+);
+
+ipcMain.handle(
+    'servicecall-download-recording',
+ 
+    async (
+        event,
+        recordingSysId
+    ) => {
+ 
+        if (!recordingSysId) {
+ 
+            return {
+                success: false,
+                code: 'RECORDING_ID_REQUIRED',
+                message: 'Recording ID was not provided.'
+            };
+        }
+ 
+ 
+        try {
+ 
+            /*
+             * -----------------------------------------
+             * 1. ASK SERVICENOW IF THIS USER
+             *    MAY DOWNLOAD THIS RECORDING
+             * -----------------------------------------
+             */
+ 
+            const downloadInfo =
+                await serviceCallApiRequest(
+                    '/recording-download' +
+                    '?recording_sys_id=' +
+                    encodeURIComponent(
+                        recordingSysId
+                    ),
+                    'GET'
+                );
+ 
+ 
+            if (
+                !downloadInfo ||
+                downloadInfo.success !== true ||
+                !downloadInfo.attachment_sys_id
+            ) {
+ 
+                throw new Error(
+                    downloadInfo &&
+                    downloadInfo.message
+                        ? downloadInfo.message
+                        : 'Recording download was not authorized.'
+                );
+            }
+ 
+ 
+            /*
+             * -----------------------------------------
+             * 2. GET CURRENT INSTANCE + OAUTH TOKEN
+             * -----------------------------------------
+             */
+ 
+            const config =
+                loadConfig();
+ 
+ 
+            if (
+                !config ||
+                !config.instanceUrl
+            ) {
+ 
+                throw new Error(
+                    'ServiceCall Desktop is not connected to ServiceNow.'
+                );
+            }
+ 
+ 
+            let accessToken =
+                await ensureValidAccessToken();
+ 
+ 
+            const attachmentUrl =
+                config.instanceUrl
+                    .replace(/\/$/, '') +
+                '/api/now/attachment/' +
+                encodeURIComponent(
+                    downloadInfo.attachment_sys_id
+                ) +
+                '/file';
+ 
+ 
+            async function performDownload(
+                token
+            ) {
+ 
+                return await fetch(
+                    attachmentUrl,
+                    {
+                        method: 'GET',
+ 
+                        headers: {
+                            'Authorization':
+                                'Bearer ' +
+                                token
+                        }
+                    }
+                );
+            }
+ 
+ 
+            /*
+             * -----------------------------------------
+             * 3. DOWNLOAD ATTACHMENT
+             * -----------------------------------------
+             */
+ 
+            let response =
+                await performDownload(
+                    accessToken
+                );
+ 
+ 
+            /*
+             * Access token could expire between
+             * authorization and attachment download.
+             */
+            if (
+                response.status === 401 ||
+                response.status === 403
+            ) {
+ 
+                accessToken =
+                    await refreshAccessToken();
+ 
+ 
+                response =
+                    await performDownload(
+                        accessToken
+                    );
+            }
+ 
+ 
+            if (!response.ok) {
+ 
+                throw new Error(
+                    'Unable to download the recording attachment from ServiceNow.'
+                );
+            }
+ 
+ 
+            const arrayBuffer =
+                await response.arrayBuffer();
+ 
+ 
+            const recordingBuffer =
+                Buffer.from(
+                    arrayBuffer
+                );
+ 
+ 
+            if (
+                recordingBuffer.length <= 0
+            ) {
+ 
+                throw new Error(
+                    'The downloaded recording file is empty.'
+                );
+            }
+ 
+ 
+            /*
+             * -----------------------------------------
+             * 4. DETERMINE SAFE FILE NAME
+             * -----------------------------------------
+             */
+ 
+            const format =
+                String(
+                    downloadInfo.format ||
+                    'mp3'
+                )
+                    .trim()
+                    .toLowerCase();
+ 
+ 
+            const extension =
+                format === 'mp4'
+                    ? '.mp4'
+                    : '.mp3';
+ 
+ 
+            let fileName =
+                String(
+                    downloadInfo.file_name ||
+                    (
+                        'servicecall-recording-' +
+                        recordingSysId +
+                        extension
+                    )
+                )
+                    .replace(
+                        /[<>:"/\\|?*\x00-\x1F]/g,
+                        '_'
+                    );
+ 
+ 
+            if (
+                !fileName
+                    .toLowerCase()
+                    .endsWith(
+                        extension
+                    )
+            ) {
+ 
+                fileName +=
+                    extension;
+            }
+ 
+ 
+            /*
+             * -----------------------------------------
+             * 5. WINDOWS SAVE AS DIALOG
+             * -----------------------------------------
+             */
+ 
+            const saveResult =
+                await dialog.showSaveDialog(
+                    {
+                        title:
+                            'Save ServiceCall Recording',
+ 
+                        defaultPath:
+                            path.join(
+                                app.getPath(
+                                    'downloads'
+                                ),
+                                fileName
+                            ),
+ 
+                        filters: [
+                            {
+                                name:
+                                    format === 'mp4'
+                                        ? 'MP4 Video'
+                                        : 'MP3 Audio',
+ 
+                                extensions: [
+                                    format === 'mp4'
+                                        ? 'mp4'
+                                        : 'mp3'
+                                ]
+                            }
+                        ]
+                    }
+                );
+ 
+ 
+            /*
+             * User pressed Cancel.
+             *
+             * This is NOT an error.
+             */
+            if (
+                saveResult.canceled ||
+                !saveResult.filePath
+            ) {
+ 
+                return {
+                    success: false,
+                    code: 'DOWNLOAD_CANCELLED',
+                    message: 'Recording download was cancelled.'
+                };
+            }
+ 
+ 
+            /*
+             * -----------------------------------------
+             * 6. SAVE FILE LOCALLY
+             * -----------------------------------------
+             */
+ 
+            await fs.promises.writeFile(
+                saveResult.filePath,
+                recordingBuffer
+            );
+ 
+ 
+            console.log(
+                'ServiceCall recording downloaded successfully.',
+                recordingSysId
+            );
+ 
+ 
+            return {
+                success: true,
+                code: 'RECORDING_DOWNLOADED',
+                recording_sys_id:
+                    recordingSysId,
+                file_name:
+                    path.basename(
+                        saveResult.filePath
+                    ),
+                file_path:
+                    saveResult.filePath,
+                format:
+                    format,
+                file_size:
+                    recordingBuffer.length
+            };
+ 
+ 
+        } catch (error) {
+ 
+            console.error(
+                'ServiceCall recording download failed:',
+                error.message
+            );
+ 
+ 
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'RECORDING_DOWNLOAD_FAILED',
+                message:
+                    error.message ||
+                    'Unable to download recording.'
+            };
+        }
+    }
+);
+
+async function checkOutgoingCallOnce() {
+ 
+    try {
+ 
+        const result =
+            await serviceCallApiRequest(
+                '/outgoing-call',
+                'GET'
+            );
+ 
+ 
+        if (
+            result &&
+            result.success &&
+            result.outgoing_call
+        ) {
+ 
+            const outgoingCallId =
+    result.call_sys_id;
+
+
+if (
+    outgoingCallId &&
+    !intentionallyLeftCallIds.has(
+        outgoingCallId
+    ) &&
+    outgoingCallId !==
+        activeOutgoingCallId
+) {
+ 
+                activeOutgoingCallId =
+                    outgoingCallId;
+ 
+ 
+                console.log(
+                    'Outgoing ServiceCall:',
+                    result
+                );
+ 
+ 
+                showCallWindow(
+                    result.state === 'connected'
+                        ? 'connected'
+                        : 'calling',
+ 
+                    {
+                        callSysId:
+                            result.call_sys_id,
+ 
+                        callNumber:
+                            result.call_number,
+ 
+                        name:
+                            result.target_user_name ||
+                            'Unknown User',
+ 
+                        department:
+                            result.target_department ||
+                            ''
+                    }
+                );
+            }
+ 
+ 
+            return;
+        }
+ 
+ 
+        /*
+         * No outgoing ringing/connected call.
+         */
+        activeOutgoingCallId =
+            null;
+ 
+ 
+    } catch (error) {
+ 
+        console.error(
+            'Outgoing call check failed:',
+            error
+        );
+ 
+ 
+        if (
+            error.code ===
+            'AUTHENTICATION_REQUIRED'
+        ) {
+ 
+            stopOutgoingCallLoop();
+ 
+ 
+            sendAuthStatus(
+                'authentication_required',
+                'Your ServiceCall authorization has expired. Please sign in to ServiceNow again.'
+            );
+        }
+    }
+}
+
+function startOutgoingCallLoop() {
+
+    stopOutgoingCallLoop();
+
+    checkOutgoingCallOnce();
+
+    outgoingCallTimer =
+        setInterval(
+            checkOutgoingCallOnce,
+            3000
+        );
+}
+
+
+function stopOutgoingCallLoop() {
+
+    if (outgoingCallTimer) {
+
+        clearInterval(
+            outgoingCallTimer
+        );
+
+        outgoingCallTimer =
+            null;
+    }
+}
+
+ipcMain.handle(
+    'servicecall-open-active-call',
+    async () => {
+
+        if (
+            callWindow &&
+            !callWindow.isDestroyed()
+        ) {
+
+            if (callWindow.isMinimized()) {
+                callWindow.restore();
+            }
+
+            callWindow.show();
+            callWindow.focus();
+
+            return {
+                success: true,
+                active_call: true
+            };
+        }
+
+
+        return {
+            success: true,
+            active_call: false,
+            message: 'No active call window is currently available.'
+        };
+    }
+);
+
+/* -------------------------------------------------------
+   DYNAMIC MEDIA CREDENTIALS
+------------------------------------------------------- */
+
+ipcMain.handle(
+    'servicecall-get-media-credentials',
+
+    async (
+        event,
+        callSysId
+    ) => {
+
+        if (!callSysId) {
+
+            return {
+                success: false,
+                code: 'CALL_ID_REQUIRED',
+                message:
+                    'Call ID was not provided.'
+            };
+        }
+
+
+        try {
+
+            const result =
+                await serviceCallApiRequest(
+                    '/media-credentials?call_sys_id=' +
+                    encodeURIComponent(
+                        callSysId
+                    ),
+                    'GET'
+                );
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to get ServiceCall media credentials:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'MEDIA_CREDENTIALS_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to obtain media credentials.'
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-invite-participant',
+
+    async (
+        event,
+        callSysId,
+        userSysId
+    ) => {
+
+        if (
+            !callSysId ||
+            !userSysId
+        ) {
+
+            return {
+                success: false,
+                code:
+                    'INVITE_DATA_REQUIRED',
+                message:
+                    'Call ID and user ID are required.'
+            };
+        }
+
+
+        try {
+
+            const result =
+                await serviceCallApiRequest(
+                    '/invite-participant',
+                    'POST',
+                    {
+                        call_sys_id:
+                            callSysId,
+
+                        user_sys_id:
+                            userSysId
+                    }
+                );
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to invite ServiceCall participant:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'INVITE_PARTICIPANT_FAILED',
+                message:
+                    error.message ||
+                    'Unable to invite participant.'
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-search-users',
+
+    async (
+        event,
+        searchText
+    ) => {
+
+        const search =
+            String(
+                searchText || ''
+            ).trim();
+
+
+        if (
+            search.length < 2
+        ) {
+
+            return {
+                success: true,
+                users: []
+            };
+        }
+
+
+        try {
+
+            return await serviceCallApiRequest(
+                '/users?search=' +
+                encodeURIComponent(
+                    search
+                ),
+                'GET'
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to search ServiceCall users:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'USER_SEARCH_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to search users.',
+
+                users: []
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-leave-call',
+
+    async (
+        event,
+        callSysId
+    ) => {
+
+        if (!callSysId) {
+
+            return {
+                success: false,
+                code: 'CALL_ID_REQUIRED',
+                message:
+                    'Call ID was not provided.'
+            };
+        }
+
+
+        try {
+
+            return await serviceCallApiRequest(
+                '/leave-call',
+                'POST',
+                {
+                    call_sys_id:
+                        callSysId
+                }
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to leave ServiceCall:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'LEAVE_CALL_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to leave the call.'
+            };
+        }
+    }
+);
+
+/* -------------------------------------------------------
+   UPLOAD RECORDING ATTACHMENT
+------------------------------------------------------- */
+
+async function uploadRecordingAttachment(
+    recordingSysId,
+    fileData,
+    fileName,
+    format
+) {
+
+    if (!recordingSysId) {
+        throw new Error(
+            'Recording ID was not provided.'
+        );
+    }
+
+
+    if (!fileData) {
+        throw new Error(
+            'Recording file data was not provided.'
+        );
+    }
+
+
+    const normalizedFormat =
+        String(
+            format || ''
+        )
+            .trim()
+            .toLowerCase();
+
+
+    if (
+        normalizedFormat !== 'mp3' &&
+        normalizedFormat !== 'mp4'
+    ) {
+
+        throw new Error(
+            'Recording format must be mp3 or mp4.'
+        );
+    }
+
+
+    const expectedExtension =
+        '.' + normalizedFormat;
+
+
+    let safeFileName =
+        String(
+            fileName || ''
+        )
+            .trim()
+            .replace(
+                /[^a-zA-Z0-9._-]/g,
+                '_'
+            );
+
+
+    if (!safeFileName) {
+
+        safeFileName =
+            'servicecall-recording-' +
+            Date.now() +
+            expectedExtension;
+    }
+
+
+    /*
+     * Ensure the filename agrees with the
+     * recording format.
+     */
+    if (
+        !safeFileName
+            .toLowerCase()
+            .endsWith(
+                expectedExtension
+            )
+    ) {
+
+        safeFileName +=
+            expectedExtension;
+    }
+
+
+    const config =
+        loadConfig();
+
+
+    if (
+        !config ||
+        !config.instanceUrl
+    ) {
+
+        throw new Error(
+            'ServiceCall Desktop is not connected to ServiceNow.'
+        );
+    }
+
+
+    /*
+     * Get a valid OAuth access token.
+     *
+     * The renderer never receives this token.
+     */
+    let accessToken =
+        await ensureValidAccessToken();
+
+
+    /*
+     * IPC can give us a Uint8Array rather
+     * than a Node Buffer.
+     */
+    const recordingBuffer =
+        Buffer.isBuffer(
+            fileData
+        )
+            ? fileData
+            : Buffer.from(
+                fileData
+            );
+
+
+    if (
+        recordingBuffer.length <= 0
+    ) {
+
+        throw new Error(
+            'Recording file is empty.'
+        );
+    }
+
+
+    const contentType =
+        normalizedFormat === 'mp3'
+            ? 'audio/mpeg'
+            : 'video/mp4';
+
+
+    const tableName =
+        'x_1806573_servic_0_servicecall_recording';
+
+
+    const uploadUrl =
+        config.instanceUrl
+            .replace(
+                /\/$/,
+                ''
+            ) +
+        '/api/now/attachment/file' +
+        '?table_name=' +
+        encodeURIComponent(
+            tableName
+        ) +
+        '&table_sys_id=' +
+        encodeURIComponent(
+            recordingSysId
+        ) +
+        '&file_name=' +
+        encodeURIComponent(
+            safeFileName
+        );
+
+
+    async function performUpload(
+        token
+    ) {
+
+        return await fetch(
+            uploadUrl,
+            {
+                method: 'POST',
+
+                headers: {
+
+                    'Authorization':
+                        'Bearer ' +
+                        token,
+
+                    'Accept':
+                        'application/json',
+
+                    'Content-Type':
+                        contentType
+                },
+
+                /*
+                 * IMPORTANT:
+                 *
+                 * Raw binary.
+                 * No JSON.
+                 * No Base64.
+                 */
+                body:
+                    recordingBuffer
+            }
+        );
+    }
+
+
+    let response =
+        await performUpload(
+            accessToken
+        );
+
+
+    /*
+     * If OAuth expired between obtaining the
+     * token and uploading the file, refresh
+     * once and retry the same binary upload.
+     */
+    if (
+        response.status === 401 ||
+        response.status === 403
+    ) {
+
+        console.log(
+            'Recording upload authorization expired. Attempting automatic renewal...'
+        );
+
+
+        try {
+
+            accessToken =
+                await refreshAccessToken();
+
+
+            response =
+                await performUpload(
+                    accessToken
+                );
+
+
+        } catch (refreshError) {
+
+            const authError =
+                new Error(
+                    'Your ServiceCall authorization has expired. Please sign in again.'
+                );
+
+
+            authError.code =
+                'AUTHENTICATION_REQUIRED';
+
+
+            throw authError;
+        }
+    }
+
+
+    const responseText =
+        await response.text();
+
+
+    let data = {};
+
+
+    try {
+
+        data =
+            responseText
+                ? JSON.parse(
+                    responseText
+                )
+                : {};
+
+    } catch (error) {
+
+        throw new Error(
+            'ServiceNow returned an invalid attachment upload response.'
+        );
+    }
+
+
+    const result =
+        data.result ||
+        data;
+
+console.log(
+    'ServiceCall Attachment API response:',
+    'HTTP',
+    response.status,
+    data
+);
+
+
+    if (!response.ok) {
+
+        const uploadError =
+            new Error(
+                (
+                    result &&
+                    result.error &&
+                    (
+                        result.error.message ||
+                        result.error.detail
+                    )
+                ) ||
+                (
+                    result &&
+                    result.message
+                ) ||
+                (
+                    data &&
+                    data.error &&
+                    (
+                        data.error.message ||
+                        data.error.detail
+                    )
+                ) ||
+                'ServiceNow recording upload failed.'
+            );
+
+
+        uploadError.code =
+            'RECORDING_UPLOAD_FAILED';
+
+
+        throw uploadError;
+    }
+
+
+    if (
+        !result ||
+        !result.sys_id
+    ) {
+
+        throw new Error(
+            'ServiceNow did not return an attachment ID.'
+        );
+    }
+
+
+    /*
+     * Extra verification using the metadata
+     * ServiceNow returned from Attachment API.
+     */
+    if (
+        result.table_sys_id &&
+        result.table_sys_id !==
+            recordingSysId
+    ) {
+
+        throw new Error(
+            'Uploaded attachment was associated with the wrong recording.'
+        );
+    }
+
+
+    if (
+        result.table_name &&
+        result.table_name !==
+            tableName
+    ) {
+
+        throw new Error(
+            'Uploaded attachment was associated with the wrong table.'
+        );
+    }
+
+
+    console.log(
+        'ServiceCall recording uploaded successfully.',
+        'Attachment:',
+        result.sys_id,
+        'Size:',
+        result.size_bytes || recordingBuffer.length
+    );
+
+
+    /*
+     * Never return the OAuth token.
+     */
+    return {
+
+        success: true,
+
+        attachment_sys_id:
+            result.sys_id,
+
+        file_name:
+            result.file_name ||
+            safeFileName,
+
+        file_size:
+            Number(
+                result.size_bytes ||
+                recordingBuffer.length
+            ),
+
+        content_type:
+            result.content_type ||
+            contentType
+    };
+}
+
+ipcMain.handle(
+    'servicecall-upload-recording',
+
+    async (
+        event,
+        recordingSysId,
+        fileData,
+        fileName,
+        format
+    ) => {
+
+        try {
+
+            return await uploadRecordingAttachment(
+                recordingSysId,
+                fileData,
+                fileName,
+                format
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to upload ServiceCall recording:',
+                error.message
+            );
+
+
+            return {
+
+                success: false,
+
+                code:
+                    error.code ||
+                    'RECORDING_UPLOAD_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to upload recording.'
+            };
+        }
+    }
+);
+
+/* -------------------------------------------------------
+   SERVICECALL RECORDING
+------------------------------------------------------- */
+
+/*
+ * Create the ServiceCall Recording record.
+ *
+ * This does NOT start local media capture by itself.
+ * It creates the authoritative recording session
+ * in ServiceNow.
  */
-        .notification-list-panel.returning {
-            display: block;
+ipcMain.handle(
+    'servicecall-start-recording',
 
-            animation:
-                notificationListReturn 220ms ease forwards;
+    async (
+        event,
+        callSysId
+    ) => {
+
+        if (!callSysId) {
+
+            return {
+                success: false,
+                code: 'CALL_ID_REQUIRED',
+                message:
+                    'Call ID was not provided.'
+            };
         }
 
 
-        @keyframes notificationListReturn {
+        try {
 
-            from {
-                transform: translateX(-35px);
-                opacity: 0;
-            }
+            return await serviceCallApiRequest(
+                '/start-recording',
+                'POST',
+                {
+                    call_sys_id:
+                        callSysId
+                }
+            );
 
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
+
+        } catch (error) {
+
+            console.error(
+                'Unable to start ServiceCall recording:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'START_RECORDING_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to start recording.'
+            };
         }
-    </style>
+    }
+);
+
+
+/*
+ * Tell ServiceNow that media capture has stopped
+ * and the recording is now being processed.
+ */
+ipcMain.handle(
+    'servicecall-finish-recording',
+
+    async (
+        event,
+        recordingSysId
+    ) => {
+
+        if (!recordingSysId) {
+
+            return {
+                success: false,
+                code: 'RECORDING_ID_REQUIRED',
+                message:
+                    'Recording ID was not provided.'
+            };
+        }
+
 
-</head>
+        try {
 
+            return await serviceCallApiRequest(
+                '/finish-recording',
+                'POST',
+                {
+                    recording_sys_id:
+                        recordingSysId
+                }
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to finish ServiceCall recording:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'FINISH_RECORDING_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to finish recording.'
+            };
+        }
+    }
+);
+
+
+/*
+ * After the binary file has been successfully
+ * uploaded to sys_attachment, this finalizes the
+ * ServiceCall Recording record.
+ */
+ipcMain.handle(
+    'servicecall-complete-recording',
+
+    async (
+        event,
+        recordingSysId,
+        attachmentSysId,
+        format
+    ) => {
+
+        if (
+            !recordingSysId ||
+            !attachmentSysId ||
+            !format
+        ) {
+
+            return {
+                success: false,
+                code: 'RECORDING_DATA_REQUIRED',
+                message:
+                    'Recording ID, attachment ID and format are required.'
+            };
+        }
+
+
+        try {
+
+            return await serviceCallApiRequest(
+                '/complete-recording',
+                'POST',
+                {
+                    recording_sys_id:
+                        recordingSysId,
+
+                    attachment_sys_id:
+                        attachmentSysId,
 
-<body>
+                    format:
+                        format
+                }
+            );
 
-    <div class="app">
 
+        } catch (error) {
 
-        <!-- =============================================
-             SIDEBAR
-        ============================================== -->
+            console.error(
+                'Unable to complete ServiceCall recording:',
+                error.message
+            );
 
-        <aside class="sidebar">
 
+            return {
+                success: false,
 
-            <div class="brand">
+                code:
+                    error.code ||
+                    'COMPLETE_RECORDING_FAILED',
 
-                <div class="brand-mark">
-                    S
-                </div>
+                message:
+                    error.message ||
+                    'Unable to complete recording.'
+            };
+        }
+    }
+);
 
-                <div class="brand-name">
-                    ServiceCall
-                </div>
+/* -------------------------------------------------------
+   FINALIZE VOICE RECORDING
+------------------------------------------------------- */
+
+ipcMain.handle(
+    'servicecall-finalize-voice-recording',
 
-            </div>
+    async (
+        event,
+        recordingSysId,
+        webmData
+    ) => {
 
+        if (!recordingSysId) {
 
-            <nav class="navigation">
+            return {
+                success: false,
+                code:
+                    'RECORDING_ID_REQUIRED',
+                message:
+                    'Recording ID was not provided.'
+            };
+        }
+
+
+        if (!webmData) {
 
-                <button class="nav-button active" data-view="homeView">
-                    Home
-                </button>
+            return {
+                success: false,
+                code:
+                    'RECORDING_DATA_REQUIRED',
+                message:
+                    'Recording data was not provided.'
+            };
+        }
+
+
+        try {
+
+            /*
+             * IPC structured cloning commonly
+             * gives the main process a Uint8Array.
+             */
+            const webmBuffer =
+                Buffer.isBuffer(
+                    webmData
+                )
+                    ? webmData
+                    : Buffer.from(
+                        webmData
+                    );
+
+
+            if (
+                webmBuffer.length <= 0
+            ) {
+
+                throw new Error(
+                    'Recording data is empty.'
+                );
+            }
+
+
+            console.log(
+                'ServiceCall voice recording received.',
+                'WebM size:',
+                webmBuffer.length
+            );
+
+
+            /* -----------------------------------------
+               1. WEBM -> REAL MP3
+            ----------------------------------------- */
+
+            const converted =
+                await convertWebmToMp3(
+                    webmBuffer
+                );
+
+
+            if (
+                !converted ||
+                !converted.success ||
+                !converted.buffer
+            ) {
+
+                throw new Error(
+                    'Unable to convert ServiceCall recording to MP3.'
+                );
+            }
+
+
+            /* -----------------------------------------
+               2. MARK RECORDING PROCESSING
+            ----------------------------------------- */
+
+            const finishResult =
+                await serviceCallApiRequest(
+                    '/finish-recording',
+                    'POST',
+                    {
+                        recording_sys_id:
+                            recordingSysId
+                    }
+                );
+
 
-                <button class="nav-button" data-view="peopleView">
-                    People
-                </button>
+            if (
+                !finishResult ||
+                finishResult.success !== true
+            ) {
+
+                throw new Error(
+                    finishResult &&
+                    finishResult.message
+                        ? finishResult.message
+                        : 'Unable to finish ServiceCall recording.'
+                );
+            }
 
-                <button class="nav-button" data-view="meetingsView">
-                    Meetings
-                </button>
 
-                <button class="nav-button notification-nav-button" data-view="notificationsView">
+            /* -----------------------------------------
+               3. UPLOAD FINAL MP3
+            ----------------------------------------- */
 
-                    <span>
-                        Notifications
-                    </span>
+            const fileName =
+                'servicecall-recording-' +
+                recordingSysId +
+                '.mp3';
 
-                    <span id="notificationUnreadBadge" class="notification-unread-badge" style="display: none;">
-                        0
-                    </span>
 
-                </button>
+            const uploadResult =
+                await uploadRecordingAttachment(
+                    recordingSysId,
+                    converted.buffer,
+                    fileName,
+                    'mp3'
+                );
 
-                <button class="nav-button" data-view="chatView">
-                    Chat
-                </button>
+            console.log(
+    'ServiceCall attachment upload result:',
+    uploadResult
+);
 
-                <button class="nav-button" data-view="historyView">
-                    History
-                </button>
 
-                <button class="nav-button" data-view="recordingsView">
-                    Recordings
-                </button>
+            if (
+                !uploadResult ||
+                !uploadResult.success ||
+                !uploadResult.attachment_sys_id
+            ) {
 
-            </nav>
+                throw new Error(
+                    uploadResult &&
+                    uploadResult.message
+                        ? uploadResult.message
+                        : 'Unable to upload ServiceCall recording.'
+                );
+            }
 
 
-            <div class="sidebar-bottom">
+            /* -----------------------------------------
+               4. COMPLETE RECORDING
+            ----------------------------------------- */
 
+            const completeResult =
+                await serviceCallApiRequest(
+                    '/complete-recording',
+                    'POST',
+                    {
+                        recording_sys_id:
+                            recordingSysId,
 
-                <button class="nav-button" data-view="settingsView">
-                    Settings
-                </button>
+                        attachment_sys_id:
+                            uploadResult
+                                .attachment_sys_id,
+
+                        format:
+                            'mp3'
+                    }
+                );
+
+
+            if (
+                !completeResult ||
+                completeResult.success !== true
+            ) {
+
+                throw new Error(
+                    completeResult &&
+                    completeResult.message
+                        ? completeResult.message
+                        : 'Unable to complete ServiceCall recording.'
+                );
+            }
+
+
+            console.log(
+                'ServiceCall voice recording finalized successfully.',
+                recordingSysId
+            );
+
+
+            return {
+
+                success: true,
 
+                code:
+                    'VOICE_RECORDING_AVAILABLE',
 
-            </div>
+                recording_sys_id:
+                    recordingSysId,
 
+                attachment_sys_id:
+                    uploadResult
+                        .attachment_sys_id,
+
+                format:
+                    'mp3',
 
-        </aside>
+                file_name:
+                    uploadResult.file_name,
 
+                file_size:
+                    uploadResult.file_size,
 
-        <!-- =============================================
-             MAIN
-        ============================================== -->
+                status:
+                    completeResult.status ||
+                    'available',
+
+                expires_at:
+                    completeResult.expires_at ||
+                    ''
+            };
 
-        <main class="main">
 
+        } catch (error) {
+
+            console.error(
+                'ServiceCall voice recording finalization failed:',
+                error
+            );
+
 
-            <header class="topbar">
+            return {
 
+                success: false,
 
-                <div id="currentPageTitle" class="topbar-title">
-                    Home
-                </div>
+                code:
+                    error.code ||
+                    'VOICE_RECORDING_FINALIZATION_FAILED',
 
+                message:
+                    error.message ||
+                    'Unable to finalize ServiceCall recording.'
+            };
+        }
+    }
+);
 
-                <div class="topbar-right">
+/* -------------------------------------------------------
+   FINALIZE SCREEN RECORDING
+------------------------------------------------------- */
 
+/*
+ * Finalizes a ServiceCall recording that contained
+ * screen sharing at least once.
+ *
+ * Renderer WebM:
+ *   VP8 canvas video
+ *   +
+ *   Opus mixed conference audio
+ *
+ * Main process:
+ *   WebM
+ *   -> FFmpeg
+ *   -> H.264 + AAC MP4
+ *   -> /finish-recording
+ *   -> ServiceNow Attachment API
+ *   -> /complete-recording
+ */
+ipcMain.handle(
+    'servicecall-finalize-screen-recording',
 
-                    <!-- =========================================
-             PRESENCE
-        ========================================== -->
+    async (
+        event,
+        recordingSysId,
+        webmData
+    ) => {
 
-                    <div class="presence-control">
+        if (!recordingSysId) {
 
+            return {
+                success: false,
 
-                        <button id="presenceButton" class="presence-button" type="button">
+                code:
+                    'RECORDING_ID_REQUIRED',
 
-                            <span id="presenceDot" class="presence-dot available"></span>
+                message:
+                    'Recording ID was not provided.'
+            };
+        }
 
 
-                            <span id="presenceText">
-                                Available
-                            </span>
+        if (!webmData) {
+
+            return {
+                success: false,
+
+                code:
+                    'RECORDING_DATA_REQUIRED',
 
+                message:
+                    'Recording data was not provided.'
+            };
+        }
+
+
+        try {
 
-                            <span class="presence-chevron">
-                                ▾
-                            </span>
+            /*
+             * IPC structured cloning normally
+             * gives the main process a Uint8Array.
+             */
+            const webmBuffer =
+                Buffer.isBuffer(
+                    webmData
+                )
+                    ? webmData
+                    : Buffer.from(
+                        webmData
+                    );
+
+
+            if (
+                webmBuffer.length <= 0
+            ) {
+
+                throw new Error(
+                    'Recording data is empty.'
+                );
+            }
+
 
-                        </button>
+            console.log(
+                'ServiceCall screen recording received.',
+                'WebM size:',
+                webmBuffer.length
+            );
+
+
+            /* -----------------------------------------
+               1. WEBM -> REAL MP4
+            ----------------------------------------- */
+
+            const converted =
+                await convertWebmToMp4(
+                    webmBuffer
+                );
+
+
+            if (
+                !converted ||
+                !converted.success ||
+                !converted.buffer
+            ) {
+
+                throw new Error(
+                    'Unable to convert ServiceCall recording to MP4.'
+                );
+            }
+
+
+            console.log(
+                'ServiceCall screen recording converted.',
+                'MP4 size:',
+                converted.size
+            );
+
+
+            /* -----------------------------------------
+               2. MARK RECORDING PROCESSING
+            ----------------------------------------- */
+
+            const finishResult =
+                await serviceCallApiRequest(
+                    '/finish-recording',
+                    'POST',
+                    {
+                        recording_sys_id:
+                            recordingSysId
+                    }
+                );
 
 
-                        <!-- Presence dropdown -->
+            if (
+                !finishResult ||
+                finishResult.success !== true
+            ) {
 
-                        <div id="presenceMenu" class="presence-menu" style="display: none;">
+                throw new Error(
+                    finishResult &&
+                    finishResult.message
+                        ? finishResult.message
+                        : 'Unable to finish ServiceCall recording.'
+                );
+            }
 
 
-                            <button class="presence-option" type="button" data-presence="available">
-                                <span class="presence-option-dot available"></span>
-                                Available
-                            </button>
+            /* -----------------------------------------
+               3. UPLOAD FINAL MP4
+            ----------------------------------------- */
 
+            const fileName =
+                'servicecall-recording-' +
+                recordingSysId +
+                '.mp4';
 
-                            <button class="presence-option" type="button" data-presence="busy">
-                                <span class="presence-option-dot busy"></span>
-                                Busy
-                            </button>
 
+            const uploadResult =
+                await uploadRecordingAttachment(
+                    recordingSysId,
+                    converted.buffer,
+                    fileName,
+                    'mp4'
+                );
 
-                            <button class="presence-option" type="button" data-presence="away">
-                                <span class="presence-option-dot away"></span>
-                                Away
-                            </button>
 
+            if (
+                !uploadResult ||
+                !uploadResult.success ||
+                !uploadResult.attachment_sys_id
+            ) {
 
-                            <button class="presence-option" type="button" data-presence="out of office">
-                                <span class="presence-option-dot out-of-office"></span>
-                                Out of Office
-                            </button>
+                throw new Error(
+                    uploadResult &&
+                    uploadResult.message
+                        ? uploadResult.message
+                        : 'Unable to upload ServiceCall screen recording.'
+                );
+            }
 
 
-                            <!-- OOF reason -->
+            /* -----------------------------------------
+               4. COMPLETE RECORDING
+            ----------------------------------------- */
 
-                            <div id="oofReasonPanel" class="oof-reason-panel" style="display: none;">
+            const completeResult =
+                await serviceCallApiRequest(
+                    '/complete-recording',
+                    'POST',
+                    {
+                        recording_sys_id:
+                            recordingSysId,
 
-                                <label class="oof-reason-label" for="oofReasonInput">
-                                    Out of Office reason
-                                </label>
+                        attachment_sys_id:
+                            uploadResult
+                                .attachment_sys_id,
 
+                        format:
+                            'mp4'
+                    }
+                );
 
-                                <textarea id="oofReasonInput" class="oof-reason-input" maxlength="250" rows="3"
-                                    placeholder="For example: On leave until Monday"></textarea>
+
+            if (
+                !completeResult ||
+                completeResult.success !== true
+            ) {
 
+                throw new Error(
+                    completeResult &&
+                    completeResult.message
+                        ? completeResult.message
+                        : 'Unable to complete ServiceCall screen recording.'
+                );
+            }
+
+
+            console.log(
+                'ServiceCall screen recording finalized successfully.',
+                recordingSysId
+            );
 
-                                <div class="oof-reason-actions">
 
-                                    <button id="cancelOofButton" class="oof-reason-cancel" type="button">
-                                        Cancel
-                                    </button>
+            return {
 
+                success:
+                    true,
 
-                                    <button id="saveOofButton" class="oof-reason-save" type="button">
-                                        Save
-                                    </button>
+                code:
+                    'SCREEN_RECORDING_AVAILABLE',
 
-                                </div>
+                recording_sys_id:
+                    recordingSysId,
 
-                            </div>
+                attachment_sys_id:
+                    uploadResult
+                        .attachment_sys_id,
 
+                format:
+                    'mp4',
 
-                        </div>
+                file_name:
+                    uploadResult.file_name,
 
+                file_size:
+                    uploadResult.file_size,
+
+                status:
+                    completeResult.status ||
+                    'available',
+
+                expires_at:
+                    completeResult.expires_at ||
+                    ''
+            };
+
+
+        } catch (error) {
 
-                    </div>
+            console.error(
+                'ServiceCall screen recording finalization failed:',
+                error
+            );
 
 
-                    <!-- =========================================
-             CONNECTION
-        ========================================== -->
+            return {
 
-                    <div id="connectionPill" class="connection-pill">
-                        Checking connection...
-                    </div>
+                success:
+                    false,
 
+                code:
+                    error.code ||
+                    'SCREEN_RECORDING_FINALIZATION_FAILED',
 
-                </div>
+                message:
+                    error.message ||
+                    'Unable to finalize ServiceCall screen recording.'
+            };
+        }
+    }
+);
 
+/* -------------------------------------------------------
+   SERVICECALL SCREEN SHARE SOURCES
+------------------------------------------------------- */
 
-            </header>
+/*
+ * Return the screens/windows that Electron
+ * can capture.
+ *
+ * IMPORTANT:
+ *
+ * We return only serializable metadata to
+ * the renderer.
+ *
+ * The renderer will use the selected source ID
+ * to request the actual MediaStream.
+ */
+ipcMain.handle(
+    'servicecall-get-screen-sources',
 
-            <section class="content">
+    async () => {
 
+        try {
 
-                <!-- =====================================
-                     HOME
-                ====================================== -->
+            const sources =
+                await desktopCapturer
+                    .getSources({
+                        types: [
+                            'screen',
+                            'window'
+                        ],
 
-                <div id="homeView" class="view active">
+                        thumbnailSize: {
+                            width: 320,
+                            height: 180
+                        },
 
+                        fetchWindowIcons: true
+                    });
 
-                    <div class="welcome-card">
 
+            const safeSources =
+                sources.map(
+                    (source) => {
 
-                        <h1>
-                            Welcome to ServiceCall
-                        </h1>
+                        return {
 
+                            id:
+                                source.id,
 
-                        <p>
-                            Calls, meetings and communication
-                            connected to your ServiceNow work.
-                        </p>
+                            name:
+                                source.name,
 
+                            thumbnail:
+                                source.thumbnail &&
+                                !source.thumbnail.isEmpty()
+                                    ? source.thumbnail
+                                        .toDataURL()
+                                    : '',
 
-                        <div class="home-actions">
+                            appIcon:
+                                source.appIcon &&
+                                !source.appIcon.isEmpty()
+                                    ? source.appIcon
+                                        .toDataURL()
+                                    : ''
+                        };
+                    }
+                );
 
 
-                            <button id="openActiveCallButton" class="secondary-button">
-                                Open Active Call
-                            </button>
+            console.log(
+                'ServiceCall screen sources available:',
+                safeSources.length
+            );
 
 
-                        </div>
+            return {
 
+                success: true,
 
-                    </div>
+                sources:
+                    safeSources
+            };
 
 
-                </div>
+        } catch (error) {
 
+            console.error(
+                'Unable to retrieve ServiceCall screen sources:',
+                error
+            );
 
-                <!-- =====================================
-                     PEOPLE
-                ====================================== -->
 
-                <div id="peopleView" class="view">
+            return {
 
+                success: false,
 
-                    <div class="page-heading">
+                code:
+                    'SCREEN_SOURCE_FAILED',
 
+                message:
+                    error.message ||
+                    'Unable to retrieve screens and windows.',
 
-                        <div>
+                sources: []
+            };
+        }
+    }
+);
 
+/* -------------------------------------------------------
+   SERVICECALL CALL WINDOW LAYOUT
+------------------------------------------------------- */
 
-                            <h1>
-                                People
-                            </h1>
+ipcMain.handle(
+    'servicecall-set-call-window-layout',
 
+    async (
+        event,
+        layout
+    ) => {
 
-                            <p>
-                                Find and call ServiceCall users.
-                            </p>
+        try {
 
+            const senderWindow =
+                BrowserWindow.fromWebContents(
+                    event.sender
+                );
 
-                        </div>
 
+            if (
+                !senderWindow ||
+                senderWindow.isDestroyed() ||
+                senderWindow !== callWindow
+            ) {
 
-                    </div>
+                return {
+                    success: false,
+                    message:
+                        'ServiceCall call window is unavailable.'
+                };
+            }
 
 
-                    <div class="card">
+            if (
+                layout === 'screen'
+            ) {
 
-                        <div>
+                /*
+                 * Allow the existing call window
+                 * to become a larger screen-share
+                 * experience.
+                 */
+                senderWindow.setResizable(
+                    true
+                );
 
-                            <label for="peopleSearchInput">
-                                Find a ServiceCall user
-                            </label>
 
-                            <input id="peopleSearchInput" type="text" placeholder="Search by name, username or email"
-                                autocomplete="off">
+                senderWindow.setMinimumSize(
+                    760,
+                    620
+                );
 
-                        </div>
 
+                senderWindow.setSize(
+                    1000,
+                    760,
+                    true
+                );
+
+
+                senderWindow.center();
+
+
+                return {
+                    success: true,
+                    layout: 'screen'
+                };
+            }
+
+
+            /*
+             * Return to compact voice-call mode.
+             */
+            senderWindow.setMinimumSize(
+                440,
+                560
+            );
+
+
+            senderWindow.setSize(
+                440,
+                560,
+                true
+            );
+
+
+            senderWindow.setResizable(
+                false
+            );
+
+
+            senderWindow.center();
+
+
+            return {
+                success: true,
+                layout: 'compact'
+            };
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to change ServiceCall call window layout:',
+                error
+            );
+
+
+            return {
+                success: false,
+                message:
+                    error.message ||
+                    'Unable to change call window layout.'
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-get-recording-history',
+ 
+    async () => {
+ 
+        try {
+ 
+            const result =
+                await serviceCallApiRequest(
+                    '/recording-history',
+                    'GET'
+                );
+ 
+ 
+            return {
+                success: true,
+                count:
+                    Number(
+                        result.count || 0
+                    ),
+                recordings:
+                    Array.isArray(
+                        result.recordings
+                    )
+                        ? result.recordings
+                        : []
+            };
+ 
+ 
+        } catch (error) {
+ 
+            console.error(
+                'Unable to load ServiceCall recording history:',
+                error.message
+            );
+ 
+ 
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'RECORDING_HISTORY_FAILED',
+                message:
+                    error.message ||
+                    'Unable to load recording history.',
+                count: 0,
+                recordings: []
+            };
+        }
+    }
+)
 
-                        <div id="peopleSearchMessage" style="margin-top: 10px;"></div>
+/* -------------------------------------------------------
+   SERVICECALL MEETINGS
+------------------------------------------------------- */
 
+/*
+ * Get all meetings relevant to the currently
+ * authenticated ServiceCall user.
+ *
+ * ServiceNow decides which meetings the user
+ * is allowed to see.
+ */
+ipcMain.handle(
+    'servicecall-get-my-meetings',
 
-                        <div id="peopleSearchResults" style="margin-top: 16px;"></div>
+    async (
+        event,
+        options = {}
+    ) => {
 
-                    </div>
+        try {
 
+            let page =
+                parseInt(
+                    options.page,
+                    10
+                ) || 1;
 
-                </div>
 
+            if (page < 1) {
+                page = 1;
+            }
 
-                <!-- =====================================
-                     MEETINGS
-                ====================================== -->
 
-                <div id="meetingsView" class="view">
+            const search =
+                String(
+                    options.search || ''
+                ).trim();
 
+            const status =
+    String(
+        options.status || ''
+    )
+        .toLowerCase()
+        .trim();
 
-                    <div class="page-heading">
 
+            const query =
+    new URLSearchParams({
+        page:
+            String(page),
 
-                        <div>
+        page_size:
+            '7',
 
+        search:
+            search,
 
-                            <h1>
-                                Meetings
-                            </h1>
+        status:
+            status
+    });
 
 
-                            <p>
-                                Schedule, join and manage
-                                ServiceCall meetings.
-                            </p>
+            const result =
+                await serviceCallApiRequest(
+                    '/my-meetings?' +
+                        query.toString(),
+                    'GET'
+                );
 
 
-                        </div>
+            return result;
 
 
-                        <button id="scheduleMeetingButton" class="primary-button" type="button">
-                            + Schedule meeting
-                        </button>
+        } catch (error) {
 
+            console.error(
+                'Unable to get ServiceCall meetings:',
+                error.message
+            );
 
-                    </div>
 
-                    <!-- Meeting Search + Status Filter -->
+            return {
 
-                    <div class="meetings-toolbar">
+                success: false,
 
+                code:
+                    error.code ||
+                    'GET_MEETINGS_FAILED',
 
-                        <div class="meeting-search-wrapper">
+                message:
+                    error.message ||
+                    'Unable to retrieve meetings.',
 
+                count: 0,
 
-                            <svg class="meeting-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                total_count: 0,
 
-                                <circle cx="11" cy="11" r="7"></circle>
+                current_page: 1,
 
-                                <line x1="16.65" y1="16.65" x2="21" y2="21"></line>
+                page_size: 7,
 
-                            </svg>
+                total_pages: 0,
 
+                has_previous: false,
 
-                            <input id="meetingSearchInput" class="meeting-search" type="search"
-                                placeholder="Search meetings by title, number or organizer..." autocomplete="off"
-                                spellcheck="false">
+                has_next: false,
 
+                search: '',
 
-                            <button id="meetingSearchClear" class="meeting-search-clear" type="button"
-                                aria-label="Clear meeting search" title="Clear search">
-                                ×
-                            </button>
+                status: '',
 
+                meetings: []
+            };
+        }
+    }
+);
+            
+/* -------------------------------------------------------
+   CREATE SERVICECALL MEETING
+------------------------------------------------------- */
 
-                        </div>
+/*
+ * Create a new ServiceCall meeting.
+ *
+ * The renderer sends the meeting details here.
+ * The main process forwards them securely to
+ * ServiceNow using the authenticated OAuth session.
+ */
+ipcMain.handle(
+    'servicecall-create-meeting',
 
+    async (
+        event,
+        meetingData
+    ) => {
 
-                        <div class="meeting-status-filter-wrapper">
+        try {
 
+            if (
+                !meetingData ||
+                !meetingData.title ||
+                !meetingData.scheduled_start ||
+                !meetingData.scheduled_end
+            ) {
 
-                            <label class="meeting-status-filter-label" for="meetingStatusFilter">
-                                Status
-                            </label>
+                return {
 
+                    success: false,
 
-                            <select id="meetingStatusFilter" class="meeting-status-filter"
-                                aria-label="Filter meetings by status">
+                    code:
+                        'MEETING_DATA_REQUIRED',
 
-                                <option value="">
-                                    All
-                                </option>
+                    message:
+                        'Title, start time and end time are required.'
+                };
+            }
 
-                                <option value="scheduled">
-                                    Scheduled
-                                </option>
 
-                                <option value="in progress">
-                                    In Progress
-                                </option>
+            const payload = {
 
-                                <option value="ended">
-                                    Ended
-                                </option>
+    title:
+        String(
+            meetingData.title
+        ).trim(),
 
-                                <option value="cancelled">
-                                    Cancelled
-                                </option>
+    description:
+        String(
+            meetingData.description || ''
+        ).trim(),
 
-                            </select>
+    scheduled_start:
+        meetingData.scheduled_start,
 
+    scheduled_end:
+        meetingData.scheduled_end,
 
-                        </div>
+     timezone:
+        String(
+            meetingData.timezone || ''
+        ).trim(),
 
+    participants:
+        Array.isArray(
+            meetingData.participants
+        )
+            ? meetingData.participants
+            : []
+};
 
-                    </div>
-                    <!-- Meeting List -->
 
-                    <div id="meetingsContainer" class="meetings-list">
+            const result =
+                await serviceCallApiRequest(
+                    '/create-meeting',
+                    'POST',
+                    payload
+                );
 
 
-                        <div class="loading">
-                            Open Meetings to load your meetings.
-                        </div>
+            return result;
 
 
-                    </div>
+        } catch (error) {
 
+            console.error(
+                'Unable to create ServiceCall meeting:',
+                error.message
+            );
 
-                    <!-- Pagination -->
 
-                    <div id="meetingPagination" class="meeting-pagination"></div>
+            return {
 
+                success: false,
 
-                </div>
+                code:
+                    error.code ||
+                    'CREATE_MEETING_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to create meeting.'
+            };
+        }
+    }
+);
+
+/* =====================================================
+   UPDATE MEETING
+===================================================== */
 
-                <!-- =====================================
-     NOTIFICATIONS
-====================================== -->
+ipcMain.handle(
+    'servicecall-update-meeting',
+
+    async (
+        event,
+        meetingSysId,
+        meetingData
+    ) => {
+
+        try {
+
+            /*
+             * Meeting sys_id is required.
+             */
+            if (!meetingSysId) {
 
-                <div id="notificationsView" class="view">
+                return {
+                    success: false,
+                    code:
+                        'MEETING_SYS_ID_REQUIRED',
+                    message:
+                        'Meeting sys_id is required.'
+                };
+            }
 
-                    <div id="notificationListPanel" class="notification-panel notification-list-panel active">
 
-                        <div class="page-heading">
+            /*
+             * Basic meeting data validation.
+             */
+            if (
+                !meetingData ||
+                !meetingData.title ||
+                !meetingData.scheduled_start ||
+                !meetingData.scheduled_end
+            ) {
+
+                return {
+                    success: false,
+                    code:
+                        'MEETING_DATA_REQUIRED',
+                    message:
+                        'Title, start time and end time are required.'
+                };
+            }
+
 
+            /*
+             * Build the payload sent to
+             * ServiceNow.
+             */
+            const payload = {
+
+                meeting_sys_id:
+                    String(
+                        meetingSysId
+                    ).trim(),
 
-                            <div>
+                title:
+                    String(
+                        meetingData.title
+                    ).trim(),
 
-                                <h1>
-                                    Notifications
-                                </h1>
+                description:
+                    String(
+                        meetingData.description ||
+                        ''
+                    ).trim(),
 
-                                <p>
-                                    Updates from your ServiceCall activity.
-                                </p>
+                scheduled_start:
+                    meetingData
+                        .scheduled_start,
 
-                            </div>
+                scheduled_end:
+                    meetingData
+                        .scheduled_end,
 
-
-                            <button id="markAllNotificationsReadButton" class="secondary-button" type="button"
-                                style="display: none;">
-
-                                Mark all as read
-
-                            </button>
-
-
-                        </div>
-
-
-
-                        <!-- =====================================
-     NOTIFICATION SEARCH
-====================================== -->
-
-                        <div class="notification-search-wrapper">
-
-                            <svg class="notification-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <circle cx="11" cy="11" r="7"></circle>
-
-                                <line x1="16.65" y1="16.65" x2="21" y2="21"></line>
-
-                            </svg>
-
-
-                            <input id="notificationSearchInput" class="notification-search" type="search"
-                                placeholder="Search notifications..." autocomplete="off" spellcheck="false">
-
-
-                            <button id="notificationSearchClear" class="notification-search-clear" type="button"
-                                aria-label="Clear notification search" title="Clear search">
-                                ×
-                            </button>
-
-                        </div>
-                        <!-- =====================================
-         NOTIFICATION TOOLBAR
-    ====================================== -->
-
-                        <div class="notification-toolbar">
-
-
-                            <div class="notification-filters">
-
-                                <button class="notification-filter active" type="button" data-notification-filter="all">
-
-                                    All
-
-                                </button>
-
-
-                                <button class="notification-filter" data-notification-filter="unread">
-                                    Unread
-                                    <span id="notificationUnreadFilterCount" class="notification-filter-count"
-                                        style="display: none;">
-                                        0
-                                    </span>
-                                </button>
-
-
-                                <button class="notification-filter" type="button" data-notification-filter="read">
-
-                                    Read
-
-                                </button>
-
-                            </div>
-
-
-                            <button id="refreshNotificationsButton" class="secondary-button" type="button">
-
-                                Refresh
-
-                            </button>
-
-
-                        </div>
-
-
-                        <!-- =====================================
-         NOTIFICATION LIST
-    ====================================== -->
-
-                        <div id="notificationsContainer" class="notifications-list">
-
-
-                            <div class="loading">
-                                Open Notifications to load your notifications.
-                            </div>
-
-
-                        </div>
-
-
-                        <!-- =====================================
-         NOTIFICATION PAGINATION
-    ====================================== -->
-
-                        <div id="notificationPagination" class="meeting-pagination">
-                        </div>
-                    </div>
-
-                    <!-- =====================================
-     NOTIFICATION DETAIL
-====================================== -->
-
-                    <div id="notificationDetailPanel" class="notification-panel notification-detail-panel"
-                        aria-hidden="true">
-
-                        <button id="notificationDetailBackButton" class="notification-detail-back" type="button">
-                            ← Back to Notifications
-                        </button>
-
-
-                        <div class="notification-detail-header">
-
-                            <div id="notificationDetailIcon" class="notification-detail-icon">
-                                🔔
-                            </div>
-
-
-                            <div class="notification-detail-heading">
-
-                                <div id="notificationDetailType" class="notification-detail-type">
-                                    Notification
-                                </div>
-
-
-                                <h2 id="notificationDetailTitle" class="notification-detail-title">
-                                    Notification
-                                </h2>
-
-
-                                <div id="notificationDetailTime" class="notification-detail-time">
-                                </div>
-
-                            </div>
-
-                        </div>
-
-
-                        <div class="notification-detail-content">
-
-                            <p id="notificationDetailMessage" class="notification-detail-message">
-                            </p>
-
-                        </div>
-
-
-                        <div id="notificationDetailActions" class="notification-detail-actions">
-                        </div>
-
-                    </div>
-
-                </div>
-
-
-                <!-- =====================================
-                     CHAT
-                ====================================== -->
-
-                <div id="chatView" class="view">
-
-
-                    <div class="page-heading">
-
-
-                        <div>
-
-
-                            <h1>
-                                Chat
-                            </h1>
-
-
-                            <p>
-                                Your ServiceCall conversations.
-                            </p>
-
-
-                        </div>
-
-
-                    </div>
-
-
-                    <div class="card placeholder">
-                        Chat is coming next.
-                    </div>
-
-
-                </div>
-
-
-                <!-- =====================================
-                     HISTORY
-                ====================================== -->
-
-                <div id="historyView" class="view">
-
-
-                    <div class="page-heading">
-
-
-                        <div>
-
-
-                            <h1>
-                                History
-                            </h1>
-
-
-                            <p>
-                                Your previous ServiceCall activity.
-                            </p>
-
-
-                        </div>
-
-
-                    </div>
-
-
-                    <div class="card placeholder">
-                        Call history will appear here.
-                    </div>
-
-
-                </div>
-
-
-                <!-- =====================================
-                     RECORDINGS
-                ====================================== -->
-
-                <div id="recordingsView" class="view">
-
-
-                    <div class="page-heading">
-
-
-                        <div>
-
-
-                            <h1>
-                                Recordings
-                            </h1>
-
-
-                            <p>
-                                Your ServiceCall recording history.
-                            </p>
-
-
-                        </div>
-
-
-                        <button class="secondary-button" id="refreshRecordingsButton" type="button">
-                            Refresh
-                        </button>
-
-
-                    </div>
-
-
-                    <div id="recordingsMessage" style="
-                            margin-bottom:14px;
-                            color:#40514d;
-                        "></div>
-
-
-                    <div id="recordingsList"></div>
-
-
-                </div>
-
-
-                <!-- =====================================
-                     SETTINGS
-                ====================================== -->
-
-                <div id="settingsView" class="view">
-
-
-                    <div class="page-heading">
-
-
-                        <div>
-
-
-                            <h1>
-                                Settings
-                            </h1>
-
-
-                            <p>
-                                Manage your ServiceNow connection.
-                            </p>
-
-
-                        </div>
-
-
-                    </div>
-
-
-                    <div class="card settings-card">
-
-
-                        <form id="instanceForm">
-
-
-                            <label class="field-label" for="instanceUrl">
-                                ServiceNow instance
-                            </label>
-
-
-                            <input id="instanceUrl" class="text-input" type="text"
-                                placeholder="https://dev12345.service-now.com">
-
-
-                            <div class="settings-actions">
-
-
-                                <button class="secondary-button" type="submit">
-                                    Save Instance
-                                </button>
-
-
-                                <button class="primary-button" id="loginButton" type="button">
-                                    Sign in to ServiceNow
-                                </button>
-
-
-                            </div>
-
-
-                        </form>
-
-
-                        <div id="instanceMessage"></div>
-
-
-                    </div>
-
-
-                </div>
-
-
-            </section>
-
-
-        </main>
-
-
-    </div>
-
-    <!-- =============================================
-     MEETING DETAILS MODAL
-============================================== -->
-
-    <div id="meetingDetailsModal" class="meeting-details-modal" aria-hidden="true">
-
-        <div class="meeting-details-backdrop" data-meeting-details-close></div>
-
-
-        <div class="meeting-details-dialog" role="dialog" aria-modal="true" aria-labelledby="meetingDetailsHeading">
-
-
-            <!-- =====================================
-             HEADER
-        ====================================== -->
-
-            <div class="meeting-details-header">
-
-                <div>
-
-                    <div class="meeting-details-heading">
-                        Meeting Details
-                    </div>
-
-                    <div id="meetingDetailsNumber" class="meeting-details-number">
-                        —
-                    </div>
-
-                </div>
-
-
-                <button id="meetingDetailsCloseButton" class="meeting-details-close" type="button"
-                    aria-label="Close meeting details" title="Close">
-                    ×
-                </button>
-
-            </div>
-
-
-            <!-- =====================================
-             SCROLLABLE CONTENT
-        ====================================== -->
-
-            <div id="meetingDetailsContent" class="meeting-details-content">
-
-
-                <!-- Title + Status -->
-
-                <div class="meeting-details-title-row">
-
-                    <h2 id="meetingDetailsHeading" class="meeting-details-title">
-                        Meeting
-                    </h2>
-
-
-                    <span id="meetingDetailsStatus" class="meeting-status">
-                        —
-                    </span>
-
-                </div>
-
-
-                <!-- Description -->
-
-                <div class="meeting-details-section">
-
-                    <div class="meeting-details-label">
-                        Description
-                    </div>
-
-                    <div id="meetingDetailsDescription" class="meeting-details-description">
-                        No description.
-                    </div>
-
-                </div>
-
-
-                <!-- =================================
-                 MEETING INFORMATION
-            ================================== -->
-
-                <div class="meeting-details-section">
-
-                    <div class="meeting-details-section-title">
-                        Meeting information
-                    </div>
-
-
-                    <div class="meeting-details-grid">
-
-
-                        <!-- Organizer -->
-
-                        <div class="meeting-details-field">
-
-                            <div class="meeting-details-label">
-                                Organizer
-                            </div>
-
-                            <div id="meetingDetailsOrganizer" class="meeting-details-value">
-                                —
-                            </div>
-
-                        </div>
-
-
-                        <!-- Scheduled Start -->
-
-                        <div class="meeting-details-field">
-
-                            <div class="meeting-details-label">
-                                Scheduled start
-                            </div>
-
-                            <div id="meetingDetailsStart" class="meeting-details-value">
-                                —
-                            </div>
-
-                        </div>
-
-
-                        <!-- Scheduled End -->
-
-                        <div class="meeting-details-field">
-
-                            <div class="meeting-details-label">
-                                Scheduled end
-                            </div>
-
-                            <div id="meetingDetailsEnd" class="meeting-details-value">
-                                —
-                            </div>
-
-                        </div>
-
-
-                        <!-- Started By -->
-
-                        <div id="meetingDetailsStartedByField" class="meeting-details-field">
-
-                            <div class="meeting-details-label">
-                                Started by
-                            </div>
-
-                            <div id="meetingDetailsStartedBy" class="meeting-details-value">
-                                —
-                            </div>
-
-                        </div>
-
-
-                        <!-- Started At -->
-
-                        <div id="meetingDetailsStartedAtField" class="meeting-details-field">
-
-                            <div class="meeting-details-label">
-                                Started at
-                            </div>
-
-                            <div id="meetingDetailsStartedAt" class="meeting-details-value">
-                                —
-                            </div>
-
-                        </div>
-
-
-                        <!-- Ended At -->
-
-                        <div id="meetingDetailsEndedAtField" class="meeting-details-field">
-
-                            <div class="meeting-details-label">
-                                Ended at
-                            </div>
-
-                            <div id="meetingDetailsEndedAt" class="meeting-details-value">
-                                —
-                            </div>
-
-                        </div>
-
-
-                    </div>
-
-                </div>
-
-
-                <!-- =================================
-                 PARTICIPANTS
-            ================================== -->
-
-                <div class="meeting-details-section">
-
-                    <div class="meeting-details-participants-header">
-
-                        <div class="meeting-details-section-title">
-                            Participants
-                        </div>
-
-                        <div id="meetingDetailsParticipantCount" class="meeting-details-count">
-                            0
-                        </div>
-
-                    </div>
-
-
-                    <div id="meetingDetailsParticipants" class="meeting-details-participants">
-
-                        <div class="meeting-details-empty">
-                            No participants.
-                        </div>
-
-                    </div>
-
-                </div>
-
-
-            </div>
-
-
-            <!-- =====================================
-             MEETING DETAILS FOOTER
-        ====================================== -->
-
-            <div class="meeting-details-footer">
-
-
-                <!--
-                Context-sensitive action.
-
-                Scheduled:
-                    Start Meeting
-
-                In Progress:
-                    Join Meeting
-
-                Ended / Cancelled:
-                    Hidden for now
-            -->
-
-                <button id="meetingDetailsActionButton" class="primary-button" type="button" style="display: none;">
-                    Join Meeting
-                </button>
-
-
-                <button id="meetingDetailsFooterCloseButton" class="secondary-button" type="button">
-                    Close
-                </button>
-
-
-            </div>
-
-
-        </div>
-
-    </div>
-
-
-
-    <!-- =============================================
-     SCHEDULE / EDIT MEETING MODAL
-============================================== -->
-
-    <div id="scheduleMeetingModal" class="schedule-meeting-modal" aria-hidden="true">
-
-        <div class="schedule-meeting-backdrop" data-schedule-meeting-close></div>
-
-
-        <div class="schedule-meeting-dialog" role="dialog" aria-modal="true" aria-labelledby="scheduleMeetingHeading">
-
-
-            <!-- =====================================
-             HEADER
-        ====================================== -->
-
-            <div class="schedule-meeting-header">
-
-                <div>
-
-                    <div id="scheduleMeetingHeading" class="schedule-meeting-heading">
-                        Schedule Meeting
-                    </div>
-
-
-                    <div id="scheduleMeetingSubtitle" class="schedule-meeting-subtitle">
-                        Create a new ServiceCall meeting.
-                    </div>
-
-                </div>
-
-
-                <button id="scheduleMeetingCloseButton" class="schedule-meeting-close" type="button"
-                    aria-label="Close schedule meeting" title="Close">
-                    ×
-                </button>
-
-            </div>
-
-
-            <!-- =====================================
-             FORM CONTENT
-        ====================================== -->
-
-            <div class="schedule-meeting-content">
-
-
-                <!-- Meeting Title -->
-
-                <div class="schedule-meeting-field">
-
-                    <label class="schedule-meeting-label" for="scheduleMeetingTitle">
-                        Meeting title
-
-                        <span class="schedule-meeting-required">
-                            *
-                        </span>
-                    </label>
-
-
-                    <input id="scheduleMeetingTitle" class="schedule-meeting-input" type="text" maxlength="160"
-                        placeholder="Enter meeting title" autocomplete="off">
-
-                </div>
-
-
-                <!-- Description -->
-
-                <div class="schedule-meeting-field">
-
-                    <label class="schedule-meeting-label" for="scheduleMeetingDescription">
-                        Description
-                    </label>
-
-
-                    <textarea id="scheduleMeetingDescription" class="schedule-meeting-textarea" rows="4"
-                        placeholder="What is this meeting about?"></textarea>
-
-                </div>
-
-
-                <!-- =================================
-                 DATE / TIME
-            ================================== -->
-
-                <div class="schedule-meeting-time-grid">
-
-
-                    <!-- Start -->
-
-                    <div class="schedule-meeting-field">
-
-                        <label class="schedule-meeting-label" for="scheduleMeetingStart">
-                            Start date &amp; time
-
-                            <span class="schedule-meeting-required">
-                                *
-                            </span>
-                        </label>
-
-
-                        <input id="scheduleMeetingStart" class="schedule-meeting-input" type="datetime-local">
-
-                    </div>
-
-
-                    <!-- End -->
-
-                    <div class="schedule-meeting-field">
-
-                        <label class="schedule-meeting-label" for="scheduleMeetingEnd">
-                            End date &amp; time
-
-                            <span class="schedule-meeting-required">
-                                *
-                            </span>
-                        </label>
-
-
-                        <input id="scheduleMeetingEnd" class="schedule-meeting-input" type="datetime-local">
-
-                    </div>
-
-
-                </div>
-
-
-                <!-- =================================
-                 TIME ZONE
-            ================================== -->
-
-                <div class="schedule-meeting-timezone">
-
-                    <span class="schedule-meeting-timezone-label">
-                        Time zone:
-                    </span>
-
-                    <span id="scheduleMeetingTimezone">
-                        Loading...
-                    </span>
-
-                </div>
-
-
-                <!-- =================================
-                 PEOPLE
-            ================================== -->
-
-                <div class="schedule-meeting-field">
-
-                    <label class="schedule-meeting-label" for="scheduleMeetingPeopleSearch">
-                        People
-
-                        <span class="schedule-meeting-required">
-                            *
-                        </span>
-                    </label>
-
-
-                    <div class="schedule-meeting-people-search-wrapper">
-
-                        <input id="scheduleMeetingPeopleSearch" class="schedule-meeting-input" type="search"
-                            placeholder="Search people..." autocomplete="off" spellcheck="false">
-
-
-                        <div id="scheduleMeetingPeopleResults" class="schedule-meeting-people-results"></div>
-
-                    </div>
-
-
-                    <div id="scheduleMeetingSelectedPeople" class="schedule-meeting-selected-people">
-
-                        <div id="scheduleMeetingNoPeople" class="schedule-meeting-no-people">
-                            No people selected.
-                        </div>
-
-                    </div>
-
-                </div>
-
-
-                <!-- =================================
-                 MESSAGE
-            ================================== -->
-
-                <div id="scheduleMeetingMessage" class="schedule-meeting-message"></div>
-
-
-            </div>
-
-
-            <!-- =====================================
-             SCHEDULE / EDIT FOOTER
-        ====================================== -->
-
-            <div class="schedule-meeting-footer">
-
-
-                <button id="scheduleMeetingCancelButton" class="secondary-button" type="button">
-                    Close
-                </button>
-
-
-                <button id="scheduleMeetingSubmitButton" class="primary-button" type="button">
-                    Schedule Meeting
-                </button>
-
-
-            </div>
-
-
-        </div>
-
-    </div>
-
-    <script src="renderer.js"></script>
-
-
-</body>
-
-</html>
+                timezone:
+                    String(
+                        meetingData.timezone ||
+                        ''
+                    ).trim(),
+
+                participants:
+                    Array.isArray(
+                        meetingData.participants
+                    )
+                        ? meetingData.participants
+                        : []
+            };
+
+
+            console.log(
+                'Updating ServiceCall meeting:',
+                payload
+            );
+
+
+            /*
+             * Send the update to ServiceNow.
+             *
+             * We will create this REST resource
+             * in the next step.
+             */
+            const result =
+                await serviceCallApiRequest(
+                    '/update-meeting',
+                    'POST',
+                    payload
+                );
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to update ServiceCall meeting:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'UPDATE_MEETING_FAILED',
+                message:
+                    error.message ||
+                    'Unable to update meeting.'
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-start-meeting',
+
+    async (
+        event,
+        meetingSysId
+    ) => {
+
+        try {
+
+            if (!meetingSysId) {
+
+                return {
+                    success: false,
+                    code: 'MEETING_REQUIRED',
+                    message: 'Meeting sys_id is required.'
+                };
+            }
+
+
+            const payload = {
+
+                meeting_sys_id:
+                    String(
+                        meetingSysId
+                    ).trim()
+            };
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/start-meeting',
+                    'POST',
+                    payload
+                );
+
+
+            /*
+             * -------------------------------------------------
+             * OPEN EXISTING SERVICECALL WINDOW FOR THE MEETING
+             * -------------------------------------------------
+             *
+             * A meeting creates a normal ServiceCall call record.
+             *
+             * We reuse the existing call window instead of
+             * creating a separate meeting window.
+             */
+            if (
+                result &&
+                result.success === true &&
+                result.call_sys_id
+            ) {
+
+                /*
+                 * Mark this call as already handled so the
+                 * generic outgoing-call polling loop does not
+                 * treat the meeting as a normal direct call.
+                 */
+                activeOutgoingCallId =
+                    result.call_sys_id;
+
+
+                showCallWindow(
+                    'connected',
+
+                    {
+                        callSysId:
+                            result.call_sys_id,
+
+                        callNumber:
+                            result.call_number ||
+                            '',
+
+                        /*
+                         * For a meeting, the main display name
+                         * is the meeting title.
+                         */
+                        name:
+                            result.title ||
+                            'ServiceCall Meeting',
+
+                        department:
+                            'Meeting',
+
+                        /*
+                         * Meetings use the existing conference
+                         * call functionality.
+                         */
+                        isConference:
+                            true,
+
+                        /*
+                         * Keep meeting context available for
+                         * the next step.
+                         */
+                        isMeeting:
+                            true,
+
+                        meetingSysId:
+                            result.meeting_sys_id ||
+                            meetingSysId,
+
+                        meetingNumber:
+                            result.meeting_number ||
+                            '',
+
+                        meetingTitle:
+                            result.title ||
+                            'ServiceCall Meeting'
+                    }
+                );
+            }
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to start ServiceCall meeting:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'START_MEETING_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to start meeting.'
+            };
+        }
+    }
+);
+
+/* =======================================================
+   MEETING CHANGE NOTIFICATION
+======================================================= */
+
+ipcMain.on(
+    'servicecall-meeting-changed',
+    (
+        event,
+        meetingSysId
+    ) => {
+
+        /*
+         * Forward the meeting change from the
+         * call window to the main desktop window.
+         */
+        if (
+            mainWindow &&
+            !mainWindow.isDestroyed()
+        ) {
+
+            mainWindow.webContents.send(
+                'servicecall-meeting-changed',
+                {
+                    meetingSysId:
+                        meetingSysId || ''
+                }
+            );
+        }
+    }
+);
+
+/* =====================================================
+   RENDERER READY FOR DEEP LINKS
+===================================================== */
+
+ipcMain.on(
+    'servicecall-renderer-ready',
+    (event) => {
+
+        /*
+         * Only accept this signal from
+         * the main ServiceCall window.
+         */
+        if (
+            !mainWindow ||
+            mainWindow.isDestroyed() ||
+            event.sender !==
+                mainWindow.webContents
+        ) {
+            return;
+        }
+
+
+        if (!pendingDeepLink) {
+            return;
+        }
+
+
+        console.log(
+            'Renderer ready. Sending pending ServiceCall deep link:',
+            pendingDeepLink
+        );
+
+
+        mainWindow.webContents.send(
+            'servicecall-deep-link',
+            {
+                url:
+                    pendingDeepLink
+            }
+        );
+
+
+        pendingDeepLink =
+            null;
+    }
+);
+
+/* =======================================================
+   JOIN MEETING
+======================================================= */
+
+ipcMain.handle(
+    'servicecall-join-meeting',
+
+    async (
+        event,
+        meetingSysId
+    ) => {
+
+        try {
+
+            if (!meetingSysId) {
+
+                return {
+                    success: false,
+                    code: 'MEETING_REQUIRED',
+                    message:
+                        'Meeting sys_id is required.'
+                };
+            }
+
+
+            const payload = {
+                meeting_sys_id:
+                    String(
+                        meetingSysId
+                    ).trim()
+            };
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/join-meeting',
+                    'POST',
+                    payload
+                );
+
+
+            if (
+                result &&
+                result.success === true &&
+                result.call_sys_id
+            ) {
+
+                /*
+ * Explicit Join means the user wants
+ * this meeting call again.
+ */
+intentionallyLeftCallIds.delete(
+    result.call_sys_id
+);
+
+                /*
+                 * This user is now connected
+                 * to the existing meeting call.
+                 */
+                activeOutgoingCallId =
+                    result.call_sys_id;
+
+
+                /*
+                 * Reuse our existing call window.
+                 *
+                 * IMPORTANT:
+                 * Pass full meeting context so
+                 * call-window.js knows this is
+                 * a ServiceCall Meeting.
+                 */
+                showCallWindow(
+                    'connected',
+                    {
+                        callSysId:
+                            result.call_sys_id,
+
+                        callNumber:
+                            result.call_number ||
+                            '',
+
+                        name:
+                            result.title ||
+                            'ServiceCall Meeting',
+
+                        department:
+                            'Meeting',
+
+                        isConference:
+                            true,
+
+                        isMeeting:
+                            true,
+
+                        meetingSysId:
+                            result.meeting_sys_id ||
+                            meetingSysId,
+
+                        meetingNumber:
+                            result.meeting_number ||
+                            '',
+
+                        meetingTitle:
+                            result.title ||
+                            'ServiceCall Meeting'
+                    }
+                );
+            }
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to join ServiceCall meeting:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'JOIN_MEETING_FAILED',
+                message:
+                    error.message ||
+                    'Unable to join meeting.'
+            };
+        }
+    }
+);
+
+/* =======================================================
+   LEAVE MEETING
+======================================================= */
+
+ipcMain.handle(
+    'servicecall-leave-meeting',
+
+    async (
+        event,
+        meetingSysId
+    ) => {
+
+        try {
+
+            if (!meetingSysId) {
+
+                return {
+                    success: false,
+                    code: 'MEETING_REQUIRED',
+                    message:
+                        'Meeting sys_id is required.'
+                };
+            }
+
+
+            const payload = {
+                meeting_sys_id:
+                    String(
+                        meetingSysId
+                    ).trim()
+            };
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/leave-meeting',
+                    'POST',
+                    payload
+                );
+
+
+            if (
+                result &&
+                result.success === true
+            ) {
+
+                /*
+ * Remember that THIS user deliberately
+ * left this call.
+ *
+ * The meeting itself may remain In Progress,
+ * so polling must not reopen its window.
+ */
+if (result.call_sys_id) {
+
+    intentionallyLeftCallIds.add(
+        result.call_sys_id
+    );
+}
+
+                /*
+                 * The user left this meeting,
+                 * so clear this call from the
+                 * active desktop state if needed.
+                 */
+                if (
+                    activeOutgoingCallId ===
+                    result.call_sys_id
+                ) {
+
+                    activeOutgoingCallId =
+                        null;
+                }
+
+
+                /*
+                 * Refresh the Meetings page.
+                 */
+                if (
+                    mainWindow &&
+                    !mainWindow.isDestroyed()
+                ) {
+
+                    mainWindow.webContents.send(
+                        'servicecall-meeting-changed',
+                        {
+                            meetingSysId:
+                                result.meeting_sys_id ||
+                                meetingSysId
+                        }
+                    );
+                }
+            }
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to leave ServiceCall meeting:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'LEAVE_MEETING_FAILED',
+                message:
+                    error.message ||
+                    'Unable to leave meeting.'
+            };
+        }
+    }
+);
+
+/* =======================================================
+   END MEETING
+======================================================= */
+
+ipcMain.handle(
+    'servicecall-end-meeting',
+
+    async (
+        event,
+        meetingSysId
+    ) => {
+
+        try {
+
+            if (!meetingSysId) {
+
+                return {
+                    success: false,
+                    code: 'MEETING_REQUIRED',
+                    message:
+                        'Meeting sys_id is required.'
+                };
+            }
+
+
+            const payload = {
+                meeting_sys_id:
+                    String(
+                        meetingSysId
+                    ).trim()
+            };
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/end-meeting',
+                    'POST',
+                    payload
+                );
+
+
+            if (
+                result &&
+                result.success === true
+            ) {
+
+                /*
+                 * Meeting call has ended.
+                 */
+                if (
+                    activeOutgoingCallId ===
+                    result.call_sys_id
+                ) {
+
+                    activeOutgoingCallId =
+                        null;
+                }
+
+
+                if (
+                    activeIncomingCallId ===
+                    result.call_sys_id
+                ) {
+
+                    activeIncomingCallId =
+                        null;
+                }
+
+
+                /*
+                 * Tell the main Meetings page
+                 * that meeting data changed.
+                 */
+                if (
+                    mainWindow &&
+                    !mainWindow.isDestroyed()
+                ) {
+
+                    mainWindow.webContents.send(
+                        'servicecall-meeting-changed',
+                        {
+                            meetingSysId:
+                                result.meeting_sys_id ||
+                                meetingSysId
+                        }
+                    );
+                }
+            }
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to end ServiceCall meeting:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'END_MEETING_FAILED',
+                message:
+                    error.message ||
+                    'Unable to end meeting.'
+            };
+        }
+    }
+);
+
+/* =======================================================
+   CANCEL MEETING
+======================================================= */
+
+ipcMain.handle(
+    'servicecall-cancel-meeting',
+
+    async (
+        event,
+        meetingSysId
+    ) => {
+
+        try {
+
+            if (!meetingSysId) {
+
+                return {
+                    success: false,
+                    code: 'MEETING_REQUIRED',
+                    message:
+                        'Meeting sys_id is required.'
+                };
+            }
+
+
+            const payload = {
+                meeting_sys_id:
+                    String(
+                        meetingSysId
+                    ).trim()
+            };
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/cancel-meeting',
+                    'POST',
+                    payload
+                );
+
+
+            if (
+                result &&
+                result.success === true
+            ) {
+
+                /*
+                 * Tell the main Meetings page
+                 * that this meeting changed.
+                 */
+                if (
+                    mainWindow &&
+                    !mainWindow.isDestroyed()
+                ) {
+
+                    mainWindow.webContents.send(
+                        'servicecall-meeting-changed',
+                        {
+                            meetingSysId:
+                                result.meeting_sys_id ||
+                                meetingSysId
+                        }
+                    );
+                }
+            }
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to cancel ServiceCall meeting:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'CANCEL_MEETING_FAILED',
+                message:
+                    error.message ||
+                    'Unable to cancel meeting.'
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-get-meeting-details',
+
+    async (
+        event,
+        meetingSysId
+    ) => {
+
+        try {
+
+            if (!meetingSysId) {
+
+                return {
+                    success: false,
+                    code: 'MEETING_REQUIRED',
+                    message:
+                        'Meeting sys_id is required.'
+                };
+            }
+
+
+            const query =
+                new URLSearchParams({
+                    meeting_sys_id:
+                        String(
+                            meetingSysId
+                        ).trim()
+                });
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/meeting-details?' +
+                        query.toString(),
+                    'GET'
+                );
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to get ServiceCall meeting details:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'MEETING_DETAILS_FAILED',
+                message:
+                    error.message ||
+                    'Unable to retrieve meeting details.'
+            };
+        }
+    }
+);
+
+/* =======================================================
+   SERVICECALL NOTIFICATIONS
+======================================================= */
+
+/*
+ * Get notifications for the currently
+ * authenticated ServiceCall user.
+ *
+ * ServiceNow determines the recipient from
+ * the authenticated OAuth user.
+ */
+ipcMain.handle(
+    'servicecall-get-notifications',
+
+    async (
+        event,
+        options = {}
+    ) => {
+
+        try {
+
+            let page =
+                parseInt(
+                    options.page,
+                    10
+                ) || 1;
+
+
+            if (page < 1) {
+                page = 1;
+            }
+
+
+            let pageSize =
+                parseInt(
+                    options.pageSize,
+                    10
+                ) || 20;
+
+
+            /*
+             * Keep desktop requests reasonable.
+             */
+            if (pageSize < 1) {
+                pageSize = 20;
+            }
+
+
+            if (pageSize > 50) {
+                pageSize = 50;
+            }
+
+            const search =
+    String(
+        options.search || ''
+    )
+        .trim()
+        .substring(
+            0,
+            100
+        );
+
+
+            const query =
+    new URLSearchParams({
+        page:
+            String(page),
+
+        page_size:
+            String(pageSize)
+    });
+
+
+if (search) {
+
+    query.set(
+        'search',
+        search
+    );
+}
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/notifications?' +
+                        query.toString(),
+                    'GET'
+                );
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to get ServiceCall notifications:',
+                error.message
+            );
+
+
+            return {
+
+                success: false,
+
+                code:
+                    error.code ||
+                    'GET_NOTIFICATIONS_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to retrieve notifications.',
+
+                notifications: [],
+
+                unread_count: 0,
+
+                page: 1,
+
+                page_size: 20,
+
+                has_more: false
+            };
+        }
+    }
+);
+
+/* =======================================================
+   MARK NOTIFICATION READ
+======================================================= */
+
+ipcMain.handle(
+    'servicecall-mark-notification-read',
+
+    async (
+        event,
+        notificationSysId
+    ) => {
+
+        try {
+
+            const sysId =
+                String(
+                    notificationSysId || ''
+                ).trim();
+
+
+            if (!sysId) {
+
+                return {
+                    success: false,
+                    code:
+                        'NOTIFICATION_REQUIRED',
+                    message:
+                        'Notification sys_id is required.'
+                };
+            }
+
+
+            return await serviceCallApiRequest(
+                '/mark-notification-read',
+                'POST',
+                {
+                    notification_sys_id:
+                        sysId
+                }
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to mark ServiceCall notification as read:',
+                error.message
+            );
+
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'MARK_NOTIFICATION_READ_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to mark notification as read.'
+            };
+        }
+    }
+);
+
+/* -------------------------------------------------------
+   DISMISS NOTIFICATION POPUP
+------------------------------------------------------- */
+
+ipcMain.on(
+    'servicecall-dismiss-notification-popup',
+
+    () => {
+
+        if (
+            notificationPopupWindow &&
+            !notificationPopupWindow.isDestroyed()
+        ) {
+
+            notificationPopupWindow.destroy();
+
+            notificationPopupWindow =
+                null;
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-start-call',
+
+    async (
+        event,
+        targetUserSysId
+    ) => {
+
+        try {
+
+            const targetUser =
+                String(
+                    targetUserSysId || ''
+                ).trim();
+
+
+            if (!targetUser) {
+
+                return {
+                    success: false,
+                    code:
+                        'TARGET_USER_REQUIRED',
+                    message:
+                        'Target user is required.'
+                };
+            }
+
+
+            const result =
+                await serviceCallApiRequest(
+                    '/start-call',
+                    'POST',
+                    {
+                        target_user_sys_id:
+                            targetUser
+                    }
+                );
+
+
+            return result;
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to start ServiceCall:',
+                error.message
+            );
+
+
+            return {
+
+                success: false,
+
+                code:
+                    error.code ||
+                    'START_CALL_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to start the ServiceCall.'
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-update-presence',
+
+    async (
+        event,
+        presenceData = {}
+    ) => {
+
+        try {
+
+            const status =
+                String(
+                    presenceData.status || ''
+                ).trim();
+
+            const oofReason =
+                String(
+                    presenceData.oofReason || ''
+                ).trim();
+
+            if (!status) {
+
+                return {
+                    success: false,
+                    code: 'PRESENCE_REQUIRED',
+                    message:
+                        'Presence status is required.'
+                };
+            }
+
+            return await serviceCallApiRequest(
+                '/presence',
+                'POST',
+                {
+                    status: status,
+                    oof_reason: oofReason
+                }
+            );
+
+        } catch (error) {
+
+            console.error(
+                'Unable to update ServiceCall presence:',
+                error.message
+            );
+
+            return {
+                success: false,
+                code:
+                    error.code ||
+                    'UPDATE_PRESENCE_FAILED',
+                message:
+                    error.message ||
+                    'Unable to update presence.'
+            };
+        }
+    }
+);
+
+ipcMain.handle(
+    'servicecall-get-my-presence',
+
+    async () => {
+
+        try {
+
+            const result =
+                await serviceCallApiRequest(
+                    '/presence',
+                    'GET'
+                );
+
+            return result;
+
+        } catch (error) {
+
+            console.error(
+                'Unable to get ServiceCall presence:',
+                error.message
+            );
+
+            return {
+                success: false,
+
+                code:
+                    error.code ||
+                    'GET_PRESENCE_FAILED',
+
+                message:
+                    error.message ||
+                    'Unable to retrieve presence.'
+            };
+        }
+    }
+);
