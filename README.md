@@ -608,6 +608,7 @@ if (
                     'Connected'
                 );
 
+                await loadMyPresence();
 
                 if (message) {
 
@@ -750,7 +751,7 @@ if (
         ------------------------------------------------- */
 
         window.serviceCall.onAuthStatus(
-            (data) => {
+            async(data) => {
 
                 if (message) {
 
@@ -776,7 +777,7 @@ if (
                         true,
                         'Connected'
                     );
-
+await loadMyPresence();
 
                 } else if (
                     data.status === 'warning' ||
@@ -8184,14 +8185,6 @@ if (
                     'none';
             }
 
-
-            if (
-                oofReasonInput
-            ) {
-
-                oofReasonInput.value =
-                    '';
-            }
         }
     );
 }
