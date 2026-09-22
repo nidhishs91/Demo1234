@@ -1,4835 +1,1748 @@
-const params =
-    new URLSearchParams(
-        window.location.search
-    );
-    
-const mode =
-    params.get('mode') ||
-    'incoming';
+<!DOCTYPE html>
+<html>
 
-const callSysId =
-    params.get('callSysId') ||
-    ''; 
+<head>
 
-const personName =
-    params.get('name') ||
-    'Unknown User';
+    <meta charset="UTF-8">
 
-const department =
-    params.get('department') ||
-    '';
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self' data: blob:;
+        script-src 'self';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: blob:;
+        media-src 'self' blob:;
+        connect-src 'self' https: wss:;
+    ">
 
-const callNumber =
-    params.get('callNumber') ||
-    '';
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-const isConference =
-    params.get('isConference') === 'true';
+    <title>
+        ServiceCall
+    </title>
 
-/* -------------------------
-   MEETING CONTEXT
-------------------------- */
 
-const isMeeting =
-    params.get('isMeeting') === 'true';
-
-const meetingSysId =
-    params.get('meetingSysId') ||
-    '';
-
-const meetingNumber =
-    params.get('meetingNumber') ||
-    '';
-
-const meetingTitle =
-    params.get('meetingTitle') ||
-    '';
-
-console.log(
-    'SERVICECALL MEETING CONTEXT:',
-    {
-        isMeeting,
-        meetingSysId,
-        meetingNumber,
-        meetingTitle
-    }
-);
-
-let currentMode =
-    mode;
-
-let callStatusTimer =
-    null;
-
-let callStartedAt =
-    null;
-
-/*
- * Authoritative start time returned
- * by ServiceNow.
- *
- * For meetings this prevents the timer
- * from restarting after Leave -> Join.
- */
-let serverCallStartedAt =
-    null;
-
-let durationTimer =
-    null;
-
-let closeTimer = null;
-
-let ringtoneInterval = null;
-let audioContext = null;
-
-let currentUserIsOwner =
-    false;
-
-let participantRole =
-    'participant';
-
-/* -------------------------
-   ELEMENTS
-------------------------- */
-
-const avatar =
-    document.getElementById(
-        'avatar'
-    );
-
-const personNameElement =
-    document.getElementById(
-        'personName'
-    );
-
-const departmentElement =
-    document.getElementById(
-        'department'
-    );
-
-const statusText =
-    document.getElementById(
-        'statusText'
-    );
-
-const callNumberElement =
-    document.getElementById(
-        'callNumber'
-    );
-
-const timerElement =
-    document.getElementById(
-        'timer'
-    );
-
-const incomingActions =
-    document.getElementById(
-        'incomingActions'
-    );
-
-const callingActions =
-    document.getElementById(
-        'callingActions'
-    );
-
-const connectedActions =
-    document.getElementById(
-        'connectedActions'
-    );
-
-/* -------------------------
-   PARTICIPANTS PANEL
-------------------------- */
-
-const participantsButton =
-    document.getElementById(
-        'participantsButton'
-    );
-
-const participantsPanel =
-    document.getElementById(
-        'participantsPanel'
-    );
-
-const participantsPanelBody =
-    document.getElementById(
-        'participantsPanelBody'
-    );
-
-const participantsPanelCount =
-    document.getElementById(
-        'participantsPanelCount'
-    );
-
-const closeParticipantsPanelButton =
-    document.getElementById(
-        'closeParticipantsPanel'
-    );
-
-
-let latestCallParticipants =
-    [];
-
-
-/* -------------------------
-   INITIAL DISPLAY
-------------------------- */
-
-personNameElement.textContent =
-    personName;
-
-departmentElement.textContent =
-    department;
-
-callNumberElement.textContent =
-    callNumber;
-
-
-const initials =
-    personName
-        .split(' ')
-        .filter(Boolean)
-        .slice(0, 2)
-        .map(
-            part =>
-                part[0]
-                    .toUpperCase()
-        )
-        .join('');
-
-
-avatar.textContent =
-    initials || '?';
-
-/* -------------------------
-   MEETING DISPLAY
-------------------------- */
-
-if (isMeeting) {
-
-    /*
-     * Use the meeting title as the
-     * primary name in the existing
-     * ServiceCall window.
-     */
-    personNameElement.textContent =
-        meetingTitle ||
-        personName ||
-        'ServiceCall Meeting';
-
-
-    /*
-     * Show that this is a meeting
-     * instead of a person's department.
-     */
-    departmentElement.textContent =
-        'Meeting';
-
-
-    /*
-     * Show meeting number when available.
-     */
-    if (meetingNumber) {
-
-        callNumberElement.textContent =
-            meetingNumber;
-    }
-
-
-    /*
-     * Meeting-specific action labels.
-     */
-    const addUserButton =
-        document.getElementById(
-            'addUserButton'
-        );
-
-    const recordButton =
-        document.getElementById(
-            'recordButton'
-        );
-
-
-    if (addUserButton) {
-
-        addUserButton.textContent =
-            'Add People';
-    }
-
-
-    if (recordButton) {
-
-        recordButton.textContent =
-            'Record Meeting';
-    }
-}
-
-/* -------------------------
-   RINGTONE
-------------------------- */
- 
-function playRingTone(
-    frequency = 440
-) {
- 
-    try {
- 
-        if (!audioContext) {
- 
-            audioContext =
-                new (
-                    window.AudioContext ||
-                    window.webkitAudioContext
-                )();
-        }
- 
- 
-        const oscillator =
-            audioContext.createOscillator();
- 
-        const gain =
-            audioContext.createGain();
- 
- 
-        oscillator.type =
-            'sine';
- 
-        oscillator.frequency.value =
-            frequency;
- 
- 
-        gain.gain.value =
-            0.08;
- 
- 
-        oscillator.connect(
-            gain
-        );
- 
-        gain.connect(
-            audioContext.destination
-        );
- 
- 
-        oscillator.start();
- 
- 
-        setTimeout(
-            () => {
- 
-                try {
- 
-                    oscillator.stop();
- 
-                } catch (error) {
-                    // Already stopped.
-                }
- 
-            },
-            500
-        );
- 
-    } catch (error) {
- 
-        console.error(
-            'Unable to play ServiceCall ringtone:',
-            error
-        );
-    }
-}
- 
- 
-function startRingtone(
-    type
-) {
- 
-    stopRingtone();
- 
- 
-    /*
-     * Incoming call:
-     * slightly higher tone.
-     *
-     * Outgoing call:
-     * lower ringback tone.
-     */
-    const frequency =
-        type === 'incoming'
-            ? 520
-            : 420;
- 
- 
-    playRingTone(
-        frequency
-    );
- 
- 
-    ringtoneInterval =
-        setInterval(
-            () => {
- 
-                playRingTone(
-                    frequency
-                );
- 
-            },
-            1800
-        );
-}
- 
- 
-function stopRingtone() {
- 
-    if (ringtoneInterval) {
- 
-        clearInterval(
-            ringtoneInterval
-        );
- 
-        ringtoneInterval =
-            null;
-    }
-}
-
-/* -------------------------
-   AGORA AUDIO
-------------------------- */
-
-let agoraJoining = false;
-
-
-async function startAgoraAudio() {
-
-    if (
-        !window.ServiceCallAgora
-    ) {
-
-        console.error(
-            'ServiceCall Agora media service is not available.'
-        );
-
-        statusText.textContent =
-            'Audio service unavailable';
-
-        return;
-    }
-
-
-    if (
-        window.ServiceCallAgora.isJoined() ||
-        agoraJoining
-    ) {
-        return;
-    }
-
-
-    if (!callSysId) {
-
-        console.error(
-            'ServiceCall call sys_id is missing.'
-        );
-
-        statusText.textContent =
-            'Audio configuration unavailable';
-
-        return;
-    }
-
-
-    agoraJoining =
-        true;
-
-
-    try {
-
-        console.log(
-            'ServiceCall requesting dynamic media credentials...'
-        );
-
-
-        /*
-         * Request short-lived credentials
-         * for THIS specific ServiceCall call.
-         *
-         * Electron -> ServiceNow
-         * -> Cloudflare Worker -> Agora token
-         */
-        const credentials =
-            await window.serviceCall
-                .getMediaCredentials(
-                    callSysId
-                );
-
-
-        if (
-            !credentials ||
-            !credentials.success
-        ) {
-
-            throw new Error(
-                credentials &&
-                credentials.message
-                    ? credentials.message
-                    : 'Media credentials could not be obtained.'
-            );
+    <style>
+        * {
+            box-sizing: border-box;
         }
 
 
-        const media =
-            credentials.media;
+        body {
+            margin: 0;
 
+            font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
 
-        if (
-            !media ||
-            !media.app_id ||
-            !media.channel ||
-            !media.token ||
-            !media.uid
-        ) {
+            background:
+                #f4f7f6;
 
-            throw new Error(
-                'ServiceCall returned incomplete media credentials.'
-            );
+            color:
+                #1f2d2a;
+
+            min-height:
+                100vh;
         }
 
 
-        console.log(
-            'ServiceCall media credentials received.',
-            'Channel:',
-            media.channel,
-            'UID:',
-            media.uid
-        );
-
-
-        /*
-         * IMPORTANT:
-         *
-         * Never log media.token.
-         */
-
-
-        console.log(
-            'ServiceCall joining Agora audio channel...'
-        );
-
-
-        await window.ServiceCallAgora.join({
-
-            appId:
-                media.app_id,
-
-            token:
-                media.token,
-
-            channel:
-                media.channel,
-
-            uid:
-                media.uid,
-
-
-            /*
-             * TOKEN RENEWAL CALLBACK
-             *
-             * agora-service.js calls this
-             * when Agora warns that the
-             * current token will expire.
-             *
-             * We request fresh credentials
-             * for the SAME ServiceCall call.
-             */
-            renewToken:
-                async () => {
-
-                    console.log(
-                        'ServiceCall requesting renewed media credentials...'
-                    );
-
-
-                    const renewedCredentials =
-                        await window.serviceCall
-                            .getMediaCredentials(
-                                callSysId
-                            );
-
-
-                    if (
-                        !renewedCredentials ||
-                        !renewedCredentials.success
-                    ) {
-
-                        throw new Error(
-                            renewedCredentials &&
-                            renewedCredentials.message
-                                ? renewedCredentials.message
-                                : 'Unable to obtain renewed media credentials.'
-                        );
-                    }
-
-
-                    const renewedMedia =
-                        renewedCredentials.media;
-
-
-                    if (
-                        !renewedMedia ||
-                        !renewedMedia.token
-                    ) {
-
-                        throw new Error(
-                            'ServiceCall returned an incomplete renewed media token.'
-                        );
-                    }
-
-
-                    /*
-                     * Safety check:
-                     *
-                     * Renewal must remain on
-                     * the SAME Agora channel
-                     * and SAME participant UID.
-                     */
-                    if (
-                        renewedMedia.channel !==
-                        media.channel
-                    ) {
-
-                        throw new Error(
-                            'Renewed media channel does not match the active call.'
-                        );
-                    }
-
-
-                    if (
-                        Number(
-                            renewedMedia.uid
-                        ) !==
-                        Number(
-                            media.uid
-                        )
-                    ) {
-
-                        throw new Error(
-                            'Renewed media UID does not match the active participant.'
-                        );
-                    }
-
-
-                    console.log(
-                        'ServiceCall renewed media credentials received.',
-                        'Channel:',
-                        renewedMedia.channel,
-                        'UID:',
-                        renewedMedia.uid
-                    );
-
-
-                    /*
-                     * NEVER log renewedMedia.token.
-                     *
-                     * Return only the token to
-                     * agora-service.js.
-                     */
-                    return renewedMedia.token;
-                }
-        });
-
-
-        console.log(
-            'ServiceCall audio connected successfully.'
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall audio connection failed:',
-            error
-        );
-
-
-        statusText.textContent =
-            'Connected - audio unavailable';
-
-
-    } finally {
-
-        agoraJoining =
-            false;
-    }
-}
-
-
-async function stopAgoraAudio() {
-
-    if (
-        !window.ServiceCallAgora
-    ) {
-        return;
-    }
-
-
-    try {
-
-        await window.ServiceCallAgora
-            .leave();
-
-    } catch (error) {
-
-        console.error(
-            'Unable to leave ServiceCall audio:',
-            error
-        );
-    }
-}
-
-/* -------------------------
-   UI STATE
-------------------------- */
-
-function setMode(
-    newMode
-) {
-
-    currentMode =
-        newMode;
-
-
-    incomingActions
-        .classList
-        .add('hidden');
-
-    callingActions
-        .classList
-        .add('hidden');
-
-    connectedActions
-        .classList
-        .add('hidden');
-
-    timerElement
-        .classList
-        .add('hidden');
-
-
-    if (
-        newMode ===
-        'incoming'
-    ) {
-
-        statusText.textContent =
-            isConference
-                ? 'Conference call'
-                : 'is calling you...';
-
-        incomingActions
-            .classList
-            .remove('hidden');
-
-
-        startRingtone('incoming');
-        return;
-    }
-
-
-    if (
-        newMode ===
-        'calling'
-    ) {
-
-        statusText.textContent =
-            'Ringing';
-
-        callingActions
-            .classList
-            .remove('hidden');
-
-        startRingtone('outgoing');
-
-        return;
-    }
-
-
-    if (
-        newMode ===
-        'connected'
-    ) {
-
-        stopRingtone();
-
-        statusText.textContent =
-            'Connected';
-
-        connectedActions
-            .classList
-            .remove('hidden');
-
-        /*
- * Normal calls can start their timer
- * immediately.
- *
- * Meetings wait for ServiceNow's
- * authoritative started_at value so
- * Rejoin never flashes 00:00 first.
- */
-if (!isMeeting) {
-
-    timerElement
-        .classList
-        .remove('hidden');
-
-    startDurationTimer();
-}
-
-startAgoraAudio();
-    }
-
-
-    if (
-    newMode ===
-    'declined'
-) {
-
-    stopRingtone();
- 
-    statusText.textContent =
-        'Call declined';
- 
-    stopAllTimers();
- 
-    closeCallWindowAfterDelay();
- 
-    return;
-}
-
-
-    if (
-    newMode ===
-    'cancelled'
-) {
-
-    stopRingtone();
- 
-    statusText.textContent =
-        'Call cancelled';
- 
-    stopAllTimers();
- 
-    closeCallWindowAfterDelay();
- 
-    return;
-}
-
-
-    if (
-    newMode ===
-    'completed'
-) {
-
-    stopRingtone();
-
-    statusText.textContent =
-        'Call ended';
-
-    stopAllTimers();
-
-    stopAgoraAudio();
-
-    closeCallWindowAfterDelay();
-
-    return;
-}
-}
-
-
-/* -------------------------
-   CALL TIMER
-------------------------- */
-
-function startDurationTimer() {
-
-    if (durationTimer) {
-        return;
-    }
-
-
-    /*
-     * For meetings, prefer the authoritative
-     * start time returned by ServiceNow.
-     *
-     * For normal calls, preserve the existing
-     * local timer behavior.
-     */
-    if (
-        isMeeting &&
-        serverCallStartedAt
-    ) {
-
-        callStartedAt =
-            serverCallStartedAt;
-
-    } else {
-
-        callStartedAt =
-            Date.now();
-    }
-
-
-    function updateDurationDisplay() {
-
-        if (!callStartedAt) {
-            return;
+        button {
+            font-family:
+                inherit;
         }
 
 
-        const seconds =
-            Math.max(
-                0,
-                Math.floor(
-                    (
-                        Date.now() -
-                        callStartedAt
-                    ) / 1000
-                )
-            );
-
-
-        const hours =
-            Math.floor(
-                seconds / 3600
-            );
-
-
-        const minutes =
-            Math.floor(
-                (
-                    seconds % 3600
-                ) / 60
-            );
-
-
-        const remainingSeconds =
-            seconds % 60;
-
-
-        /*
-         * Under one hour:
-         *     07:24
-         *
-         * One hour or more:
-         *     01:07:24
-         */
-        if (hours > 0) {
-
-            timerElement.textContent =
-                String(hours)
-                    .padStart(
-                        2,
-                        '0'
-                    ) +
-                ':' +
-                String(minutes)
-                    .padStart(
-                        2,
-                        '0'
-                    ) +
-                ':' +
-                String(
-                    remainingSeconds
-                )
-                    .padStart(
-                        2,
-                        '0'
-                    );
-
-        } else {
-
-            timerElement.textContent =
-                String(minutes)
-                    .padStart(
-                        2,
-                        '0'
-                    ) +
-                ':' +
-                String(
-                    remainingSeconds
-                )
-                    .padStart(
-                        2,
-                        '0'
-                    );
-        }
-    }
-
-
-    /*
-     * Display immediately instead of waiting
-     * one second for the first interval.
-     */
-    updateDurationDisplay();
-
-
-    durationTimer =
-        setInterval(
-            updateDurationDisplay,
-            1000
-        );
-}
-
-/* -------------------------
-   STATUS POLLING
-------------------------- */
-
-async function checkCallStatus() {
-
-    if (!callSysId) {
-        return;
-    }
-
-
-    try {
-
-        const result =
-            await window.serviceCall
-                .getCallStatus(
-                    callSysId
-                );
-
-
-        if (
-            !result ||
-            !result.success
-        ) {
-            return;
-        }
-
-        /*
- * Keep the live participant list
- * synchronized with ServiceNow.
- *
- * /call-status already runs every
- * 2 seconds, so no extra polling
- * request is required.
- */
-renderParticipants(
-    Array.isArray(result.participants)
-        ? result.participants
-        : []
-);
-
-
-        const state =
-            result.state;
-
-            console.log(
-    'SERVICECALL TIMER DEBUG:',
-    {
-        isMeeting:
-            isMeeting,
-
-        answered_at:
-            result.answered_at,
-
-        localNow:
-            new Date()
-                .toISOString()
-    }
-);
-
-        /*
- * ServiceNow is authoritative for when
- * the meeting/call actually started.
- *
- * GlideDateTime.getValue() is returned as:
- * YYYY-MM-DD HH:mm:ss
- *
- * ServiceNow stores this value in UTC,
- * therefore explicitly parse it as UTC.
- */
-if (
-    isMeeting &&
-    result.started_at
-) {
-
-    const parsedStartedAt =
-        Date.parse(
-            result.started_at
-                .replace(
-                    ' ',
-                    'T'
-                ) +
-            'Z'
-        );
-
-
-    if (
-    !Number.isNaN(
-        parsedStartedAt
-    )
-) {
-
-    serverCallStartedAt =
-        parsedStartedAt;
-
-    callStartedAt =
-        serverCallStartedAt;
-
-
-    /*
-     * Meeting timer becomes visible only
-     * after the authoritative start time
-     * has been received.
-     */
-    timerElement
-        .classList
-        .remove('hidden');
-
-
-    startDurationTimer();
-}
-}
-
-        /*
- * Keep the recording indicator synchronized
- * for every participant in the call.
- *
- * /call-status is already polled every
- * 2 seconds, so no additional timer or
- * REST request is required.
- */
-syncRecordingIndicator(
-    result.recording_active === true
-);
-
-        /* -------------------------
-   OWNER / PARTICIPANT STATE
-------------------------- */
-
-currentUserIsOwner =
-    result.is_owner === true;
-
-
-participantRole =
-    result.participant_role ||
-    'participant';
-
-
-const endButton =
-    document.getElementById(
-        'endButton'
-    );
-
-
-if (currentUserIsOwner) {
-
-    endButton.textContent =
-        isMeeting
-            ? 'End Meeting'
-            : 'End Conference';
-
-} else {
-
-    endButton.textContent =
-        isMeeting
-            ? 'Leave Meeting'
-            : 'Leave Call';
-}
-
-
-/* -------------------------
-   PARTICIPANT LEFT
-------------------------- */
-
-const participantStatus =
-    result.participant_status ||
-    '';
-
-
-if (
-    participantStatus === 'left' ||
-    participantStatus === 'disconnected'
-) {
-
-    /*
-     * The overall conference may still be
-     * connected, but THIS participant is
-     * no longer part of it.
-     */
-
-    await stopAgoraAudio();
-
-    stopRingtone();
-
-    stopAllTimers();
-
-    statusText.textContent =
-        participantStatus === 'left'
-            ? 'You left the call'
-            : 'Call ended';
-
-    closeCallWindowAfterDelay();
-
-    return;
-}
-
-        if (
-            state === 'connected' &&
-            currentMode !==
-                'connected'
-        ) {
-
-            setMode(
-                'connected'
-            );
-
-            return;
+        .hidden {
+            display:
+                none !important;
         }
 
 
-        if (
-            state === 'declined'
-        ) {
+        /* --------------------------------
+           TOP BAR
+        -------------------------------- */
 
-            setMode(
-                'declined'
-            );
+        .topbar {
+            height:
+                54px;
 
-            return;
+            background:
+                #173a33;
+
+            color:
+                white;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            padding:
+                0 18px;
+
+            box-shadow:
+                0 2px 8px rgba(0, 0, 0, 0.12);
         }
 
 
-        if (
-            state === 'cancelled'
-        ) {
+        .brand {
+            display:
+                flex;
 
-            setMode(
-                'cancelled'
-            );
+            align-items:
+                center;
 
-            return;
+            gap:
+                10px;
+
+            font-size:
+                16px;
+
+            font-weight:
+                bold;
         }
 
 
-        if (
-            state === 'completed'
-        ) {
+        .brand-logo {
+            width:
+                26px;
 
-            setMode(
-                'completed'
-            );
+            height:
+                26px;
 
-            return;
+            border-radius:
+                8px;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            background:
+                #79d9c3;
+
+            color:
+                #173a33;
+
+            font-size:
+                13px;
+
+            font-weight:
+                bold;
         }
 
-    } catch (error) {
 
-        console.error(
-            'Call status error:',
-            error
-        );
-    }
-}
+        /* --------------------------------
+           MAIN CONTAINER
+        -------------------------------- */
 
+        .container {
+            width:
+                100%;
 
-function startCallStatusPolling() {
+            max-width:
+                980px;
 
-    if (!callSysId) {
-        return;
-    }
+            margin:
+                0 auto;
 
+            padding:
+                28px 22px 32px 22px;
 
-    checkCallStatus();
-
-
-    callStatusTimer =
-        setInterval(
-            checkCallStatus,
-            2000
-        );
-}
-
-
-/* -------------------------
-   ACCEPT
-------------------------- */
-
-document
-    .getElementById(
-        'acceptButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
-
-            try {
-
-                const result =
-                    await window
-                        .serviceCall
-                        .acceptCall(
-                            callSysId
-                        );
-
-
-                if (
-                    result.success
-                ) {
-
-                    setMode(
-                        'connected'
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    'Accept call failed:',
-                    error
-                );
-
-                statusText.textContent =
-                    error.message ||
-                    'Unable to accept call.';
-            }
+            text-align:
+                center;
         }
-    );
 
 
-/* -------------------------
-   DECLINE
-------------------------- */
+        /* --------------------------------
+           USER / CALL DETAILS
+        -------------------------------- */
 
-document
-    .getElementById(
-        'declineButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
+        .avatar {
+            width:
+                92px;
 
-            try {
+            height:
+                92px;
 
-                const result =
-                    await window
-                        .serviceCall
-                        .declineCall(
-                            callSysId
-                        );
+            margin:
+                4px auto 18px auto;
 
+            border-radius:
+                50%;
 
-                if (
-                    result.success
-                ) {
+            display:
+                flex;
 
-                    setMode(
-                        'declined'
-                    );
-                }
+            align-items:
+                center;
 
-            } catch (error) {
+            justify-content:
+                center;
 
-                console.error(
-                    'Decline call failed:',
-                    error
-                );
+            background:
+                #dcefeb;
 
-                statusText.textContent =
-                    error.message ||
-                    'Unable to decline call.';
-            }
+            color:
+                #0b4f46;
+
+            font-size:
+                31px;
+
+            font-weight:
+                bold;
+
+            box-shadow:
+                0 5px 18px rgba(0, 0, 0, 0.08);
         }
-    );
 
 
-/* -------------------------
-   CANCEL
-------------------------- */
+        .person-name {
+            font-size:
+                24px;
 
-document
-    .getElementById(
-        'cancelButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
+            font-weight:
+                bold;
 
-            try {
+            margin-bottom:
+                6px;
 
-                const result =
-                    await window
-                        .serviceCall
-                        .cancelCall(
-                            callSysId
-                        );
-
-
-                if (
-                    result.success
-                ) {
-
-                    setMode(
-                        'cancelled'
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    'Cancel call failed:',
-                    error
-                );
-
-                statusText.textContent =
-                    error.message ||
-                    'Unable to cancel call.';
-            }
+            word-break:
+                break-word;
         }
-    );
-
-/* -------------------------
-   MUTE / UNMUTE
-------------------------- */
-
-document
-    .getElementById(
-        'muteButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
-
-            try {
-
-                if (
-                    !window.ServiceCallAgora ||
-                    !window.ServiceCallAgora.isJoined()
-                ) {
-
-                    statusText.textContent =
-                        'Audio is not connected';
-
-                    return;
-                }
 
 
-                const currentlyMuted =
-                    window.ServiceCallAgora
-                        .isMuted();
+        .department {
+            min-height:
+                18px;
 
+            font-size:
+                14px;
 
-                const result =
-                    await window.ServiceCallAgora
-                        .setMuted(
-                            !currentlyMuted
-                        );
+            color:
+                #687772;
 
-
-                if (result.success) {
-
-                    document
-                        .getElementById(
-                            'muteButton'
-                        )
-                        .textContent =
-                            result.muted
-                                ? 'Unmute'
-                                : 'Mute';
-
-
-                    console.log(
-                        result.muted
-                            ? 'ServiceCall microphone muted.'
-                            : 'ServiceCall microphone unmuted.'
-                    );
-                }
-
-
-            } catch (error) {
-
-                console.error(
-                    'ServiceCall mute failed:',
-                    error
-                );
-
-
-                statusText.textContent =
-                    'Unable to change microphone state';
-            }
+            margin-bottom:
+                14px;
         }
-    );
 
-/* =======================================================
-   LIVE PARTICIPANTS PANEL
-======================================================= */
 
-function getParticipantInitials(
-    name
-) {
+        .status {
+            min-height:
+                22px;
 
-    return String(
-        name ||
-        'Unknown User'
-    )
-        .split(' ')
-        .filter(Boolean)
-        .slice(0, 2)
-        .map(
-            part =>
-                part.charAt(0)
-                    .toUpperCase()
-        )
-        .join('') ||
-        '?';
-}
+            margin-bottom:
+                6px;
 
+            font-size:
+                15px;
 
-function getParticipantStatusLabel(
-    status
-) {
+            color:
+                #40514d;
+        }
 
-    switch (
-        String(status || '')
-            .toLowerCase()
-    ) {
 
-        case 'connected':
-            return 'Connected';
+        .timer {
+            min-height:
+                24px;
 
-        case 'ringing':
-            return 'Ringing';
+            font-size:
+                18px;
 
-        case 'invited':
-            return 'Invited';
+            font-weight:
+                bold;
 
-        default:
-            return status ||
-                'Participant';
-    }
-}
+            color:
+                #0b6b58;
 
+            margin-bottom:
+                8px;
+        }
 
-function renderParticipants(
-    participants
-) {
 
-    latestCallParticipants =
-        Array.isArray(participants)
-            ? participants
-            : [];
+        .call-number {
+            min-height:
+                18px;
 
+            margin-bottom:
+                22px;
 
-    /* -------------------------
-       COUNT
-    ------------------------- */
+            font-size:
+                12px;
 
-    if (participantsPanelCount) {
+            color:
+                #8a9793;
+        }
 
-        participantsPanelCount
-            .textContent =
-                String(
-                    latestCallParticipants
-                        .length
-                );
-    }
 
+        /* --------------------------------
+           SCREEN SHARING VIEW
+        -------------------------------- */
 
-    if (!participantsPanelBody) {
-        return;
-    }
+        .screen-share-container {
+            width:
+                100%;
 
+            max-width:
+                900px;
 
-    participantsPanelBody.innerHTML =
-        '';
+            margin:
+                0 auto 24px auto;
 
+            background:
+                #101817;
 
-    /* -------------------------
-       SECTION LABEL
-    ------------------------- */
+            border-radius:
+                12px;
 
-    const sectionLabel =
-        document.createElement(
-            'div'
-        );
+            overflow:
+                hidden;
 
-    sectionLabel.className =
-        'participants-section-label';
+            box-shadow:
+                0 8px 28px rgba(0, 0, 0, 0.18);
+        }
 
-    sectionLabel.textContent =
-        isMeeting
-            ? 'In this meeting'
-            : 'In this call';
 
+        .screen-share-header {
+            display:
+                flex;
 
-    participantsPanelBody
-        .appendChild(
-            sectionLabel
-        );
+            align-items:
+                center;
 
+            justify-content:
+                space-between;
 
-    /* -------------------------
-       EMPTY STATE
-    ------------------------- */
+            gap:
+                12px;
 
-    if (
-        latestCallParticipants.length === 0
-    ) {
+            padding:
+                10px 14px;
 
-        const empty =
-            document.createElement(
-                'div'
-            );
+            background:
+                #173a33;
 
-        empty.className =
-            'participants-empty';
+            color:
+                white;
 
-        empty.textContent =
-            'No active participants.';
+            font-size:
+                13px;
+        }
 
 
-        participantsPanelBody
-            .appendChild(
-                empty
-            );
+        .screen-share-title {
+            font-weight:
+                bold;
 
-        return;
-    }
+            overflow:
+                hidden;
 
+            text-overflow:
+                ellipsis;
 
-    /* -------------------------
-       PARTICIPANTS
-    ------------------------- */
+            white-space:
+                nowrap;
+        }
 
-    latestCallParticipants.forEach(
-        participant => {
 
-            const row =
-                document.createElement(
-                    'div'
-                );
+        .screen-share-view {
+            position:
+                relative;
 
-            row.className =
-                'live-participant';
+            width:
+                100%;
 
+            aspect-ratio:
+                16 / 9;
 
-            /* -------------------------
-               AVATAR
-            ------------------------- */
+            background:
+                #101817;
+        }
 
-            const participantAvatar =
-                document.createElement(
-                    'div'
-                );
 
-            participantAvatar.className =
-                'live-participant-avatar';
+        .screen-share-video {
+            position:
+                absolute;
 
-            participantAvatar.textContent =
-                getParticipantInitials(
-                    participant.name
-                );
+            inset:
+                0;
 
+            width:
+                100%;
 
-            /* -------------------------
-               INFO
-            ------------------------- */
+            height:
+                100%;
 
-            const info =
-                document.createElement(
-                    'div'
-                );
+            overflow:
+                hidden;
+        }
 
-            info.className =
-                'live-participant-info';
 
+        .screen-share-video video {
+            width:
+                100% !important;
 
-            const name =
-                document.createElement(
-                    'div'
-                );
+            height:
+                100% !important;
 
-            name.className =
-                'live-participant-name';
+            object-fit:
+                contain !important;
+        }
 
-            name.textContent =
-                participant.name ||
-                'Unknown User';
 
+        .screen-share-placeholder {
+            position:
+                absolute;
 
-            const meta =
-                document.createElement(
-                    'div'
-                );
+            inset:
+                0;
 
-            meta.className =
-                'live-participant-meta';
+            display:
+                flex;
 
+            align-items:
+                center;
 
-            const metaParts =
-                [];
+            justify-content:
+                center;
 
+            padding:
+                20px;
 
-            if (
-                participant.is_owner === true
-            ) {
+            color:
+                #d5dfdc;
 
-                metaParts.push(
-                    isMeeting
-                        ? 'Organizer'
-                        : 'Owner'
-                );
+            font-size:
+                14px;
 
-            } else if (
-                participant.role
-            ) {
+            text-align:
+                center;
 
-                metaParts.push(
-                    participant.role
-                );
+            pointer-events:
+                none;
+        }
+
+
+        .screen-sharing-active {
+            background:
+                #dcefeb !important;
+
+            color:
+                #0b4f46 !important;
+
+            font-weight:
+                bold;
+        }
+
+
+        /* --------------------------------
+           ACTIONS
+        -------------------------------- */
+
+        .actions {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            flex-wrap:
+                wrap;
+
+            gap:
+                12px;
+
+            margin-top:
+                18px;
+        }
+
+
+        .actions button {
+            min-width:
+                112px;
+
+            min-height:
+                42px;
+
+            padding:
+                10px 16px;
+
+            border:
+                none;
+
+            border-radius:
+                8px;
+
+            cursor:
+                pointer;
+
+            font-size:
+                14px;
+
+            transition:
+                transform 0.12s ease,
+                box-shadow 0.12s ease,
+                opacity 0.12s ease;
+        }
+
+
+        .actions button:hover {
+            transform:
+                translateY(-1px);
+
+            box-shadow:
+                0 4px 12px rgba(0, 0, 0, 0.10);
+        }
+
+
+        .actions button:disabled {
+            cursor:
+                not-allowed;
+
+            opacity:
+                0.55;
+
+            transform:
+                none;
+
+            box-shadow:
+                none;
+        }
+
+
+        .primary {
+            background:
+                #0b6b58;
+
+            color:
+                white;
+        }
+
+
+        .secondary {
+            background:
+                #e6eeec;
+
+            color:
+                #243631;
+        }
+
+
+        .danger {
+            background:
+                #c94343;
+
+            color:
+                white;
+        }
+
+
+        .accept {
+            background:
+                #16856d;
+
+            color:
+                white;
+        }
+
+
+        /* --------------------------------
+           RECORDING
+        -------------------------------- */
+
+        .recording-text {
+            margin-top:
+                18px;
+
+            min-height:
+                18px;
+
+            color:
+                #b33838;
+
+            font-size:
+                13px;
+
+            font-weight:
+                bold;
+        }
+
+
+        /* --------------------------------
+           LIVE PARTICIPANTS PANEL
+        -------------------------------- */
+
+        .participants-panel {
+            position:
+                fixed;
+
+            top:
+                54px;
+
+            right:
+                0;
+
+            bottom:
+                0;
+
+            width:
+                340px;
+
+            max-width:
+                92vw;
+
+            z-index:
+                900;
+
+            display:
+                flex;
+
+            flex-direction:
+                column;
+
+            background:
+                #ffffff;
+
+            border-left:
+                1px solid #dfe8e5;
+
+            box-shadow:
+                -8px 0 28px rgba(0, 0, 0, 0.12);
+
+            text-align:
+                left;
+        }
+
+
+        .participants-panel-header {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                space-between;
+
+            gap:
+                12px;
+
+            padding:
+                18px;
+
+            border-bottom:
+                1px solid #e5ecea;
+        }
+
+
+        .participants-panel-heading {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            gap:
+                7px;
+        }
+
+
+        .participants-panel-title {
+            font-size:
+                17px;
+
+            font-weight:
+                bold;
+
+            color:
+                #1f2d2a;
+        }
+
+
+        .participants-panel-count {
+            display:
+                inline-flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            min-width:
+                26px;
+
+            height:
+                26px;
+
+            padding:
+                0 8px;
+
+            border-radius:
+                13px;
+
+            background:
+                #e4f3ef;
+
+            color:
+                #0b6b58;
+
+            font-size:
+                12px;
+
+            font-weight:
+                bold;
+        }
+
+
+        .participants-panel-close {
+            width:
+                34px;
+
+            height:
+                34px;
+
+            border:
+                none;
+
+            border-radius:
+                8px;
+
+            background:
+                #eef3f2;
+
+            color:
+                #324540;
+
+            cursor:
+                pointer;
+
+            font-size:
+                22px;
+
+            line-height:
+                1;
+        }
+
+
+        .participants-panel-close:hover {
+            background:
+                #e1e9e7;
+        }
+
+
+        .participants-panel-body {
+            flex:
+                1;
+
+            overflow-y:
+                auto;
+
+            padding:
+                14px;
+        }
+
+
+        .participants-section-label {
+            margin:
+                3px 4px 10px 4px;
+
+            color:
+                #687772;
+
+            font-size:
+                11px;
+
+            font-weight:
+                bold;
+
+            text-transform:
+                uppercase;
+
+            letter-spacing:
+                0.5px;
+        }
+
+
+        .live-participant {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            gap:
+                11px;
+
+            padding:
+                11px 10px;
+
+            margin-bottom:
+                5px;
+
+            border-radius:
+                10px;
+
+            transition:
+                background 0.12s ease;
+        }
+
+
+        .live-participant:hover {
+            background:
+                #f4f8f7;
+        }
+
+
+        .live-participant-avatar {
+            width:
+                40px;
+
+            height:
+                40px;
+
+            flex-shrink:
+                0;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            border-radius:
+                50%;
+
+            background:
+                #dcefeb;
+
+            color:
+                #0b4f46;
+
+            font-size:
+                14px;
+
+            font-weight:
+                bold;
+        }
+
+
+        .live-participant-info {
+            flex:
+                1;
+
+            min-width:
+                0;
+        }
+
+
+        .live-participant-name {
+            overflow:
+                hidden;
+
+            color:
+                #1f2d2a;
+
+            font-size:
+                14px;
+
+            font-weight:
+                600;
+
+            text-overflow:
+                ellipsis;
+
+            white-space:
+                nowrap;
+        }
+
+
+        .live-participant-meta {
+            margin-top:
+                3px;
+
+            color:
+                #71807c;
+
+            font-size:
+                12px;
+        }
+
+
+        .live-participant-status {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            gap:
+                6px;
+
+            color:
+                #53635f;
+
+            font-size:
+                11px;
+
+            white-space:
+                nowrap;
+        }
+
+
+        .live-participant-status-dot {
+            width:
+                8px;
+
+            height:
+                8px;
+
+            flex-shrink:
+                0;
+
+            border-radius:
+                50%;
+
+            background:
+                #16856d;
+        }
+
+
+        .participants-empty {
+            padding:
+                40px 18px;
+
+            text-align:
+                center;
+
+            color:
+                #71807c;
+
+            font-size:
+                13px;
+
+            line-height:
+                1.5;
+        }
+
+
+        /* --------------------------------
+           MODAL BASE
+        -------------------------------- */
+
+        .modal-overlay {
+            position:
+                fixed;
+
+            inset:
+                0;
+
+            z-index:
+                1000;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            padding:
+                22px;
+
+            background:
+                rgba(9, 22, 19, 0.58);
+        }
+
+
+        .modal-card {
+            width:
+                100%;
+
+            max-width:
+                520px;
+
+            max-height:
+                82vh;
+
+            overflow:
+                hidden;
+
+            background:
+                white;
+
+            border-radius:
+                14px;
+
+            box-shadow:
+                0 18px 50px rgba(0, 0, 0, 0.22);
+
+            text-align:
+                left;
+        }
+
+
+        .modal-header {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                space-between;
+
+            gap:
+                14px;
+
+            padding:
+                16px 18px;
+
+            border-bottom:
+                1px solid #e5ecea;
+        }
+
+
+        .modal-title {
+            font-size:
+                17px;
+
+            font-weight:
+                bold;
+
+            color:
+                #1f2d2a;
+        }
+
+
+        .modal-close {
+            width:
+                34px;
+
+            height:
+                34px;
+
+            border:
+                none;
+
+            border-radius:
+                8px;
+
+            background:
+                #eef3f2;
+
+            color:
+                #324540;
+
+            cursor:
+                pointer;
+
+            font-size:
+                23px;
+
+            line-height:
+                1;
+        }
+
+
+        .modal-body {
+            padding:
+                18px;
+
+            overflow-y:
+                auto;
+
+            max-height:
+                calc(82vh - 68px);
+        }
+
+
+        /* --------------------------------
+           ADD PARTICIPANT
+        -------------------------------- */
+
+        .participant-help {
+            margin-bottom:
+                12px;
+
+            color:
+                #687772;
+
+            font-size:
+                13px;
+
+            line-height:
+                1.45;
+        }
+
+
+        .participant-search {
+            width:
+                100%;
+
+            height:
+                42px;
+
+            padding:
+                0 12px;
+
+            border:
+                1px solid #ccd8d5;
+
+            border-radius:
+                8px;
+
+            outline:
+                none;
+
+            font-size:
+                14px;
+
+            margin-bottom:
+                12px;
+        }
+
+
+        .participant-search:focus {
+            border-color:
+                #16856d;
+        }
+
+
+        .participant-results {
+            display:
+                flex;
+
+            flex-direction:
+                column;
+
+            gap:
+                8px;
+
+            max-height:
+                330px;
+
+            overflow-y:
+                auto;
+        }
+
+
+        .participant-result {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                space-between;
+
+            gap:
+                12px;
+
+            padding:
+                11px 12px;
+
+            border:
+                1px solid #e0e8e6;
+
+            border-radius:
+                8px;
+
+            background:
+                #fafcfc;
+        }
+
+
+        .participant-result button {
+            border:
+                none;
+
+            border-radius:
+                7px;
+
+            background:
+                #0b6b58;
+
+            color:
+                white;
+
+            padding:
+                8px 12px;
+
+            cursor:
+                pointer;
+        }
+
+
+        .participant-message {
+            padding:
+                18px 10px;
+
+            text-align:
+                center;
+
+            color:
+                #71807c;
+
+            font-size:
+                13px;
+        }
+
+
+        /* --------------------------------
+           SCREEN SOURCE MODAL
+        -------------------------------- */
+
+        .screen-source-modal-card {
+            width:
+                100%;
+
+            max-width:
+                760px;
+
+            max-height:
+                82vh;
+
+            background:
+                white;
+
+            border-radius:
+                14px;
+
+            box-shadow:
+                0 18px 50px rgba(0, 0, 0, 0.22);
+
+            overflow:
+                hidden;
+
+            text-align:
+                left;
+        }
+
+
+        .screen-source-results {
+            display:
+                grid;
+
+            grid-template-columns:
+                repeat(auto-fit,
+                    minmax(190px, 1fr));
+
+            gap:
+                14px;
+
+            max-height:
+                480px;
+
+            overflow-y:
+                auto;
+
+            padding-top:
+                4px;
+        }
+
+
+        .screen-source-item {
+            border:
+                1px solid #dbe5e2;
+
+            border-radius:
+                10px;
+
+            background:
+                white;
+
+            overflow:
+                hidden;
+
+            cursor:
+                pointer;
+
+            transition:
+                transform 0.15s ease,
+                border-color 0.15s ease,
+                box-shadow 0.15s ease;
+        }
+
+
+        .screen-source-item:hover {
+            transform:
+                translateY(-2px);
+
+            border-color:
+                #16856d;
+
+            box-shadow:
+                0 6px 18px rgba(0, 0, 0, 0.10);
+        }
+
+
+        .screen-source-thumbnail {
+            width:
+                100%;
+
+            aspect-ratio:
+                16 / 9;
+
+            object-fit:
+                cover;
+
+            display:
+                block;
+
+            background:
+                #101817;
+        }
+
+
+        .screen-source-name {
+            padding:
+                10px 11px;
+
+            font-size:
+                13px;
+
+            color:
+                #1f2d2a;
+
+            white-space:
+                nowrap;
+
+            overflow:
+                hidden;
+
+            text-overflow:
+                ellipsis;
+        }
+
+
+        .screen-source-message {
+            grid-column:
+                1 / -1;
+
+            padding:
+                25px;
+
+            text-align:
+                center;
+
+            color:
+                #65736f;
+
+            font-size:
+                13px;
+        }
+
+
+        /* --------------------------------
+           SMALL WINDOW BEHAVIOUR
+        -------------------------------- */
+
+        @media (max-width: 520px) {
+
+            .container {
+                padding:
+                    24px 14px 28px 14px;
             }
 
 
-            if (
-                participant.department
-            ) {
+            .avatar {
+                width:
+                    82px;
 
-                metaParts.push(
-                    participant.department
-                );
+                height:
+                    82px;
+
+                font-size:
+                    28px;
             }
 
 
-            meta.textContent =
-                metaParts.join(
-                    ' • '
-                ) ||
-                (
-                    isMeeting
-                        ? 'Meeting participant'
-                        : 'Call participant'
-                );
-
-
-            info.appendChild(
-                name
-            );
-
-            info.appendChild(
-                meta
-            );
-
-
-            /* -------------------------
-               STATUS
-            ------------------------- */
-
-            const participantStatus =
-                document.createElement(
-                    'div'
-                );
-
-            participantStatus.className =
-                'live-participant-status';
-
-
-            const statusDot =
-                document.createElement(
-                    'span'
-                );
-
-            statusDot.className =
-                'live-participant-status-dot';
-
-
-            const statusLabel =
-                document.createElement(
-                    'span'
-                );
-
-            statusLabel.textContent =
-                getParticipantStatusLabel(
-                    participant.status
-                );
-
-
-            participantStatus.appendChild(
-                statusDot
-            );
-
-            participantStatus.appendChild(
-                statusLabel
-            );
-
-
-            /* -------------------------
-               BUILD ROW
-            ------------------------- */
-
-            row.appendChild(
-                participantAvatar
-            );
-
-            row.appendChild(
-                info
-            );
-
-            row.appendChild(
-                participantStatus
-            );
-
-
-            participantsPanelBody
-                .appendChild(
-                    row
-                );
-        }
-    );
-}
-
-
-/* -------------------------
-   OPEN PANEL
-------------------------- */
-
-function openParticipantsPanel() {
-
-    if (!participantsPanel) {
-        return;
-    }
-
-
-    /*
-     * Render the latest data immediately.
-     */
-    renderParticipants(
-        latestCallParticipants
-    );
-
-
-    participantsPanel
-        .classList
-        .remove(
-            'hidden'
-        );
-}
-
-
-/* -------------------------
-   CLOSE PANEL
-------------------------- */
-
-function closeParticipantsPanel() {
-
-    if (!participantsPanel) {
-        return;
-    }
-
-
-    participantsPanel
-        .classList
-        .add(
-            'hidden'
-        );
-}
-
-
-/* -------------------------
-   PARTICIPANTS BUTTON
-------------------------- */
-
-if (participantsButton) {
-
-    participantsButton
-        .addEventListener(
-            'click',
-            () => {
-
-                if (
-                    currentMode !==
-                    'connected'
-                ) {
-                    return;
-                }
-
-
-                openParticipantsPanel();
-            }
-        );
-}
-
-
-/* -------------------------
-   CLOSE BUTTON
-------------------------- */
-
-if (closeParticipantsPanelButton) {
-
-    closeParticipantsPanelButton
-        .addEventListener(
-            'click',
-            closeParticipantsPanel
-        );
-}
-
-
-/* -------------------------
-   ESCAPE TO CLOSE
-------------------------- */
-
-document.addEventListener(
-    'keydown',
-    event => {
-
-        if (
-            event.key ===
-                'Escape' &&
-            participantsPanel &&
-            !participantsPanel
-                .classList
-                .contains(
-                    'hidden'
-                )
-        ) {
-
-            closeParticipantsPanel();
-        }
-    }
-);
-
-/* -------------------------
-   ADD PARTICIPANT
-------------------------- */
-
-const addUserButton =
-    document.getElementById(
-        'addUserButton'
-    );
-
-const addParticipantModal =
-    document.getElementById(
-        'addParticipantModal'
-    );
-
-const closeParticipantModalButton =
-    document.getElementById(
-        'closeParticipantModal'
-    );
-
-const participantSearch =
-    document.getElementById(
-        'participantSearch'
-    );
-
-const participantResults =
-    document.getElementById(
-        'participantResults'
-    );
-
-const participantMessage =
-    document.getElementById(
-        'participantMessage'
-    );
-
-
-let participantSearchTimer =
-    null;
-
-
-/* -------------------------
-   OPEN MODAL
-------------------------- */
-
-function openParticipantModal() {
-
-    participantMessage.textContent =
-        '';
-
-    participantMessage.className =
-        'participant-message';
-
-
-    participantSearch.value =
-        '';
-
-
-    participantResults.innerHTML =
-        '<div class="participant-empty">' +
-        'Start typing a user\'s name.' +
-        '</div>';
-
-
-    addParticipantModal
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    setTimeout(
-        () => {
-
-            participantSearch.focus();
-
-        },
-        100
-    );
-}
-
-
-/* -------------------------
-   CLOSE MODAL
-------------------------- */
-
-function closeParticipantModal() {
-
-    addParticipantModal
-        .classList
-        .add(
-            'hidden'
-        );
-
-
-    if (participantSearchTimer) {
-
-        clearTimeout(
-            participantSearchTimer
-        );
-
-        participantSearchTimer =
-            null;
-    }
-}
-
-
-/* -------------------------
-   SEARCH USERS
-------------------------- */
-
-async function searchParticipantUsers() {
-
-    const searchText =
-        participantSearch
-            .value
-            .trim();
-
-
-    participantMessage.textContent =
-        '';
-
-    participantMessage.className =
-        'participant-message';
-
-
-    if (
-        searchText.length < 2
-    ) {
-
-        participantResults.innerHTML =
-            '<div class="participant-empty">' +
-            'Enter at least 2 characters.' +
-            '</div>';
-
-        return;
-    }
-
-
-    participantResults.innerHTML =
-        '<div class="participant-empty">' +
-        'Searching...' +
-        '</div>';
-
-
-    try {
-
-        const result =
-            await window.serviceCall
-                .searchUsers(
-                    searchText
-                );
-
-
-        /*
-         * Ignore an old search result if the
-         * user has already typed something else.
-         */
-        if (
-            participantSearch
-                .value
-                .trim() !==
-            searchText
-        ) {
-            return;
-        }
-
-
-        if (
-            !result ||
-            !result.success
-        ) {
-
-            throw new Error(
-                result &&
-                result.message
-                    ? result.message
-                    : 'Unable to search users.'
-            );
-        }
-
-
-        const users =
-            Array.isArray(
-                result.users
-            )
-                ? result.users
-                : [];
-
-
-        if (
-            users.length === 0
-        ) {
-
-            participantResults.innerHTML =
-                '<div class="participant-empty">' +
-                'No matching users found.' +
-                '</div>';
-
-            return;
-        }
-
-
-        /*
-         * Build results safely with DOM APIs.
-         * Do not inject ServiceNow user values
-         * directly into HTML.
-         */
-        participantResults.innerHTML =
-            '';
-
-
-        users.forEach(
-            (user) => {
-
-                const row =
-                    document.createElement(
-                        'div'
-                    );
-
-                row.className =
-                    'participant-result';
-
-
-                const details =
-                    document.createElement(
-                        'div'
-                    );
-
-                details.className =
-                    'participant-details';
-
-
-                const name =
-                    document.createElement(
-                        'div'
-                    );
-
-                name.className =
-                    'participant-name';
-
-                name.textContent =
-                    user.name ||
-                    'Unknown User';
-
-
-                const subtitle =
-                    document.createElement(
-                        'div'
-                    );
-
-                subtitle.className =
-                    'participant-subtitle';
-
-
-                const subtitleParts =
-                    [];
-
-
-                if (user.department) {
-
-                    subtitleParts.push(
-                        user.department
-                    );
-                }
-
-
-                if (user.email) {
-
-                    subtitleParts.push(
-                        user.email
-                    );
-                }
-
-
-                subtitle.textContent =
-                    subtitleParts.join(
-                        ' • '
-                    ) ||
-                    user.user_name ||
-                    'ServiceNow user';
-
-
-                details.appendChild(
-                    name
-                );
-
-                details.appendChild(
-                    subtitle
-                );
-
-
-                const addButton =
-                    document.createElement(
-                        'button'
-                    );
-
-                addButton.className =
-                    'participant-add';
-
-                addButton.textContent =
-                    'Add';
-
-
-                addButton.addEventListener(
-                    'click',
-                    async () => {
-
-                        await inviteServiceCallParticipant(
-                            user,
-                            addButton
-                        );
-                    }
-                );
-
-
-                row.appendChild(
-                    details
-                );
-
-                row.appendChild(
-                    addButton
-                );
-
-
-                participantResults.appendChild(
-                    row
-                );
-            }
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall user search failed:',
-            error
-        );
-
-
-        participantResults.innerHTML =
-            '<div class="participant-empty">' +
-            'Unable to search users.' +
-            '</div>';
-
-
-        participantMessage.textContent =
-            error.message ||
-            'Unable to search users.';
-
-        participantMessage.className =
-            'participant-message error';
-    }
-}
-
-
-/* -------------------------
-   INVITE USER
-------------------------- */
-
-async function inviteServiceCallParticipant(
-    user,
-    addButton
-) {
-
-    if (
-        !user ||
-        !user.sys_id
-    ) {
-        return;
-    }
-
-
-    addButton.disabled =
-        true;
-
-    addButton.textContent =
-        'Adding...';
-
-
-    participantMessage.textContent =
-        'Inviting ' +
-        (
-            user.name ||
-            'user'
-        ) +
-        '...';
-
-    participantMessage.className =
-        'participant-message';
-
-
-    try {
-
-        const result =
-            await window.serviceCall
-                .inviteParticipant(
-                    callSysId,
-                    user.sys_id
-                );
-
-
-        if (
-            !result ||
-            !result.success
-        ) {
-
-            throw new Error(
-                result &&
-                result.message
-                    ? result.message
-                    : 'Unable to invite participant.'
-            );
-        }
-
-
-        addButton.textContent =
-            'Invited';
-
-
-        participantMessage.textContent =
-            (
-                user.name ||
-                'Participant'
-            ) +
-            ' has been invited to the call.';
-
-        participantMessage.className =
-            'participant-message success';
-
-
-        /*
-         * Leave the success message visible
-         * briefly, then close the modal.
-         */
-        setTimeout(
-            () => {
-
-                closeParticipantModal();
-
-            },
-            1000
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall participant invite failed:',
-            error
-        );
-
-
-        addButton.disabled =
-            false;
-
-        addButton.textContent =
-            'Add';
-
-
-        participantMessage.textContent =
-            error.message ||
-            'Unable to invite participant.';
-
-        participantMessage.className =
-            'participant-message error';
-    }
-}
-
-
-/* -------------------------
-   ADD USER EVENTS
-------------------------- */
-
-addUserButton.addEventListener(
-    'click',
-    () => {
-
-        if (
-            currentMode !==
-            'connected'
-        ) {
-            return;
-        }
-
-
-        openParticipantModal();
-    }
-);
-
-
-closeParticipantModalButton
-    .addEventListener(
-        'click',
-        closeParticipantModal
-    );
-
-
-/*
- * Clicking the dark area outside
- * the card closes the modal.
- */
-addParticipantModal.addEventListener(
-    'click',
-    (event) => {
-
-        if (
-            event.target ===
-            addParticipantModal
-        ) {
-
-            closeParticipantModal();
-        }
-    }
-);
-
-
-/*
- * Escape closes the modal.
- */
-document.addEventListener(
-    'keydown',
-    (event) => {
-
-        if (
-            event.key ===
-            'Escape' &&
-            !addParticipantModal
-                .classList
-                .contains(
-                    'hidden'
-                )
-        ) {
-
-            closeParticipantModal();
-        }
-    }
-);
-
-
-/*
- * Small debounce so we don't hit
- * ServiceNow on every keystroke.
- */
-participantSearch.addEventListener(
-    'input',
-    () => {
-
-        if (participantSearchTimer) {
-
-            clearTimeout(
-                participantSearchTimer
-            );
-        }
-
-
-        participantSearchTimer =
-            setTimeout(
-                searchParticipantUsers,
-                350
-            );
-    }
-);
-
-/* =======================================================
-   SERVICECALL SCREEN SHARING
-======================================================= */
-
-const shareScreenButton =
-    document.getElementById(
-        'shareScreenButton'
-    );
-
-const screenShareContainer =
-    document.getElementById(
-        'screenShareContainer'
-    );
-
-const screenShareVideo =
-    document.getElementById(
-        'screenShareVideo'
-    );
-
-const screenSharePlaceholder =
-    document.getElementById(
-        'screenSharePlaceholder'
-    );
-
-const screenShareTitle =
-    document.getElementById(
-        'screenShareTitle'
-    );
-
-const screenSourceModal =
-    document.getElementById(
-        'screenSourceModal'
-    );
-
-const screenSourceResults =
-    document.getElementById(
-        'screenSourceResults'
-    );
-
-const closeScreenSourceModalButton =
-    document.getElementById(
-        'closeScreenSourceModal'
-    );
-
-
-let localScreenStream =
-    null;
-
-let localScreenAgoraTrack =
-    null;
-
-let localScreenNativeTrack =
-    null;
-
-let screenShareActionInProgress =
-    false;
-
-let activeRemoteScreenUid =
-    null;
-
-
-/* -------------------------------------------------------
-   CALL WINDOW LAYOUT
-------------------------------------------------------- */
-
-async function setScreenCallLayout() {
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .setCallWindowLayout !==
-            'function'
-    ) {
-        return;
-    }
-
-
-    try {
-
-        await window.serviceCall
-            .setCallWindowLayout(
-                'screen'
-            );
-
-    } catch (error) {
-
-        console.error(
-            'Unable to expand ServiceCall window:',
-            error
-        );
-    }
-}
-
-
-async function setCompactCallLayout() {
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .setCallWindowLayout !==
-            'function'
-    ) {
-        return;
-    }
-
-
-    try {
-
-        await window.serviceCall
-            .setCallWindowLayout(
-                'compact'
-            );
-
-    } catch (error) {
-
-        console.error(
-            'Unable to restore ServiceCall window:',
-            error
-        );
-    }
-}
-
-
-/* -------------------------------------------------------
-   SCREEN VIEW
-------------------------------------------------------- */
-
-async function showScreenShareView(
-    title
-) {
-
-    screenShareTitle.textContent =
-        title ||
-        'Screen sharing';
-
-
-    screenShareContainer
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    screenSharePlaceholder
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    await setScreenCallLayout();
-}
-
-
-async function hideScreenShareView() {
-
-    screenShareVideo.innerHTML =
-        '';
-
-
-    screenSharePlaceholder
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    screenShareContainer
-        .classList
-        .add(
-            'hidden'
-        );
-
-
-    activeRemoteScreenUid =
-        null;
-
-
-    /*
-     * Do not collapse if THIS participant
-     * is still sharing.
-     */
-    if (
-        !window.ServiceCallAgora ||
-        !window.ServiceCallAgora
-            .isScreenSharing()
-    ) {
-
-        await setCompactCallLayout();
-    }
-}
-
-
-/* -------------------------------------------------------
-   SOURCE MODAL
-------------------------------------------------------- */
-
-function closeScreenSourceModal() {
-
-    screenSourceModal
-        .classList
-        .add(
-            'hidden'
-        );
-
-
-    screenSourceResults.innerHTML =
-        '';
-}
-
-
-async function openScreenSourceModal() {
-
-    if (
-        currentMode !==
-        'connected'
-    ) {
-
-        statusText.textContent =
-            'The call must be connected before sharing your screen.';
-
-        return;
-    }
-
-
-    if (
-        !window.ServiceCallAgora ||
-        !window.ServiceCallAgora
-            .isJoined()
-    ) {
-
-        statusText.textContent =
-            'Call media is not connected yet.';
-
-        return;
-    }
-
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .getScreenSources !==
-            'function'
-    ) {
-
-        statusText.textContent =
-            'Screen sharing is unavailable.';
-
-        return;
-    }
-
-
-    screenSourceModal
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    screenSourceResults.innerHTML =
-        '<div class="screen-source-message">' +
-        'Loading screens and windows...' +
-        '</div>';
-
-
-    try {
-
-        const result =
-            await window.serviceCall
-                .getScreenSources();
-
-
-        if (
-            !result ||
-            !result.success
-        ) {
-
-            throw new Error(
-                result &&
-                result.message
-                    ? result.message
-                    : 'Unable to retrieve screens and windows.'
-            );
-        }
-
-
-        const sources =
-            Array.isArray(
-                result.sources
-            )
-                ? result.sources
-                : [];
-
-
-        screenSourceResults.innerHTML =
-            '';
-
-
-        if (
-            sources.length === 0
-        ) {
-
-            screenSourceResults.innerHTML =
-                '<div class="screen-source-message">' +
-                'No screens or windows are available.' +
-                '</div>';
-
-            return;
-        }
-
-
-        sources.forEach(
-            (source) => {
-
-                const item =
-                    document.createElement(
-                        'button'
-                    );
-
-
-                item.type =
-                    'button';
-
-                item.className =
-                    'screen-source-item';
-
-
-                if (source.thumbnail) {
-
-                    const thumbnail =
-                        document.createElement(
-                            'img'
-                        );
-
-
-                    thumbnail.className =
-                        'screen-source-thumbnail';
-
-                    thumbnail.src =
-                        source.thumbnail;
-
-                    thumbnail.alt =
-                        '';
-
-
-                    item.appendChild(
-                        thumbnail
-                    );
-                }
-
-
-                const sourceName =
-                    document.createElement(
-                        'div'
-                    );
-
-
-                sourceName.className =
-                    'screen-source-name';
-
-                sourceName.textContent =
-                    source.name ||
-                    'Screen';
-
-
-                item.appendChild(
-                    sourceName
-                );
-
-
-                item.addEventListener(
-                    'click',
-
-                    async () => {
-
-                        await startServiceCallScreenShare(
-                            source
-                        );
-                    }
-                );
-
-
-                screenSourceResults.appendChild(
-                    item
-                );
-            }
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'Unable to open ServiceCall screen picker:',
-            error
-        );
-
-
-        screenSourceResults.innerHTML =
-            '';
-
-
-        const message =
-            document.createElement(
-                'div'
-            );
-
-
-        message.className =
-            'screen-source-message';
-
-        message.textContent =
-            error.message ||
-            'Unable to load screens and windows.';
-
-
-        screenSourceResults.appendChild(
-            message
-        );
-    }
-}
-
-
-/* -------------------------------------------------------
-   CAPTURE ELECTRON SOURCE
-------------------------------------------------------- */
-
-async function captureDesktopSource(
-    sourceId
-) {
-
-    if (!sourceId) {
-
-        throw new Error(
-            'Screen source ID was not provided.'
-        );
-    }
-
-
-    /*
-     * Electron DesktopCapturerSource.id is passed
-     * to Chromium as chromeMediaSourceId.
-     *
-     * We deliberately capture VIDEO ONLY.
-     *
-     * Conference audio already comes from Agora,
-     * therefore desktop/system audio must not be
-     * injected into the call.
-     */
-    const stream =
-        await navigator.mediaDevices
-            .getUserMedia({
-
-                audio:
-                    false,
-
-                video: {
-
-                    mandatory: {
-
-                        chromeMediaSource:
-                            'desktop',
-
-                        chromeMediaSourceId:
-                            sourceId,
-
-                        maxWidth:
-                            1920,
-
-                        maxHeight:
-                            1080,
-
-                        maxFrameRate:
-                            30
-                    }
-                }
-            });
-
-
-    const videoTracks =
-        stream.getVideoTracks();
-
-
-    if (
-        videoTracks.length === 0
-    ) {
-
-        stream
-            .getTracks()
-            .forEach(
-                track =>
-                    track.stop()
-            );
-
-
-        throw new Error(
-            'The selected screen did not provide a video track.'
-        );
-    }
-
-
-    return stream;
-}
-
-
-/* -------------------------------------------------------
-   START LOCAL SCREEN SHARE
-------------------------------------------------------- */
-
-async function startServiceCallScreenShare(
-    source
-) {
-
-    if (screenShareActionInProgress) {
-        return;
-    }
-
-
-    screenShareActionInProgress =
-        true;
-
-    shareScreenButton.disabled =
-        true;
-
-
-    try {
-
-        if (
-            !source ||
-            !source.id
-        ) {
-
-            throw new Error(
-                'Please select a valid screen or window.'
-            );
-        }
-
-
-        if (
-            !window.ServiceCallAgora ||
-            !window.ServiceCallAgora
-                .isJoined()
-        ) {
-
-            throw new Error(
-                'Call media is not connected.'
-            );
-        }
-
-
-        closeScreenSourceModal();
-
-
-        statusText.textContent =
-            'Starting screen share...';
-
-
-        /*
-         * -----------------------------------------
-         * 1. CAPTURE WINDOWS SCREEN/WINDOW
-         * -----------------------------------------
-         */
-
-        const stream =
-            await captureDesktopSource(
-                source.id
-            );
-
-
-        const nativeTrack =
-            stream
-                .getVideoTracks()[0];
-
-
-        /*
-         * -----------------------------------------
-         * 2. CREATE AGORA VIDEO TRACK
-         * -----------------------------------------
-         */
-
-        const agoraTrack =
-            await window.ServiceCallAgora
-                .createScreenVideoTrack(
-                    nativeTrack
-                );
-
-
-        /*
-         * Keep references BEFORE publication so
-         * cleanup remains possible if publication
-         * fails.
-         */
-        localScreenStream =
-            stream;
-
-        localScreenNativeTrack =
-            nativeTrack;
-
-        localScreenAgoraTrack =
-            agoraTrack;
-
-
-        /*
-         * -----------------------------------------
-         * 3. HANDLE WINDOWS/OS STOP SHARING
-         * -----------------------------------------
-         */
-
-        nativeTrack.addEventListener(
-            'ended',
-
-            () => {
-
-                console.log(
-                    'ServiceCall screen capture ended by the operating system.'
-                );
-
-
-                stopServiceCallScreenShare()
-                    .catch(
-                        error => {
-
-                            console.error(
-                                'Unable to stop ServiceCall screen share:',
-                                error
-                            );
-                        }
-                    );
-            },
-
-            {
-                once: true
-            }
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 4. PUBLISH THROUGH EXISTING AGORA CALL
-         * -----------------------------------------
-         */
-
-        await window.ServiceCallAgora
-            .startScreenShare(
-                agoraTrack
-            );
-
-        /*
- * If recording is already running,
- * tell the recorder that screen video
- * has now entered the recording.
- */
-if (
-    window.ServiceCallRecorder &&
-    window.ServiceCallRecorder
-        .isRecording()
-) {
-
-    await window.ServiceCallRecorder
-        .attachScreen(
-            agoraTrack
-        );
-}
-
-
-        /*
-         * -----------------------------------------
-         * 5. SHOW LOCAL PREVIEW
-         * -----------------------------------------
-         */
-
-        await showScreenShareView(
-            'You are sharing: ' +
-            (
-                source.name ||
-                'Screen'
-            )
-        );
-
-
-        screenShareVideo.innerHTML =
-            '';
-
-
-        screenSharePlaceholder
-            .classList
-            .add(
-                'hidden'
-            );
-
-
-        agoraTrack.play(
-            screenShareVideo
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 6. BUTTON/UI
-         * -----------------------------------------
-         */
-
-        shareScreenButton.textContent =
-            'Stop Sharing';
-
-
-        shareScreenButton
-            .classList
-            .add(
-                'screen-sharing-active'
-            );
-
-
-        statusText.textContent =
-            'Connected';
-
-
-        console.log(
-            'ServiceCall screen sharing started:',
-            source.name ||
-            source.id
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'Unable to start ServiceCall screen sharing:',
-            error
-        );
-
-
-        /*
-         * Clean up any partially-created capture.
-         */
-        if (localScreenAgoraTrack) {
-
-            try {
-
-                localScreenAgoraTrack.stop();
-
-            } catch (stopError) {
-                // Ignore.
+            .person-name {
+                font-size:
+                    21px;
             }
 
 
-            try {
-
-                localScreenAgoraTrack.close();
-
-            } catch (closeError) {
-                // Ignore.
-            }
-        }
-
-
-        if (localScreenStream) {
-
-            localScreenStream
-                .getTracks()
-                .forEach(
-                    track => {
-
-                        try {
-                            track.stop();
-                        } catch (stopError) {
-                            // Ignore.
-                        }
-                    }
-                );
-        }
-
-
-        localScreenAgoraTrack =
-            null;
-
-        localScreenNativeTrack =
-            null;
-
-        localScreenStream =
-            null;
-
-
-        shareScreenButton.textContent =
-            'Share Screen';
-
-
-        shareScreenButton
-            .classList
-            .remove(
-                'screen-sharing-active'
-            );
-
-
-        statusText.textContent =
-            error.message ||
-            'Unable to share screen.';
-
-
-    } finally {
-
-        screenShareActionInProgress =
-            false;
-
-        shareScreenButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------------------------------------
-   STOP LOCAL SCREEN SHARE
-------------------------------------------------------- */
-
-async function stopServiceCallScreenShare() {
-
-    if (screenShareActionInProgress) {
-        return;
-    }
-
-
-    screenShareActionInProgress =
-        true;
-
-    shareScreenButton.disabled =
-        true;
-
-
-    try {
-
-        /*
- * Recording continues even though
- * live screen sharing is stopping.
- *
- * The recorder returns to blank video,
- * but remembers that screen sharing
- * occurred, therefore final output
- * remains MP4.
- */
-if (
-    window.ServiceCallRecorder &&
-    window.ServiceCallRecorder
-        .isRecording()
-) {
-
-    window.ServiceCallRecorder
-        .detachScreen();
-}
-
-        /*
-         * Agora owns publication state.
-         */
-        if (
-            window.ServiceCallAgora &&
-            window.ServiceCallAgora
-                .isScreenSharing()
-        ) {
-
-            await window.ServiceCallAgora
-                .stopScreenShare();
-        }
-
-
-        /*
-         * Stop the underlying Electron capture.
-         */
-        if (localScreenStream) {
-
-            localScreenStream
-                .getTracks()
-                .forEach(
-                    track => {
-
-                        try {
-
-                            track.stop();
-
-                        } catch (error) {
-                            // Ignore cleanup error.
-                        }
-                    }
-                );
-        }
-
-
-        localScreenStream =
-            null;
-
-        localScreenNativeTrack =
-            null;
-
-        localScreenAgoraTrack =
-            null;
-
-
-        screenShareVideo.innerHTML =
-            '';
-
-
-        screenShareContainer
-            .classList
-            .add(
-                'hidden'
-            );
-
-
-        shareScreenButton.textContent =
-            'Share Screen';
-
-
-        shareScreenButton
-            .classList
-            .remove(
-                'screen-sharing-active'
-            );
-
-
-        /*
-         * If nobody else's screen is currently
-         * being displayed, return to compact mode.
-         */
-        if (!activeRemoteScreenUid) {
-
-            await setCompactCallLayout();
-        }
-
-
-        if (
-            currentMode ===
-            'connected'
-        ) {
-
-            statusText.textContent =
-                'Connected';
-        }
-
-
-        console.log(
-            'ServiceCall local screen sharing stopped.'
-        );
-
-
-    } finally {
-
-        screenShareActionInProgress =
-            false;
-
-        shareScreenButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------------------------------------
-   REMOTE SCREEN SHARE
-------------------------------------------------------- */
-
-function configureRemoteScreenSharing() {
-
-    if (
-        !window.ServiceCallAgora ||
-        typeof window.ServiceCallAgora
-            .setRemoteScreenHandler !==
-            'function'
-    ) {
-
-        console.error(
-            'ServiceCall remote screen handler is unavailable.'
-        );
-
-        return;
-    }
-
-
-    window.ServiceCallAgora
-        .setRemoteScreenHandler(
-
-            async (event) => {
-
-                if (!event) {
-                    return;
-                }
-
-
-                /*
-                 * ---------------------------------
-                 * REMOTE SCREEN STARTED
-                 * ---------------------------------
-                 */
-                if (
-                    event.action ===
-                    'started' &&
-                    event.track
-                ) {
-
-                    activeRemoteScreenUid =
-                        String(
-                            event.uid
-                        );
-
-/*
-     * If I am recording and another
-     * participant starts sharing,
-     * include their screen in my recording.
-     */
-    if (
-        window.ServiceCallRecorder &&
-        window.ServiceCallRecorder
-            .isRecording()
-    ) {
-
-        await window.ServiceCallRecorder
-            .attachScreen(
-                event.track
-            );
-    }
-
-
-                    await showScreenShareView(
-                        'Participant is sharing their screen'
-                    );
-
-
-                    screenShareVideo.innerHTML =
-                        '';
-
-
-                    screenSharePlaceholder
-                        .classList
-                        .add(
-                            'hidden'
-                        );
-
-
-                    try {
-
-                        event.track.play(
-                            screenShareVideo
-                        );
-
-
-                        console.log(
-                            'ServiceCall remote screen displayed:',
-                            event.uid
-                        );
-
-
-                    } catch (error) {
-
-                        console.error(
-                            'Unable to display remote ServiceCall screen:',
-                            error
-                        );
-
-
-                        screenSharePlaceholder.textContent =
-                            'Unable to display shared screen.';
-
-                        screenSharePlaceholder
-                            .classList
-                            .remove(
-                                'hidden'
-                            );
-                    }
-
-
-                    return;
-                }
-
-
-                /*
-                 * ---------------------------------
-                 * REMOTE SCREEN STOPPED
-                 * ---------------------------------
-                 */
-                if (
-                    event.action ===
-                    'stopped'
-                ) {
-
-                    const stoppedUid =
-                        String(
-                            event.uid ||
-                            ''
-                        );
-
-
-                    /*
-                     * Ignore stop events for some
-                     * other remote video track.
-                     */
-                    if (
-                        activeRemoteScreenUid &&
-                        stoppedUid !==
-                            activeRemoteScreenUid
-                    ) {
-                        return;
-                    }
-
-
-                    activeRemoteScreenUid =
-                        null;
-
-                    /*
- * The remote participant stopped
- * sharing their screen.
- *
- * Recording itself continues.
- * It still remembers that a screen
- * was used, so final output remains MP4.
- */
-if (
-    window.ServiceCallRecorder &&
-    window.ServiceCallRecorder
-        .isRecording()
-) {
-
-    window.ServiceCallRecorder
-        .detachScreen();
-}
-
-
-                    screenShareVideo.innerHTML =
-                        '';
-
-
-                    /*
-                     * If THIS user is sharing,
-                     * their local preview should
-                     * remain visible.
-                     */
-                    if (
-                        window.ServiceCallAgora &&
-                        window.ServiceCallAgora
-                            .isScreenSharing() &&
-                        localScreenAgoraTrack
-                    ) {
-
-                        screenShareTitle.textContent =
-                            'You are sharing your screen';
-
-
-                        screenSharePlaceholder
-                            .classList
-                            .add(
-                                'hidden'
-                            );
-
-
-                        try {
-
-                            localScreenAgoraTrack.play(
-                                screenShareVideo
-                            );
-
-                        } catch (error) {
-
-                            console.error(
-                                'Unable to restore local screen preview:',
-                                error
-                            );
-                        }
-
-
-                        return;
-                    }
-
-
-                    await hideScreenShareView();
-
-
-                    console.log(
-                        'ServiceCall remote screen sharing stopped.'
-                    );
-                }
-            }
-        );
-}
-
-
-/* -------------------------------------------------------
-   SHARE SCREEN BUTTON
-------------------------------------------------------- */
-
-shareScreenButton.addEventListener(
-    'click',
-
-    async () => {
-
-        if (
-            currentMode !==
-            'connected'
-        ) {
-            return;
-        }
-
-
-        try {
-
-            if (
-                window.ServiceCallAgora &&
-                window.ServiceCallAgora
-                    .isScreenSharing()
-            ) {
-
-                await stopServiceCallScreenShare();
-
-            } else {
-
-                await openScreenSourceModal();
+            .actions {
+                gap:
+                    9px;
             }
 
 
-        } catch (error) {
-
-            console.error(
-                'ServiceCall screen sharing action failed:',
-                error
-            );
-
-
-            statusText.textContent =
-                error.message ||
-                'Unable to change screen sharing.';
-        }
-    }
-);
-
-
-/* -------------------------------------------------------
-   SCREEN MODAL EVENTS
-------------------------------------------------------- */
-
-closeScreenSourceModalButton
-    .addEventListener(
-        'click',
-        closeScreenSourceModal
-    );
-
-
-screenSourceModal.addEventListener(
-    'click',
-
-    (event) => {
-
-        if (
-            event.target ===
-            screenSourceModal
-        ) {
-
-            closeScreenSourceModal();
-        }
-    }
-);
-
-
-/*
- * We already have an Escape handler for the
- * participant modal. This separate listener is
- * safe and handles only the screen picker.
- */
-document.addEventListener(
-    'keydown',
-
-    (event) => {
-
-        if (
-            event.key ===
-            'Escape' &&
-            !screenSourceModal
-                .classList
-                .contains(
-                    'hidden'
-                )
-        ) {
-
-            closeScreenSourceModal();
-        }
-    }
-);
-
-
-/* -------------------------------------------------------
-   INITIALIZE REMOTE SCREEN HANDLER
-------------------------------------------------------- */
-
-configureRemoteScreenSharing();
-
-/* -------------------------
-   SERVICECALL RECORDING
-------------------------- */
-
-const recordButton =
-    document.getElementById(
-        'recordButton'
-    );
-
-const recordingText =
-    document.getElementById(
-        'recordingText'
-    );
-
-
-let recordingStartedAt =
-    null;
-
-let serviceNowRecordingSysId =
-    null;
-
-let recordingActionInProgress =
-    false;
-
-let remoteRecordingActive = false;
-
-
-/* -------------------------
-   SHOW RECORDING MESSAGE
-------------------------- */
-
-function showRecordingMessage(
-    message,
-    autoHide = false
-) {
-
-    recordingText.textContent =
-        message;
-
-
-    recordingText
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    if (autoHide) {
-
-        setTimeout(
-            () => {
-
-                /*
-                 * Do not hide the message if
-                 * another recording has started
-                 * during the timeout.
-                 */
-                if (
-                    !window.ServiceCallRecorder ||
-                    !window.ServiceCallRecorder
-                        .isRecording()
-                ) {
-
-                    recordingText
-                        .classList
-                        .add(
-                            'hidden'
-                        );
-                }
-
-            },
-            3000
-        );
-    }
-}
-
-/* -------------------------
-   SYNC RECORDING INDICATOR
-------------------------- */
-
-function syncRecordingIndicator(
-    recordingActive
-) {
-
-    remoteRecordingActive =
-        recordingActive === true;
-
-
-    /*
-     * Never overwrite local recording
-     * workflow messages such as:
-     *
-     * Starting recording...
-     * Processing recording...
-     * Saving recording...
-     */
-    if (recordingActionInProgress) {
-        return;
-    }
-
-
-    /*
-     * This desktop is itself actively
-     * recording the call.
-     *
-     * Its local state is authoritative.
-     */
-    if (
-        window.ServiceCallRecorder &&
-        window.ServiceCallRecorder
-            .isRecording()
-    ) {
-
-        showRecordingMessage(
-            'Call is being recorded'
-        );
-
-        return;
-    }
-
-
-    /*
-     * Another participant is recording,
-     * or this participant joined after
-     * recording had already started.
-     */
-    if (remoteRecordingActive) {
-
-        showRecordingMessage(
-            'Call is being recorded'
-        );
-
-        return;
-    }
-
-
-    /*
-     * No active recording exists.
-     */
-    recordingText
-        .classList
-        .add(
-            'hidden'
-        );
-}
-
-
-/* -------------------------
-   START RECORDING
-------------------------- */
-
-async function startServiceCallRecording() {
-
-    if (recordingActionInProgress) {
-        return;
-    }
-
-
-    if (
-        currentMode !==
-        'connected'
-    ) {
-
-        throw new Error(
-            'The call must be connected before recording.'
-        );
-    }
-
-
-    if (
-        !window.ServiceCallRecorder
-    ) {
-
-        throw new Error(
-            'ServiceCall recording service is unavailable.'
-        );
-    }
-
-
-    if (
-        !window.ServiceCallAgora ||
-        !window.ServiceCallAgora
-            .isJoined()
-    ) {
-
-        throw new Error(
-            'Call audio is not connected yet.'
-        );
-    }
-
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .startRecording !==
-            'function'
-    ) {
-
-        throw new Error(
-            'ServiceCall recording API is unavailable.'
-        );
-    }
-
-
-    recordingActionInProgress =
-        true;
-
-
-    recordButton.disabled =
-        true;
-
-
-    showRecordingMessage(
-        'Starting recording...'
-    );
-
-
-    try {
-
-        /*
-         * -----------------------------------------
-         * 1. CREATE SERVICENOW RECORDING SESSION
-         * -----------------------------------------
-         */
-
-        const serviceNowResult =
-            await window.serviceCall
-                .startRecording(
-                    callSysId
-                );
-
-
-        if (
-            !serviceNowResult ||
-            !serviceNowResult.success
-        ) {
-
-            throw new Error(
-                serviceNowResult &&
-                serviceNowResult.message
-                    ? serviceNowResult.message
-                    : 'Unable to create ServiceCall recording.'
-            );
-        }
-
-
-        const recordingSysId =
-            serviceNowResult
-                .recording_sys_id;
-
-
-        if (!recordingSysId) {
-
-            throw new Error(
-                'ServiceNow did not return a recording ID.'
-            );
-        }
-
-
-        serviceNowRecordingSysId =
-            recordingSysId;
-
-
-        /*
-         * -----------------------------------------
-         * 2. START LOCAL MIXED AUDIO CAPTURE
-         * -----------------------------------------
-         */
-
-        const localResult =
-            await window.ServiceCallRecorder
-                .start();
-
-
-        if (
-            !localResult ||
-            !localResult.success
-        ) {
-
-            throw new Error(
-                localResult &&
-                localResult.message
-                    ? localResult.message
-                    : 'Unable to start local recording.'
-            );
-        }
-
-
-        recordingStartedAt =
-            Date.now();
-
-
-        recordButton.textContent =
-            'Stop Recording';
-
-
-        showRecordingMessage(
-            'Call is being recorded'
-        );
-
-
-        console.log(
-            'ServiceCall recording started.',
-            'Recording:',
-            serviceNowRecordingSysId,
-            'Capture format:',
-            localResult.mimeType
-        );
-
-
-    } catch (error) {
-
-        /*
-         * If ServiceNow successfully created the
-         * recording record but local capture could
-         * not start, keep the sys_id for diagnostics.
-         *
-         * Later we can add a dedicated failed-state
-         * endpoint. Do not falsely mark it Available.
-         */
-
-        console.error(
-            'Unable to start ServiceCall recording:',
-            error
-        );
-
-
-        recordButton.textContent =
-            'Record Call';
-
-
-        showRecordingMessage(
-            error.message ||
-            'Unable to start recording.',
-            true
-        );
-
-
-        throw error;
-
-
-    } finally {
-
-        recordingActionInProgress =
-            false;
-
-        recordButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------
-   STOP + FINALIZE RECORDING
-------------------------- */
-
-async function stopServiceCallRecording() {
-
-    if (recordingActionInProgress) {
-        return;
-    }
-
-
-    if (
-        !window.ServiceCallRecorder ||
-        !window.ServiceCallRecorder
-            .isRecording()
-    ) {
-
-        return;
-    }
-
-
-    if (!serviceNowRecordingSysId) {
-
-        throw new Error(
-            'ServiceNow recording ID is unavailable.'
-        );
-    }
-
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .finalizeVoiceRecording !==
-            'function'
-    ) {
-
-        throw new Error(
-            'ServiceCall recording finalization API is unavailable.'
-        );
-    }
-
-
-    recordingActionInProgress =
-        true;
-
-
-    recordButton.disabled =
-        true;
-
-
-    showRecordingMessage(
-        'Processing recording...'
-    );
-
-
-    try {
-
-        /*
-         * -----------------------------------------
-         * 1. STOP LOCAL MEDIARECORDER
-         * -----------------------------------------
-         */
-
-        const localResult =
-            await window.ServiceCallRecorder
-                .stop();
-
-
-        if (
-            !localResult ||
-            !localResult.success ||
-            !localResult.blob
-        ) {
-
-            throw new Error(
-                localResult &&
-                localResult.message
-                    ? localResult.message
-                    : 'Unable to stop local recording.'
-            );
-        }
-
-
-        const durationSeconds =
-            recordingStartedAt
-                ? Math.max(
-                    1,
-                    Math.round(
-                        (
-                            Date.now() -
-                            recordingStartedAt
-                        ) / 1000
-                    )
-                )
-                : 0;
-
-
-        console.log(
-            'ServiceCall local recording stopped.',
-            'Duration:',
-            durationSeconds,
-            'seconds',
-            'WebM size:',
-            localResult.size
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 2. BLOB -> UINT8ARRAY
-         * -----------------------------------------
-         *
-         * We do not expose OAuth credentials here.
-         *
-         * Only recording bytes cross the preload
-         * IPC bridge into Electron's main process.
-         */
-
-        const arrayBuffer =
-            await localResult.blob
-                .arrayBuffer();
-
-
-        const webmData =
-            new Uint8Array(
-                arrayBuffer
-            );
-
-
-        if (
-            webmData.byteLength <= 0
-        ) {
-
-            throw new Error(
-                'The captured recording is empty.'
-            );
-        }
-
-
-        /*
-         * -----------------------------------------
-         * 3. ELECTRON MAIN PROCESS
-         * -----------------------------------------
-         *
-         * main.js performs:
-         *
-         * WebM
-         *   -> FFmpeg
-         *   -> real MP3
-         *   -> /finish-recording
-         *   -> Attachment API
-         *   -> /complete-recording
-         */
-
-        showRecordingMessage(
-            'Saving recording...'
-        );
-
-
-        /*
- * Decide the final format from what actually
- * happened during this recording.
- *
- * No screen share:
- *     WebM audio -> MP3
- *
- * Screen share occurred at any point:
- *     WebM audio/video -> MP4
- */
-const hadScreenShare =
-    localResult.hadScreenShare === true;
-
-
-console.log(
-    'ServiceCall final recording type:',
-    hadScreenShare
-        ? 'MP4 - screen sharing occurred'
-        : 'MP3 - audio only'
-);
-
-
-let finalResult;
-
-
-if (hadScreenShare) {
-
-    /*
-     * Screen sharing occurred at least once.
-     *
-     * Even if sharing stopped before the
-     * recording stopped, the final recording
-     * remains MP4.
-     */
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .finalizeScreenRecording !==
-            'function'
-    ) {
-
-        throw new Error(
-            'ServiceCall screen recording finalization is unavailable.'
-        );
-    }
-
-
-    finalResult =
-        await window.serviceCall
-            .finalizeScreenRecording(
-                serviceNowRecordingSysId,
-                webmData
-            );
-
-} else {
-
-    /*
-     * Voice-only recording.
-     */
-    finalResult =
-        await window.serviceCall
-            .finalizeVoiceRecording(
-                serviceNowRecordingSysId,
-                webmData
-            );
-}
-
-
-        if (
-            !finalResult ||
-            !finalResult.success
-        ) {
-
-            throw new Error(
-                finalResult &&
-                finalResult.message
-                    ? finalResult.message
-                    : 'Unable to save ServiceCall recording.'
-            );
-        }
-
-
-        console.log(
-            'ServiceCall recording available.',
-            'Recording:',
-            finalResult.recording_sys_id,
-            'Attachment:',
-            finalResult.attachment_sys_id,
-            'Format:',
-            finalResult.format,
-            'Size:',
-            finalResult.file_size,
-            'Expires:',
-            finalResult.expires_at
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 4. SUCCESS
-         * -----------------------------------------
-         */
-
-        serviceNowRecordingSysId =
-            null;
-
-        recordingStartedAt =
-            null;
-
-
-        recordButton.textContent =
-            'Record Call';
-
-
-        showRecordingMessage(
-            'Recording saved',
-            true
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall recording finalization failed:',
-            error
-        );
-
-
-        /*
-         * Local recording has already stopped,
-         * therefore reset the button.
-         *
-         * We intentionally do NOT pretend the
-         * ServiceNow recording is Available.
-         */
-
-        recordButton.textContent =
-            'Record Call';
-
-
-        recordingStartedAt =
-            null;
-
-
-        showRecordingMessage(
-            error.message ||
-            'Unable to save recording.'
-        );
-
-
-        throw error;
-
-
-    } finally {
-
-        recordingActionInProgress =
-            false;
-
-        recordButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------
-   RECORD BUTTON
-------------------------- */
-
-recordButton.addEventListener(
-    'click',
-
-    async () => {
-
-        if (recordingActionInProgress) {
-            return;
-        }
-
-
-        try {
-
-            if (
-                window.ServiceCallRecorder &&
-                window.ServiceCallRecorder
-                    .isRecording()
-            ) {
-
-                await stopServiceCallRecording();
-
-            } else {
-
-                await startServiceCallRecording();
+            .actions button {
+                min-width:
+                    105px;
             }
 
 
-        } catch (error) {
-
-            console.error(
-                'ServiceCall recording action failed:',
-                error
-            );
-        }
-    }
-);
-
-/* -------------------------
-   END CONFERENCE / LEAVE CALL
-------------------------- */
-
-document
-    .getElementById(
-        'endButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
-
-            const endButton =
-                document.getElementById(
-                    'endButton'
-                );
-
-
-            if (recordingActionInProgress) {
-
-                statusText.textContent =
-                    'Please wait for the recording to finish processing.';
-
-                return;
+            .modal-overlay {
+                padding:
+                    12px;
             }
 
 
-            endButton.disabled =
-                true;
+            .screen-source-results {
+                grid-template-columns:
+                    1fr;
+            }
 
 
-            try {
+            .participants-panel {
+                width:
+                    100%;
 
-                /*
-                 * -----------------------------------------
-                 * 1. FINALIZE ACTIVE RECORDING FIRST
-                 * -----------------------------------------
-                 *
-                 * Never terminate the call/media before
-                 * the active recording has been stopped,
-                 * converted, uploaded and completed.
-                 */
-                if (
-                    window.ServiceCallRecorder &&
-                    window.ServiceCallRecorder
-                        .isRecording()
-                ) {
-
-                    statusText.textContent =
-                        'Saving recording before ending call...';
-
-
-                    console.log(
-                        'ServiceCall call ending while recording is active. Finalizing recording first.'
-                    );
-
-
-                    await stopServiceCallRecording();
-
-
-                    console.log(
-                        'ServiceCall recording finalized before call termination.'
-                    );
-                }
-
-
-                let result;
-
-
-                /* -------------------------
-                   2. OWNER
-                ------------------------- */
-
-                if (currentUserIsOwner) {
-
-                    statusText.textContent =
-                        'Ending conference...';
-
-
-                    if (
-    isMeeting &&
-    meetingSysId
-) {
-
-    result =
-        await window
-            .serviceCall
-            .endMeeting(
-                meetingSysId
-            );
-
-} else {
-
-    result =
-        await window
-            .serviceCall
-            .endCall(
-                callSysId
-            );
-}
-
-
-                    if (
-                        !result ||
-                        !result.success
-                    ) {
-
-                        throw new Error(
-                            result &&
-                            result.message
-                                ? result.message
-                                : 'Unable to end conference.'
-                        );
-                    }
-
-
-                    /*
-                     * ServiceNow has successfully
-                     * ended the conference.
-                     *
-                     * We can now leave Agora.
-                     */
-                    await stopAgoraAudio();
-
-                    /*
- * Tell the main ServiceCall window that
- * this meeting has changed.
- *
- * Normal calls/conferences do not send
- * this notification.
- */
-if (
-    isMeeting &&
-    meetingSysId &&
-    window.serviceCall &&
-    typeof window.serviceCall
-        .notifyMeetingChanged ===
-        'function'
-) {
-
-    window.serviceCall
-        .notifyMeetingChanged(
-            meetingSysId
-        );
-}
-
-                    setMode(
-                        'completed'
-                    );
-
-
-                    return;
-                }
-
-
-                /* -------------------------
-   3. PARTICIPANT
-------------------------- */
-
-statusText.textContent =
-    isMeeting
-        ? 'Leaving meeting...'
-        : 'Leaving call...';
-
-
-/*
- * Meetings use the meeting lifecycle API.
- *
- * Normal conferences continue using the
- * existing leave-call API.
- */
-if (
-    isMeeting &&
-    meetingSysId
-) {
-
-    result =
-        await window
-            .serviceCall
-            .leaveMeeting(
-                meetingSysId
-            );
-
-} else {
-
-    result =
-        await window
-            .serviceCall
-            .leaveCall(
-                callSysId
-            );
-}
-
-
-if (
-    !result ||
-    !result.success
-) {
-
-    throw new Error(
-        result &&
-        result.message
-            ? result.message
-            : (
-                isMeeting
-                    ? 'Unable to leave meeting.'
-                    : 'Unable to leave call.'
-            )
-    );
-}
-
-
-/*
- * Leave Agora only on THIS desktop.
- *
- * Other participants remain connected.
- */
-await stopAgoraAudio();
-
-
-/*
- * Meeting data changed.
- *
- * Tell the main desktop window so the
- * Meetings card refreshes automatically.
- */
-if (
-    isMeeting &&
-    meetingSysId &&
-    window.serviceCall &&
-    typeof window.serviceCall
-        .notifyMeetingChanged ===
-        'function'
-) {
-
-    window.serviceCall
-        .notifyMeetingChanged(
-            meetingSysId
-        );
-}
-
-
-stopAllTimers();
-
-stopRingtone();
-
-
-statusText.textContent =
-    isMeeting
-        ? 'You left the meeting'
-        : 'You left the call';
-
-
-closeCallWindowAfterDelay();
-
-
-            } catch (error) {
-
-                console.error(
-                    currentUserIsOwner
-                        ? 'End conference failed:'
-                        : 'Leave call failed:',
-                    error
-                );
-
-
-                /*
-                 * IMPORTANT:
-                 *
-                 * If recording finalization failed,
-                 * we intentionally do NOT continue
-                 * with End Conference / Leave Call.
-                 *
-                 * This gives the user a chance to
-                 * retry rather than knowingly
-                 * discarding the recording.
-                 */
-                statusText.textContent =
-                    error.message ||
-                    (
-                        currentUserIsOwner
-                            ? 'Unable to end conference.'
-                            : 'Unable to leave call.'
-                    );
-
-
-                endButton.disabled =
-                    false;
+                max-width:
+                    100%;
             }
         }
-    );
+    </style>
 
-/* -------------------------
-   CLOSE CALL WINDOW
-------------------------- */
- 
-function closeCallWindowAfterDelay() {
- 
-    if (closeTimer) {
-        return;
-    }
- 
- 
-    closeTimer =
-        setTimeout(
-            () => {
- 
-                stopAllTimers();
- 
-                window.close();
- 
-            },
-            1000
-        );
-}
-
-/* -------------------------
-   STOP TIMERS
-------------------------- */
-
-function stopAllTimers() {
-
-    if (callStatusTimer) {
-
-        clearInterval(
-            callStatusTimer
-        );
-
-        callStatusTimer =
-            null;
-    }
+</head>
 
 
-    if (durationTimer) {
-
-        clearInterval(
-            durationTimer
-        );
-
-        durationTimer =
-            null;
-    }
-}
+<body>
 
 
-/* -------------------------
-   START
-------------------------- */
+    <!-- --------------------------------
+         TOP BAR
+    --------------------------------- -->
 
-setMode(
-    currentMode
-);
+    <div class="topbar">
 
-startCallStatusPolling();
+        <div class="brand">
+
+            <div class="brand-logo">
+                now
+            </div>
+
+            <div>
+                ServiceCall
+            </div>
+
+        </div>
+
+    </div>
 
 
-window.addEventListener(
-    'beforeunload',
-    () => {
 
-        stopAllTimers();
+    <!-- --------------------------------
+         MAIN CALL UI
+    --------------------------------- -->
 
-        stopRingtone();
+    <div class="container">
 
-        /*
-         * Final media safety cleanup.
-         *
-         * Do not await here because the window
-         * is already being destroyed.
-         */
-        stopAgoraAudio();
-    }
-);
+
+        <div class="avatar" id="avatar">
+            ?
+        </div>
+
+
+        <div class="person-name" id="personName">
+            Unknown User
+        </div>
+
+
+        <div class="department" id="department">
+        </div>
+
+
+        <div class="status" id="statusText">
+            Connecting...
+        </div>
+
+
+        <div class="timer hidden" id="timer">
+            00:00
+        </div>
+
+
+        <div class="call-number" id="callNumber">
+        </div>
+
+
+
+        <!-- --------------------------------
+             SCREEN SHARE VIEW
+        --------------------------------- -->
+
+        <div class="screen-share-container hidden" id="screenShareContainer">
+
+            <div class="screen-share-header">
+
+                <div class="screen-share-title" id="screenShareTitle">
+                    Screen sharing
+                </div>
+
+            </div>
+
+
+            <div class="screen-share-view">
+
+                <div class="screen-share-video" id="screenShareVideo">
+                </div>
+
+
+                <div class="screen-share-placeholder" id="screenSharePlaceholder">
+                    Connecting to shared screen...
+                </div>
+
+            </div>
+
+        </div>
+
+
+
+        <!-- --------------------------------
+             INCOMING CALL ACTIONS
+        --------------------------------- -->
+
+        <div class="actions hidden" id="incomingActions">
+
+            <button class="danger" id="declineButton" type="button">
+                Decline
+            </button>
+
+
+            <button class="accept" id="acceptButton" type="button">
+                Accept
+            </button>
+
+        </div>
+
+
+
+        <!-- --------------------------------
+             OUTGOING / RINGING ACTIONS
+        --------------------------------- -->
+
+        <div class="actions hidden" id="callingActions">
+
+            <button class="danger" id="cancelButton" type="button">
+                Cancel
+            </button>
+
+        </div>
+
+
+
+        <!-- --------------------------------
+             CONNECTED CALL ACTIONS
+        --------------------------------- -->
+
+        <div class="actions hidden" id="connectedActions">
+
+            <button class="secondary" id="muteButton" type="button">
+                Mute
+            </button>
+
+
+            <button class="secondary" id="participantsButton" type="button">
+                Participants
+            </button>
+
+
+            <button class="secondary" id="addUserButton" type="button">
+                Add User
+            </button>
+
+
+            <button class="secondary" id="shareScreenButton" type="button">
+                Share Screen
+            </button>
+
+
+            <button class="secondary" id="recordButton" type="button">
+                Record Call
+            </button>
+
+
+            <button class="danger" id="endButton" type="button">
+                End Call
+            </button>
+
+        </div>
+
+
+        <div class="recording-text hidden" id="recordingText">
+            Call is being recorded
+        </div>
+
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         LIVE PARTICIPANTS PANEL
+    --------------------------------- -->
+
+    <div class="participants-panel hidden" id="participantsPanel">
+
+        <div class="participants-panel-header">
+
+            <div class="participants-panel-heading">
+
+                <div class="participants-panel-title">
+                    Participants
+                </div>
+
+
+                <span class="participants-panel-count" id="participantsPanelCount">
+                    0
+                </span>
+
+            </div>
+
+
+            <button class="participants-panel-close" id="closeParticipantsPanel" type="button"
+                title="Close participants">
+                &times;
+            </button>
+
+        </div>
+
+
+        <div class="participants-panel-body" id="participantsPanelBody">
+
+            <div class="participants-section-label">
+                In this call
+            </div>
+
+
+            <div class="participants-empty">
+                Loading participants...
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         ADD PARTICIPANT MODAL
+    --------------------------------- -->
+
+    <div class="modal-overlay hidden" id="addParticipantModal">
+
+        <div class="modal-card">
+
+            <div class="modal-header">
+
+                <div class="modal-title">
+                    Add participant
+                </div>
+
+
+                <button class="modal-close" id="closeParticipantModal" type="button">
+                    &times;
+                </button>
+
+            </div>
+
+
+            <div class="modal-body">
+
+                <div class="participant-help">
+                    Search for a ServiceCall user to invite to this call.
+                </div>
+
+
+                <input class="participant-search" id="participantSearch" type="text" autocomplete="off"
+                    placeholder="Search users...">
+
+
+                <div class="participant-results" id="participantResults">
+
+                    <div class="participant-empty">
+                        Start typing a user's name.
+                    </div>
+
+                </div>
+
+
+                <div class="participant-message" id="participantMessage">
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         SCREEN SOURCE MODAL
+    --------------------------------- -->
+
+    <div class="modal-overlay hidden" id="screenSourceModal">
+
+        <div class="screen-source-modal-card">
+
+            <div class="modal-header">
+
+                <div class="modal-title">
+                    Share your screen
+                </div>
+
+
+                <button class="modal-close" id="closeScreenSourceModal" type="button">
+                    &times;
+                </button>
+
+            </div>
+
+
+            <div class="modal-body">
+
+                <div class="participant-help">
+                    Choose a screen or window to share.
+                </div>
+
+
+                <div class="screen-source-results" id="screenSourceResults">
+
+                    <div class="screen-source-message">
+                        Loading screens and windows...
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         SERVICECALL SCRIPTS
+    --------------------------------- -->
+
+    <script src="agora-service.bundle.js"></script>
+
+    <script src="recording-service.bundle.js"></script>
+
+    <script src="call-window.js"></script>
+
+
+</body>
+
+</html>
