@@ -1,91 +1,103 @@
-ipcMain.handle(
-    'servicecall-check-access',
-    async () => {
+async function createWindow() {
 
-        try {
+    mainWindow = new BrowserWindow({
+        width: 900,
+        height: 650,
+        minWidth: 700,
+        minHeight: 500,
+        title: 'ServiceCall Desktop',
 
-            /*
-             * Make sure the saved OAuth
-             * session is still usable.
-             */
+        webPreferences: {
+            preload: path.join(
+                __dirname,
+                'preload.js'
+            ),
 
-            await ensureValidAccessToken();
-
-
-            /*
-             * Re-check identity + current
-             * ServiceCall roles.
-             */
-
-            const currentUser =
-                await getCurrentServiceCallUser();
-
-            const authorization =
-                currentUser?.authorization || {};
-
-            currentServiceCallUser =
-    currentUser?.user || null;
-
-currentServiceCallAuthorization =
-    authorization;
-
-
-            if (
-                authorization.allowed !== true
-            ) {
-
-                return {
-                    success: true,
-                    authenticated: true,
-                    authorized: false,
-                    state: 'access_denied',
-                    user:
-                        currentUser?.user || null,
-                    authorization:
-                        authorization
-                };
-            }
-
-
-            /*
-             * ACCESS HAS NOW BEEN GRANTED
-             */
-
-            await startHeartbeatLoop();
-
-            startIncomingCallLoop();
-
-            startOutgoingCallLoop();
-
-
-            return {
-                success: true,
-                authenticated: true,
-                authorized: true,
-                state: 'ready',
-                user:
-                    currentUser?.user || null,
-                authorization:
-                    authorization
-            };
-
+            contextIsolation: true,
+            nodeIntegration: false
         }
-        catch (error) {
+    });
 
-            console.error(
-                'ServiceCall access check failed:',
-                error
-            );
 
-            return {
-                success: false,
-                authenticated: false,
-                authorized: false,
-                state: 'login_required',
-                message:
-                    error?.message ||
-                    'Unable to check ServiceCall access.'
-            };
-        }
+    /*
+     * -----------------------------------------
+     * RESOLVE STARTUP AUTHENTICATION
+     * -----------------------------------------
+     */
+
+    const startupState =
+        await resolveStartupAuthentication();
+
+
+    console.log(
+        'ServiceCall startup state:',
+        startupState
+    );
+
+
+    /*
+     * -----------------------------------------
+     * AUTHORIZED USER
+     * -----------------------------------------
+     */
+
+    if (
+        startupState.state === 'ready'
+    ) {
+
+        await mainWindow.loadFile(
+            'index.html'
+        );
+
+
+        /*
+         * Start background ServiceCall services
+         * ONLY after authorization succeeds.
+         */
+
+        await startHeartbeatLoop();
+
+        startIncomingCallLoop();
+
+        startOutgoingCallLoop();
+
+        startAuthorizationMonitor();
     }
-);
+
+
+    /*
+     * -----------------------------------------
+     * LOGIN / ACCESS GATE
+     * -----------------------------------------
+     */
+
+    else {
+
+        await mainWindow.loadFile(
+            path.join(
+                'auth',
+                'auth-gate.html'
+            )
+        );
+    }
+
+
+    /*
+     * -----------------------------------------
+     * WINDOW CLOSE
+     * -----------------------------------------
+     */
+
+    mainWindow.on(
+        'close',
+        (event) => {
+
+            if (!isQuitting) {
+
+                event.preventDefault();
+
+                mainWindow.hide();
+            }
+        }
+    );
+}
