@@ -928,3 +928,965 @@
     request,
     response
 );
+
+
+
+
+(function process(
+    request,
+    response
+) {
+
+    try {
+
+        /* -----------------------------------------
+           AUTHENTICATED USER
+        ----------------------------------------- */
+
+        var currentUserSysId =
+            String(
+                gs.getUserID() || ''
+            );
+
+
+        if (!currentUserSysId) {
+
+            response.setStatus(401);
+
+            return {
+                success: false,
+                code: 'AUTHENTICATION_REQUIRED',
+                message: 'Authentication is required.'
+            };
+        }
+
+
+        /* -----------------------------------------
+           REQUEST BODY
+        ----------------------------------------- */
+
+        var body =
+            request.body.data || {};
+
+
+        var meetingSysId =
+            String(
+                body.meeting_sys_id || ''
+            ).trim();
+
+
+        var title =
+            String(
+                body.title || ''
+            ).trim();
+
+
+        var description =
+            String(
+                body.description || ''
+            ).trim();
+
+
+        var scheduledStart =
+            String(
+                body.scheduled_start || ''
+            ).trim();
+
+
+        var scheduledEnd =
+            String(
+                body.scheduled_end || ''
+            ).trim();
+
+
+        var meetingTimezone =
+            String(
+                body.timezone || ''
+            ).trim();
+
+
+        var participants =
+            body.participants;
+
+
+        if (
+            !participants ||
+            !Array.isArray(participants)
+        ) {
+
+            participants = [];
+        }
+
+
+        /* -----------------------------------------
+           BASIC VALIDATION
+        ----------------------------------------- */
+
+        if (!meetingSysId) {
+
+            response.setStatus(400);
+
+            return {
+                success: false,
+                code: 'MEETING_REQUIRED',
+                message: 'Meeting sys_id is required.'
+            };
+        }
+
+
+        if (!title) {
+
+            response.setStatus(400);
+
+            return {
+                success: false,
+                code: 'TITLE_REQUIRED',
+                message: 'Meeting title is required.'
+            };
+        }
+
+
+        if (
+            !scheduledStart ||
+            !scheduledEnd
+        ) {
+
+            response.setStatus(400);
+
+            return {
+                success: false,
+                code: 'MEETING_TIME_REQUIRED',
+                message: 'Meeting start and end time are required.'
+            };
+        }
+
+
+        if (!meetingTimezone) {
+
+            response.setStatus(400);
+
+            return {
+                success: false,
+                code: 'TIMEZONE_REQUIRED',
+                message: 'Meeting time zone is required.'
+            };
+        }
+
+
+        /* -----------------------------------------
+           LOAD MEETING
+        ----------------------------------------- */
+
+        var meetingGR =
+            new GlideRecord(
+                'x_1806573_servic_0_servicecall_meeting'
+            );
+
+
+        if (
+            !meetingGR.get(
+                meetingSysId
+            )
+        ) {
+
+            response.setStatus(404);
+
+            return {
+                success: false,
+                code: 'MEETING_NOT_FOUND',
+                message: 'Meeting was not found.'
+            };
+        }
+
+
+        /* -----------------------------------------
+           ORGANIZER SECURITY
+        ----------------------------------------- */
+
+        var organizerSysId =
+            String(
+                meetingGR.getValue(
+                    'u_organizer'
+                ) || ''
+            );
+
+
+        if (
+            organizerSysId !==
+            currentUserSysId
+        ) {
+
+            response.setStatus(403);
+
+            return {
+                success: false,
+                code: 'MEETING_EDIT_DENIED',
+                message:
+                    'Only the meeting organizer can edit this meeting.'
+            };
+        }
+
+
+        /* -----------------------------------------
+           STATE VALIDATION
+        ----------------------------------------- */
+
+        var meetingState =
+            String(
+                meetingGR.getValue(
+                    'u_state'
+                ) || ''
+            );
+
+
+        if (
+            meetingState !== 'scheduled'
+        ) {
+
+            response.setStatus(409);
+
+            return {
+                success: false,
+                code: 'MEETING_NOT_EDITABLE',
+                message:
+                    'Only scheduled meetings can be edited.'
+            };
+        }
+
+
+        /* -----------------------------------------
+           PRESERVE OLD MEETING VALUES
+        ----------------------------------------- */
+
+        var oldTitle =
+            String(
+                meetingGR.getValue(
+                    'u_title'
+                ) || ''
+            );
+
+
+        var oldDescription =
+            String(
+                meetingGR.getValue(
+                    'u_description'
+                ) || ''
+            );
+
+
+        var oldScheduledStart =
+            String(
+                meetingGR.getValue(
+                    'u_scheduled_start'
+                ) || ''
+            );
+
+
+        var oldScheduledEnd =
+            String(
+                meetingGR.getValue(
+                    'u_scheduled_end'
+                ) || ''
+            );
+
+
+        /* -----------------------------------------
+           PREPARE DATE VALUES
+        ----------------------------------------- */
+
+        var startValue =
+            scheduledStart.replace(
+                'T',
+                ' '
+            );
+
+
+        var endValue =
+            scheduledEnd.replace(
+                'T',
+                ' '
+            );
+
+
+        if (
+            startValue.length === 16
+        ) {
+
+            startValue += ':00';
+        }
+
+
+        if (
+            endValue.length === 16
+        ) {
+
+            endValue += ':00';
+        }
+
+
+        /* -----------------------------------------
+           DATE / TIME PARSING
+        ----------------------------------------- */
+
+        var startGdt =
+            new GlideDateTime();
+
+
+        startGdt.setDisplayValue(
+            startValue
+        );
+
+
+        var endGdt =
+            new GlideDateTime();
+
+
+        endGdt.setDisplayValue(
+            endValue
+        );
+
+
+        /* -----------------------------------------
+           DATE VALIDATION
+        ----------------------------------------- */
+
+        if (
+            !startGdt.isValid() ||
+            !endGdt.isValid()
+        ) {
+
+            response.setStatus(400);
+
+            return {
+                success: false,
+                code: 'INVALID_MEETING_TIME',
+                message:
+                    'Meeting start or end time is invalid.'
+            };
+        }
+
+
+        if (
+            endGdt.getNumericValue() <=
+            startGdt.getNumericValue()
+        ) {
+
+            response.setStatus(400);
+
+            return {
+                success: false,
+                code: 'INVALID_MEETING_RANGE',
+                message:
+                    'Meeting end time must be after the start time.'
+            };
+        }
+
+
+        /* -----------------------------------------
+           VALIDATE REQUESTED PARTICIPANTS
+        ----------------------------------------- */
+
+        var validParticipants = [];
+
+        var seenUsers = {};
+
+
+        /*
+         * Organizer must never be duplicated
+         * as an attendee.
+         */
+
+        seenUsers[
+            organizerSysId
+        ] = true;
+
+
+        for (
+            var i = 0;
+            i < participants.length;
+            i++
+        ) {
+
+            var userSysId =
+                String(
+                    participants[i] || ''
+                ).trim();
+
+
+            if (!userSysId) {
+
+                continue;
+            }
+
+
+            if (
+                seenUsers[
+                    userSysId
+                ]
+            ) {
+
+                continue;
+            }
+
+
+            var userGR =
+                new GlideRecord(
+                    'sys_user'
+                );
+
+
+            if (
+                !userGR.get(
+                    userSysId
+                )
+            ) {
+
+                response.setStatus(400);
+
+                return {
+                    success: false,
+                    code: 'INVALID_PARTICIPANT',
+                    message:
+                        'Participant user was not found.',
+                    participant_sys_id:
+                        userSysId
+                };
+            }
+
+
+            var activeValue =
+                String(
+                    userGR.getValue(
+                        'active'
+                    )
+                );
+
+
+            if (
+                activeValue !== '1' &&
+                activeValue !== 'true'
+            ) {
+
+                response.setStatus(400);
+
+                return {
+                    success: false,
+                    code: 'INACTIVE_PARTICIPANT',
+                    message:
+                        'Selected participant is inactive.',
+                    participant_sys_id:
+                        userSysId,
+                    participant_name:
+                        userGR.getDisplayValue()
+                };
+            }
+
+
+            seenUsers[
+                userSysId
+            ] = true;
+
+
+            validParticipants.push(
+                userSysId
+            );
+        }
+
+
+        if (
+            validParticipants.length === 0
+        ) {
+
+            response.setStatus(400);
+
+            return {
+                success: false,
+                code: 'PARTICIPANT_REQUIRED',
+                message:
+                    'Select at least one active participant.'
+            };
+        }
+
+
+        /* -----------------------------------------
+           BUILD REQUESTED ATTENDEE MAP
+        ----------------------------------------- */
+
+        var requestedAttendees = {};
+
+
+        for (
+            var r = 0;
+            r < validParticipants.length;
+            r++
+        ) {
+
+            requestedAttendees[
+                validParticipants[r]
+            ] = true;
+        }
+
+
+        /* -----------------------------------------
+           LOAD EXISTING ATTENDEES
+        ----------------------------------------- */
+
+        var existingAttendees = {};
+
+        var retainedAttendees = [];
+
+        var removedAttendees = [];
+
+
+        var participantGR =
+            new GlideRecord(
+                'x_1806573_servic_0_servicecall_meeting_participant'
+            );
+
+
+        participantGR.addQuery(
+            'u_meeting',
+            meetingSysId
+        );
+
+
+        participantGR.query();
+
+
+        while (
+            participantGR.next()
+        ) {
+
+            var existingUserSysId =
+                String(
+                    participantGR.getValue(
+                        'u_user'
+                    ) || ''
+                );
+
+
+            var existingRole =
+                String(
+                    participantGR.getValue(
+                        'u_role'
+                    ) || ''
+                );
+
+
+            if (
+                existingRole ===
+                    'organizer' ||
+                existingUserSysId ===
+                    organizerSysId
+            ) {
+
+                continue;
+            }
+
+
+            if (!existingUserSysId) {
+
+                continue;
+            }
+
+
+            /*
+             * Remember that this user existed
+             * before the update.
+             */
+
+            existingAttendees[
+                existingUserSysId
+            ] = true;
+
+
+            /*
+             * User remains in the meeting.
+             */
+
+            if (
+                requestedAttendees[
+                    existingUserSysId
+                ]
+            ) {
+
+                retainedAttendees.push(
+                    existingUserSysId
+                );
+
+                continue;
+            }
+
+
+            /*
+             * User was removed from the meeting.
+             *
+             * Save their sys_id BEFORE deleting
+             * the participant record so we can
+             * notify them afterward.
+             */
+
+            removedAttendees.push(
+                existingUserSysId
+            );
+
+
+            participantGR.deleteRecord();
+        }
+
+
+        /* -----------------------------------------
+           DETERMINE + ADD NEW ATTENDEES
+        ----------------------------------------- */
+
+        var addedAttendees = [];
+
+
+        for (
+            var p = 0;
+            p < validParticipants.length;
+            p++
+        ) {
+
+            var attendeeSysId =
+                validParticipants[p];
+
+
+            /*
+             * User existed before this edit.
+             */
+
+            if (
+                existingAttendees[
+                    attendeeSysId
+                ]
+            ) {
+
+                continue;
+            }
+
+
+            var newParticipantGR =
+                new GlideRecord(
+                    'x_1806573_servic_0_servicecall_meeting_participant'
+                );
+
+
+            newParticipantGR.initialize();
+
+
+            newParticipantGR.setValue(
+                'u_meeting',
+                meetingSysId
+            );
+
+
+            newParticipantGR.setValue(
+                'u_user',
+                attendeeSysId
+            );
+
+
+            newParticipantGR.setValue(
+                'u_role',
+                'attendee'
+            );
+
+
+            newParticipantGR.setValue(
+                'u_invitation_status',
+                'invited'
+            );
+
+
+            newParticipantGR.setValue(
+                'u_join_status',
+                'not joined'
+            );
+
+
+            var newParticipantSysId =
+                newParticipantGR.insert();
+
+
+            if (!newParticipantSysId) {
+
+                throw new Error(
+                    'Unable to add meeting participant.'
+                );
+            }
+
+
+            addedAttendees.push(
+                attendeeSysId
+            );
+        }
+
+
+        /* -----------------------------------------
+           UPDATE MEETING RECORD
+        ----------------------------------------- */
+
+        meetingGR.setValue(
+            'u_title',
+            title
+        );
+
+
+        meetingGR.setValue(
+            'u_description',
+            description
+        );
+
+
+        meetingGR.setValue(
+            'u_scheduled_start',
+            startGdt
+        );
+
+
+        meetingGR.setValue(
+            'u_scheduled_end',
+            endGdt
+        );
+
+
+        meetingGR.setValue(
+            'u_last_activity_at',
+            new GlideDateTime()
+        );
+
+
+        var updatedMeetingSysId =
+            meetingGR.update();
+
+
+        if (!updatedMeetingSysId) {
+
+            throw new Error(
+                'Unable to update meeting record.'
+            );
+        }
+
+
+        /* -----------------------------------------
+           DETECT WHAT CHANGED
+        ----------------------------------------- */
+
+        var detailsChanged =
+            oldTitle !== title ||
+            oldDescription !== description ||
+            oldScheduledStart !==
+                String(
+                    startGdt.getValue()
+                ) ||
+            oldScheduledEnd !==
+                String(
+                    endGdt.getValue()
+                );
+
+
+        var participantListChanged =
+            addedAttendees.length > 0 ||
+            removedAttendees.length > 0;
+
+
+        /* -----------------------------------------
+           NOTIFICATION HELPER
+        ----------------------------------------- */
+
+        function createMeetingNotification(
+            userSysId,
+            notificationType,
+            notificationTitle,
+            notificationMessage,
+            actionType
+        ) {
+
+            if (!userSysId) {
+
+                return false;
+            }
+
+
+            /*
+             * Find the user's ServiceCall User
+             * record because u_recipient points
+             * to ServiceCall User, not sys_user.
+             */
+
+            var serviceCallUserGR =
+                new GlideRecord(
+                    'x_1806573_servic_0_servicecall_user'
+                );
+
+
+            serviceCallUserGR.addQuery(
+                'u_user',
+                userSysId
+            );
+
+
+            serviceCallUserGR.setLimit(1);
+
+            serviceCallUserGR.query();
+
+
+            if (
+                !serviceCallUserGR.next()
+            ) {
+
+                gs.info(
+                    'ServiceCall notification skipped because user has no ServiceCall User record.' +
+                    ' | User=' +
+                    userSysId +
+                    ' | Meeting=' +
+                    meetingSysId
+                );
+
+                return false;
+            }
+
+
+            var serviceCallUserSysId =
+                String(
+                    serviceCallUserGR.getUniqueValue()
+                );
+
+
+            var notificationGR =
+                new GlideRecord(
+                    'x_1806573_servic_0_servicecall_notification'
+                );
+
+
+            notificationGR.initialize();
+
+
+            notificationGR.setValue(
+                'u_recipient',
+                serviceCallUserSysId
+            );
+
+
+            notificationGR.setValue(
+                'u_type',
+                notificationType
+            );
+
+
+            notificationGR.setValue(
+                'u_title',
+                notificationTitle
+            );
+
+
+            notificationGR.setValue(
+                'u_message',
+                notificationMessage
+            );
+
+
+            notificationGR.setValue(
+                'u_read',
+                false
+            );
+
+
+            notificationGR.setValue(
+                'u_meeting',
+                meetingSysId
+            );
+
+
+            notificationGR.setValue(
+                'u_action_type',
+                actionType
+            );
+
+
+            notificationGR.setValue(
+                'u_priority',
+                'normal'
+            );
+
+
+            var notificationSysId =
+                notificationGR.insert();
+
+
+            if (!notificationSysId) {
+
+                gs.error(
+                    'ServiceCall meeting notification insert failed.' +
+                    ' | Meeting=' +
+                    meetingSysId +
+                    ' | User=' +
+                    userSysId +
+                    ' | Type=' +
+                    notificationType
+                );
+
+                return false;
+            }
+
+
+            return true;
+        }
+
+
+        /* -----------------------------------------
+           RETAINED ATTENDEES
+           → MEETING UPDATED
+        ----------------------------------------- */
+
+        /*
+         * A retained attendee should know about
+         * meaningful meeting changes.
+         *
+         * This includes:
+         * - title
+         * - description
+         * - time
+         * - participant list
+         */
+
+        if (
+            detailsChanged ||
+            participantListChanged
+        ) {
+
+            for (
+                var e = 0;
+                e < retainedAttendees.length;
+                e++
+            ) {
+
+                createMeetingNotification(
+                    retainedAttendees[e],
+                    'meeting updated',
+                    'Meeting updated',
+                    '"' +
+                        title +
+                        '" has been updated.',
+                    'open meeting'
+                );
+            }
+        }
+
+
+        /* -----------------------------------------
+           NEW ATTENDEES
+           → NEW MEETING INVITATION
+        ----------------------------------------- */
+
+        for (
+            var a = 0;
+            a < addedAttendees.length;
+            a++
+        ) {
+
+            createMeetingNotification(
+                addedAttendees[a],
+                'meeting invitation',
+                'New mee
