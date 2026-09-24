@@ -1,1595 +1,1911 @@
-const params =
-    new URLSearchParams(
-        window.location.search
+document.addEventListener(
+    'DOMContentLoaded',
+    async () => {
+
+        /* -------------------------------------------------
+           ELEMENTS
+        ------------------------------------------------- */
+
+        const form =
+            document.getElementById(
+                'instanceForm'
+            );
+
+        const input =
+            document.getElementById(
+                'instanceUrl'
+            );
+
+        const message =
+            document.getElementById(
+                'instanceMessage'
+            );
+
+        const loginButton =
+            document.getElementById(
+                'loginButton'
+            );
+
+        const signOutButton =
+    document.getElementById(
+        'signOutButton'
     );
-    
-const mode =
-    params.get('mode') ||
-    'incoming';
 
-const callSysId =
-    params.get('callSysId') ||
-    ''; 
+        const openActiveCallButton =
+            document.getElementById(
+                'openActiveCallButton'
+            );
 
-const personName =
-    params.get('name') ||
-    'Unknown User';
+        /* -------------------------------------------------
+   PEOPLE ELEMENTS
+------------------------------------------------- */
 
-const department =
-    params.get('department') ||
-    '';
+const peopleSearchInput =
+    document.getElementById(
+        'peopleSearchInput'
+    );
 
-const callNumber =
-    params.get('callNumber') ||
-    '';
+const peopleSearchMessage =
+    document.getElementById(
+        'peopleSearchMessage'
+    );
 
-const isConference =
-    params.get('isConference') === 'true';
+const peopleSearchResults =
+    document.getElementById(
+        'peopleSearchResults'
+    );
 
-/* -------------------------
-   MEETING CONTEXT
-------------------------- */
+/* =====================================================
+   TOP BAR PRESENCE
+===================================================== */
 
-const isMeeting =
-    params.get('isMeeting') === 'true';
+const presenceButton =
+    document.getElementById(
+        'presenceButton'
+    );
 
-const meetingSysId =
-    params.get('meetingSysId') ||
-    '';
+const presenceMenu =
+    document.getElementById(
+        'presenceMenu'
+    );
 
-const meetingNumber =
-    params.get('meetingNumber') ||
-    '';
+const presenceText =
+    document.getElementById(
+        'presenceText'
+    );
 
-const meetingTitle =
-    params.get('meetingTitle') ||
-    '';
+const presenceDot =
+    document.getElementById(
+        'presenceDot'
+    );
 
-console.log(
-    'SERVICECALL MEETING CONTEXT:',
-    {
-        isMeeting,
-        meetingSysId,
-        meetingNumber,
-        meetingTitle
-    }
-);
+const presenceOptions =
+    document.querySelectorAll(
+        '.presence-option'
+    );
 
-let currentMode =
-    mode;
+const oofReasonPanel =
+    document.getElementById(
+        'oofReasonPanel'
+    );
 
-let callStatusTimer =
+const oofReasonInput =
+    document.getElementById(
+        'oofReasonInput'
+    );
+
+const saveOofButton =
+    document.getElementById(
+        'saveOofButton'
+    );
+
+const cancelOofButton =
+    document.getElementById(
+        'cancelOofButton'
+    );
+
+let peopleSearchTimer =
     null;
 
-let callStartedAt =
-    null;
+        const connectionPill =
+            document.getElementById(
+                'connectionPill'
+            );
+
+        const currentPageTitle =
+            document.getElementById(
+                'currentPageTitle'
+            );
+
+        const meetingsContainer =
+            document.getElementById(
+                'meetingsContainer'
+            );
+
+        const scheduleMeetingButton =
+            document.getElementById(
+                'scheduleMeetingButton'
+            );
+
+        const meetingSearchInput =
+    document.getElementById(
+        'meetingSearchInput'
+    );
+
+const meetingSearchClear =
+    document.getElementById(
+        'meetingSearchClear'
+    );
+
+const meetingPagination =
+    document.getElementById(
+        'meetingPagination'
+    );
+
+
+const meetingStatusFilter =
+    document.getElementById(
+        'meetingStatusFilter'
+    );
+
+/* -------------------------------------------------
+   NOTIFICATION ELEMENTS
+------------------------------------------------- */
+
+const notificationsContainer =
+    document.getElementById(
+        'notificationsContainer'
+    );
+
+
+const notificationPagination =
+    document.getElementById(
+        'notificationPagination'
+    );
+
+
+const notificationUnreadBadge =
+    document.getElementById(
+        'notificationUnreadBadge'
+    );
+
+const notificationUnreadFilterCount =
+    document.getElementById(
+        'notificationUnreadFilterCount'
+    );
+
+
+const refreshNotificationsButton =
+    document.getElementById(
+        'refreshNotificationsButton'
+    );
+
+
+const markAllNotificationsReadButton =
+    document.getElementById(
+        'markAllNotificationsReadButton'
+    );
+
+
+const notificationFilterButtons =
+    document.querySelectorAll(
+        '.notification-filter'
+    );
+
+
+const notificationsNavButton =
+    document.querySelector(
+        '[data-view="notificationsView"]'
+    );
+
+const notificationSearchInput =
+    document.getElementById(
+        'notificationSearchInput'
+    );
+
+
+const notificationSearchClear =
+    document.getElementById(
+        'notificationSearchClear'
+    );
+
+/* -------------------------------------------------
+   NOTIFICATION DETAIL ELEMENTS
+------------------------------------------------- */
+
+const notificationListPanel =
+    document.getElementById(
+        'notificationListPanel'
+    );
+
+const notificationDetailPanel =
+    document.getElementById(
+        'notificationDetailPanel'
+    );
+
+const notificationDetailBackButton =
+    document.getElementById(
+        'notificationDetailBackButton'
+    );
+
+const notificationDetailIcon =
+    document.getElementById(
+        'notificationDetailIcon'
+    );
+
+const notificationDetailType =
+    document.getElementById(
+        'notificationDetailType'
+    );
+
+const notificationDetailTitle =
+    document.getElementById(
+        'notificationDetailTitle'
+    );
+
+const notificationDetailTime =
+    document.getElementById(
+        'notificationDetailTime'
+    );
+
+const notificationDetailMessage =
+    document.getElementById(
+        'notificationDetailMessage'
+    );
+
+const notificationDetailActions =
+    document.getElementById(
+        'notificationDetailActions'
+    );
+
+let currentNotificationPage = 1;
+
+let currentNotificationFilter = 'all';
+
+let notificationAutoRefreshTimer = null;
+
+let currentNotificationSearch = '';
+
+let notificationSearchTimer = null;
+
+let knownNotificationIds =
+    new Set();
 
 /*
- * Authoritative start time returned
- * by ServiceNow.
+ * Notifications currently loaded from ServiceNow.
  *
- * For meetings this prevents the timer
- * from restarting after Leave -> Join.
+ * Filters can use this immediately without
+ * making another API request.
  */
-let serverCallStartedAt =
-    null;
+let cachedNotifications = [];
 
-let durationTimer =
-    null;
+let cachedNotificationResult = null;
 
-let closeTimer = null;
-
-let ringtoneInterval = null;
-let audioContext = null;
-
-let currentUserIsOwner =
+let notificationsInitialized =
     false;
 
-let participantRole =
-    'participant';
+let notificationSearchVersion = 0;
 
-/* -------------------------
-   ELEMENTS
-------------------------- */
+let currentMeetingPage = 1;
 
-const participantsButtonCount =
+let currentMeetingSearch = '';
+
+let currentMeetingStatus = '';
+
+let meetingSearchTimer = null;
+
+let schedulePeopleSearchTimer = null;
+
+let selectedMeetingPeople = [];
+
+let currentMeetingTimezone = '';
+
+let meetingsAutoRefreshTimer = null;
+
+let currentMeetingDetails = '';
+
+/*
+ * Meeting form mode:
+ *
+ * create = scheduling a new meeting
+ * edit   = modifying an existing meeting
+ */
+let meetingFormMode = 'create';
+
+
+/*
+ * Stores the meeting currently being edited.
+ */
+let editingMeetingSysId = '';
+
+const meetingDetailsModal =
     document.getElementById(
-        'participantsButtonCount'
+        'meetingDetailsModal'
     );
 
-const avatar =
+const meetingDetailsCloseButton =
     document.getElementById(
-        'avatar'
+        'meetingDetailsCloseButton'
     );
 
-const personNameElement =
+const meetingDetailsFooterCloseButton =
     document.getElementById(
-        'personName'
+        'meetingDetailsFooterCloseButton'
     );
 
-const departmentElement =
+const meetingDetailsActionButton =
     document.getElementById(
-        'department'
+        'meetingDetailsActionButton'
     );
 
-const statusText =
+const meetingDetailsNumber =
     document.getElementById(
-        'statusText'
+        'meetingDetailsNumber'
     );
 
-const callNumberElement =
+const meetingDetailsHeading =
     document.getElementById(
-        'callNumber'
+        'meetingDetailsHeading'
     );
 
-const timerElement =
+const meetingDetailsStatus =
     document.getElementById(
-        'timer'
+        'meetingDetailsStatus'
     );
 
-const incomingActions =
+const meetingDetailsDescription =
     document.getElementById(
-        'incomingActions'
+        'meetingDetailsDescription'
     );
 
-const callingActions =
+const meetingDetailsOrganizer =
     document.getElementById(
-        'callingActions'
+        'meetingDetailsOrganizer'
     );
 
-const connectedActions =
+const meetingDetailsStart =
     document.getElementById(
-        'connectedActions'
+        'meetingDetailsStart'
     );
 
-/* -------------------------
-   PARTICIPANTS PANEL
-------------------------- */
-
-const participantsButton =
+const meetingDetailsEnd =
     document.getElementById(
-        'participantsButton'
+        'meetingDetailsEnd'
     );
 
-const participantsPanel =
+const meetingDetailsStartedBy =
     document.getElementById(
-        'participantsPanel'
+        'meetingDetailsStartedBy'
     );
 
-const participantsPanelBody =
+const meetingDetailsStartedAt =
     document.getElementById(
-        'participantsPanelBody'
+        'meetingDetailsStartedAt'
     );
 
-const participantsPanelCount =
+const meetingDetailsEndedAt =
     document.getElementById(
-        'participantsPanelCount'
+        'meetingDetailsEndedAt'
     );
 
-const closeParticipantsPanelButton =
+const meetingDetailsStartedByField =
     document.getElementById(
-        'closeParticipantsPanel'
+        'meetingDetailsStartedByField'
+    );
+
+const meetingDetailsStartedAtField =
+    document.getElementById(
+        'meetingDetailsStartedAtField'
+    );
+
+const meetingDetailsEndedAtField =
+    document.getElementById(
+        'meetingDetailsEndedAtField'
+    );
+
+const meetingDetailsParticipantCount =
+    document.getElementById(
+        'meetingDetailsParticipantCount'
+    );
+
+const meetingDetailsParticipants =
+    document.getElementById(
+        'meetingDetailsParticipants'
+    );
+
+    const scheduleMeetingModal =
+    document.getElementById(
+        'scheduleMeetingModal'
+    );
+
+const scheduleMeetingCloseButton =
+    document.getElementById(
+        'scheduleMeetingCloseButton'
+    );
+
+const scheduleMeetingCancelButton =
+    document.getElementById(
+        'scheduleMeetingCancelButton'
+    );
+
+const scheduleMeetingTitle =
+    document.getElementById(
+        'scheduleMeetingTitle'
+    );
+
+const scheduleMeetingDescription =
+    document.getElementById(
+        'scheduleMeetingDescription'
+    );
+
+const scheduleMeetingStart =
+    document.getElementById(
+        'scheduleMeetingStart'
+    );
+
+const scheduleMeetingEnd =
+    document.getElementById(
+        'scheduleMeetingEnd'
+    );
+
+    const scheduleMeetingTimezone =
+    document.getElementById(
+        'scheduleMeetingTimezone'
+    );
+
+const scheduleMeetingHeading =
+    document.getElementById(
+        'scheduleMeetingHeading'
     );
 
 
-let latestCallParticipants =
-    [];
+const scheduleMeetingSubtitle =
+    document.getElementById(
+        'scheduleMeetingSubtitle'
+    );
 
+const scheduleMeetingPeopleSearch =
+    document.getElementById(
+        'scheduleMeetingPeopleSearch'
+    );
 
-/* -------------------------
-   INITIAL DISPLAY
-------------------------- */
+const scheduleMeetingPeopleResults =
+    document.getElementById(
+        'scheduleMeetingPeopleResults'
+    );
 
-personNameElement.textContent =
-    personName;
+const resetPresenceButton =
+    document.getElementById(
+        'resetPresenceButton'
+    );
 
-departmentElement.textContent =
-    department;
+const scheduleMeetingSelectedPeople =
+    document.getElementById(
+        'scheduleMeetingSelectedPeople'
+    );
 
-callNumberElement.textContent =
-    callNumber;
+const scheduleMeetingMessage =
+    document.getElementById(
+        'scheduleMeetingMessage'
+    );
 
+const scheduleMeetingSubmitButton =
+    document.getElementById(
+        'scheduleMeetingSubmitButton'
+    );
 
-const initials =
-    personName
-        .split(' ')
-        .filter(Boolean)
-        .slice(0, 2)
-        .map(
-            part =>
-                part[0]
-                    .toUpperCase()
-        )
-        .join('');
+    if (
+    scheduleMeetingCloseButton
+) {
 
-
-avatar.textContent =
-    initials || '?';
-
-/* -------------------------
-   MEETING DISPLAY
-------------------------- */
-
-if (isMeeting) {
-
-    /*
-     * Use the meeting title as the
-     * primary name in the existing
-     * ServiceCall window.
-     */
-    personNameElement.textContent =
-        meetingTitle ||
-        personName ||
-        'ServiceCall Meeting';
-
-
-    /*
-     * Show that this is a meeting
-     * instead of a person's department.
-     */
-    departmentElement.textContent =
-        'Meeting';
-
-
-    /*
-     * Show meeting number when available.
-     */
-    if (meetingNumber) {
-
-        callNumberElement.textContent =
-            meetingNumber;
-    }
-
-
-    /*
-     * Meeting-specific action labels.
-     */
-    const addUserButton =
-        document.getElementById(
-            'addUserButton'
-        );
-
-    const recordButton =
-        document.getElementById(
-            'recordButton'
-        );
-
-
-    if (addUserButton) {
-
-        addUserButton.textContent =
-            'Add People';
-    }
-
-
-    if (recordButton) {
-
-        recordButton.textContent =
-            'Record Meeting';
-    }
+    scheduleMeetingCloseButton.addEventListener(
+        'click',
+        closeScheduleMeetingModal
+    );
 }
 
-/* -------------------------
-   RINGTONE
-------------------------- */
- 
-function playRingTone(
-    frequency = 440
+
+if (
+    scheduleMeetingCancelButton
 ) {
- 
-    try {
- 
-        if (!audioContext) {
- 
-            audioContext =
-                new (
-                    window.AudioContext ||
-                    window.webkitAudioContext
-                )();
+
+    scheduleMeetingCancelButton.addEventListener(
+        'click',
+        closeScheduleMeetingModal
+    );
+}
+
+
+if (
+    scheduleMeetingModal
+) {
+
+    scheduleMeetingModal.addEventListener(
+        'click',
+        event => {
+
+            if (
+                event.target.hasAttribute(
+                    'data-schedule-meeting-close'
+                )
+            ) {
+
+                closeScheduleMeetingModal();
+            }
         }
- 
- 
-        const oscillator =
-            audioContext.createOscillator();
- 
-        const gain =
-            audioContext.createGain();
- 
- 
-        oscillator.type =
-            'sine';
- 
-        oscillator.frequency.value =
-            frequency;
- 
- 
-        gain.gain.value =
-            0.08;
- 
- 
-        oscillator.connect(
-            gain
-        );
- 
-        gain.connect(
-            audioContext.destination
-        );
- 
- 
-        oscillator.start();
- 
- 
-        setTimeout(
-            () => {
- 
-                try {
- 
-                    oscillator.stop();
- 
-                } catch (error) {
-                    // Already stopped.
+    );
+}
+
+        /* -------------------------------------------------
+           CONNECTION STATUS
+        ------------------------------------------------- */
+
+        function setConnectionDisplay(
+            connected,
+            text
+        ) {
+
+            if (!connectionPill) {
+                return;
+            }
+
+
+            connectionPill.textContent =
+                text;
+
+
+            connectionPill.classList.toggle(
+                'connected',
+                connected
+            );
+        }
+
+
+        /* -------------------------------------------------
+           LOAD SAVED INSTANCE
+        ------------------------------------------------- */
+
+        try {
+
+            const savedInstance =
+                await window.serviceCall
+                    .getInstance();
+
+
+            if (
+                input &&
+                savedInstance.instanceUrl
+            ) {
+
+                input.value =
+                    savedInstance.instanceUrl;
+            }
+
+
+        } catch (error) {
+
+            console.error(
+                'Unable to load saved ServiceNow instance:',
+                error
+            );
+        }
+
+
+        /* -------------------------------------------------
+           CHECK CONNECTION
+        ------------------------------------------------- */
+
+        try {
+
+            const connectionStatus =
+                await window.serviceCall
+                    .getConnectionStatus();
+
+
+            if (
+                connectionStatus.connected
+            ) {
+
+                loginButton.disabled =
+                    true;
+
+                loginButton.textContent =
+                    'Connected to ServiceNow';
+
+
+                setConnectionDisplay(
+                    true,
+                    'Connected'
+                );
+
+                await loadMyPresence();
+
+                if (message) {
+
+                    message.textContent =
+                        connectionStatus.message ||
+                        '';
                 }
- 
-            },
-            500
-        );
- 
-    } catch (error) {
- 
-        console.error(
-            'Unable to play ServiceCall ringtone:',
-            error
-        );
-    }
-}
- 
- 
-function startRingtone(
-    type
-) {
- 
-    stopRingtone();
- 
- 
-    /*
-     * Incoming call:
-     * slightly higher tone.
-     *
-     * Outgoing call:
-     * lower ringback tone.
-     */
-    const frequency =
-        type === 'incoming'
-            ? 520
-            : 420;
- 
- 
-    playRingTone(
-        frequency
-    );
- 
- 
-    ringtoneInterval =
-        setInterval(
-            () => {
- 
-                playRingTone(
-                    frequency
+
+
+            } else {
+
+                loginButton.disabled =
+                    false;
+
+                loginButton.textContent =
+                    'Sign in to ServiceNow';
+
+
+                setConnectionDisplay(
+                    false,
+                    'Not connected'
                 );
- 
-            },
-            1800
-        );
-}
- 
- 
-function stopRingtone() {
- 
-    if (ringtoneInterval) {
- 
-        clearInterval(
-            ringtoneInterval
-        );
- 
-        ringtoneInterval =
-            null;
-    }
-}
-
-/* -------------------------
-   AGORA AUDIO
-------------------------- */
-
-let agoraJoining = false;
+            }
 
 
-async function startAgoraAudio() {
+        } catch (error) {
 
-    if (
-        !window.ServiceCallAgora
-    ) {
-
-        console.error(
-            'ServiceCall Agora media service is not available.'
-        );
-
-        statusText.textContent =
-            'Audio service unavailable';
-
-        return;
-    }
+            console.error(
+                'Unable to check ServiceCall connection:',
+                error
+            );
 
 
-    if (
-        window.ServiceCallAgora.isJoined() ||
-        agoraJoining
-    ) {
-        return;
-    }
-
-
-    if (!callSysId) {
-
-        console.error(
-            'ServiceCall call sys_id is missing.'
-        );
-
-        statusText.textContent =
-            'Audio configuration unavailable';
-
-        return;
-    }
-
-
-    agoraJoining =
-        true;
-
-
-    try {
-
-        console.log(
-            'ServiceCall requesting dynamic media credentials...'
-        );
-
-
-        /*
-         * Request short-lived credentials
-         * for THIS specific ServiceCall call.
-         *
-         * Electron -> ServiceNow
-         * -> Cloudflare Worker -> Agora token
-         */
-        const credentials =
-            await window.serviceCall
-                .getMediaCredentials(
-                    callSysId
-                );
-
-
-        if (
-            !credentials ||
-            !credentials.success
-        ) {
-
-            throw new Error(
-                credentials &&
-                credentials.message
-                    ? credentials.message
-                    : 'Media credentials could not be obtained.'
+            setConnectionDisplay(
+                false,
+                'Connection unavailable'
             );
         }
 
 
-        const media =
-            credentials.media;
+        /* -------------------------------------------------
+           SAVE INSTANCE
+        ------------------------------------------------- */
+
+        if (form) {
+
+            form.addEventListener(
+                'submit',
+
+                async (event) => {
+
+                    event.preventDefault();
 
 
-        if (
-            !media ||
-            !media.app_id ||
-            !media.channel ||
-            !media.token ||
-            !media.uid
-        ) {
+                    const instanceUrl =
+                        input.value.trim();
 
-            throw new Error(
-                'ServiceCall returned incomplete media credentials.'
+
+                    message.textContent =
+                        'Saving ServiceNow instance...';
+
+
+                    try {
+
+                        const result =
+                            await window
+                                .serviceCall
+                                .saveInstance(
+                                    instanceUrl
+                                );
+
+
+                        message.textContent =
+                            result.message ||
+                            '';
+
+
+                    } catch (error) {
+
+                        console.error(
+                            'Save instance failed:',
+                            error
+                        );
+
+
+                        message.textContent =
+                            'Unable to save the ServiceNow instance.';
+                    }
+                }
             );
         }
 
 
-        console.log(
-            'ServiceCall media credentials received.',
-            'Channel:',
-            media.channel,
-            'UID:',
-            media.uid
-        );
+        /* -------------------------------------------------
+           LOGIN
+        ------------------------------------------------- */
 
+        if (loginButton) {
 
-        /*
-         * IMPORTANT:
-         *
-         * Never log media.token.
-         */
+            loginButton.addEventListener(
+                'click',
 
-
-        console.log(
-            'ServiceCall joining Agora audio channel...'
-        );
-
-
-        await window.ServiceCallAgora.join({
-
-            appId:
-                media.app_id,
-
-            token:
-                media.token,
-
-            channel:
-                media.channel,
-
-            uid:
-                media.uid,
-
-
-            /*
-             * TOKEN RENEWAL CALLBACK
-             *
-             * agora-service.js calls this
-             * when Agora warns that the
-             * current token will expire.
-             *
-             * We request fresh credentials
-             * for the SAME ServiceCall call.
-             */
-            renewToken:
                 async () => {
 
-                    console.log(
-                        'ServiceCall requesting renewed media credentials...'
+                    message.textContent =
+                        'Opening ServiceNow sign-in...';
+
+
+                    try {
+
+                        const result =
+                            await window
+                                .serviceCall
+                                .startLogin();
+
+
+                        message.textContent =
+                            result.message ||
+                            '';
+
+
+                    } catch (error) {
+
+                        console.error(
+                            'ServiceNow login failed:',
+                            error
+                        );
+
+
+                        message.textContent =
+                            'Unable to start ServiceNow sign-in.';
+                    }
+                }
+            );
+        }
+
+
+        /* -------------------------------------------------
+           AUTH STATUS EVENTS
+        ------------------------------------------------- */
+
+        window.serviceCall.onAuthStatus(
+            async(data) => {
+
+                if (message) {
+
+                    message.textContent =
+                        data.message ||
+                        '';
+                }
+
+
+                if (
+                    data.status ===
+                    'connected'
+                ) {
+
+                    loginButton.disabled =
+                        true;
+
+                    loginButton.textContent =
+                        'Connected to ServiceNow';
+
+
+                    setConnectionDisplay(
+                        true,
+                        'Connected'
                     );
+await loadMyPresence();
+
+                } else if (
+                    data.status === 'warning' ||
+                    data.status === 'error' ||
+                    data.status ===
+                        'authentication_required'
+                ) {
+
+                    loginButton.disabled =
+                        false;
+
+                    loginButton.textContent =
+                        'Sign in to ServiceNow';
 
 
-                    const renewedCredentials =
-                        await window.serviceCall
-                            .getMediaCredentials(
-                                callSysId
+                    setConnectionDisplay(
+                        false,
+                        'Connection required'
+                    );
+                }
+            }
+        );
+
+
+        /* -------------------------------------------------
+           OPEN ACTIVE CALL
+        ------------------------------------------------- */
+
+        if (openActiveCallButton) {
+
+            openActiveCallButton.addEventListener(
+                'click',
+
+                async () => {
+
+                    try {
+
+                        const result =
+                            await window
+                                .serviceCall
+                                .openActiveCall();
+
+
+                        if (
+                            !result.active_call &&
+                            message
+                        ) {
+
+                            message.textContent =
+                                result.message ||
+                                'No active call is available.';
+                        }
+
+
+                    } catch (error) {
+
+                        console.error(
+                            'Open active call failed:',
+                            error
+                        );
+
+
+                        if (message) {
+
+                            message.textContent =
+                                'Unable to open the active call.';
+                        }
+                    }
+                }
+            );
+        }
+
+
+        /* -------------------------------------------------
+           SIDEBAR NAVIGATION
+        ------------------------------------------------- */
+
+        const navigationButtons =
+            document.querySelectorAll(
+                '.nav-button[data-view]'
+            );
+
+
+        const views =
+            document.querySelectorAll(
+                '.view'
+            );
+
+
+        navigationButtons.forEach(
+            (button) => {
+
+                button.addEventListener(
+                    'click',
+
+                    async () => {
+
+                        const targetView =
+                            button.dataset.view;
+
+
+                        /*
+                         * Hide all pages.
+                         */
+                        views.forEach(
+                            (view) => {
+
+                                view.classList.remove(
+                                    'active'
+                                );
+                            }
+                        );
+
+
+                        /*
+                         * Remove active state
+                         * from navigation.
+                         */
+                        navigationButtons.forEach(
+                            (navButton) => {
+
+                                navButton.classList.remove(
+                                    'active'
+                                );
+                            }
+                        );
+
+
+                        /*
+                         * Show selected page.
+                         */
+                        const selectedView =
+                            document.getElementById(
+                                targetView
                             );
 
 
-                    if (
-                        !renewedCredentials ||
-                        !renewedCredentials.success
-                    ) {
+                        if (selectedView) {
 
-                        throw new Error(
-                            renewedCredentials &&
-                            renewedCredentials.message
-                                ? renewedCredentials.message
-                                : 'Unable to obtain renewed media credentials.'
+                            selectedView.classList.add(
+                                'active'
+                            );
+                        }
+
+
+                        button.classList.add(
+                            'active'
                         );
-                    }
 
 
-                    const renewedMedia =
-                        renewedCredentials.media;
-
-
-                    if (
-                        !renewedMedia ||
-                        !renewedMedia.token
-                    ) {
-
-                        throw new Error(
-                            'ServiceCall returned an incomplete renewed media token.'
-                        );
-                    }
-
-
-                    /*
-                     * Safety check:
-                     *
-                     * Renewal must remain on
-                     * the SAME Agora channel
-                     * and SAME participant UID.
-                     */
-                    if (
-                        renewedMedia.channel !==
-                        media.channel
-                    ) {
-
-                        throw new Error(
-                            'Renewed media channel does not match the active call.'
-                        );
-                    }
-
-
-                    if (
-                        Number(
-                            renewedMedia.uid
-                        ) !==
-                        Number(
-                            media.uid
-                        )
-                    ) {
-
-                        throw new Error(
-                            'Renewed media UID does not match the active participant.'
-                        );
-                    }
-
-
-                    console.log(
-                        'ServiceCall renewed media credentials received.',
-                        'Channel:',
-                        renewedMedia.channel,
-                        'UID:',
-                        renewedMedia.uid
-                    );
-
-
-                    /*
-                     * NEVER log renewedMedia.token.
-                     *
-                     * Return only the token to
-                     * agora-service.js.
-                     */
-                    return renewedMedia.token;
-                }
-        });
-
-
-        console.log(
-            'ServiceCall audio connected successfully.'
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall audio connection failed:',
-            error
-        );
-
-
-        statusText.textContent =
-            'Connected - audio unavailable';
-
-
-    } finally {
-
-        agoraJoining =
-            false;
-    }
-}
-
-
-async function stopAgoraAudio() {
-
-    if (
-        !window.ServiceCallAgora
-    ) {
-        return;
-    }
-
-
-    try {
-
-        await window.ServiceCallAgora
-            .leave();
-
-    } catch (error) {
-
-        console.error(
-            'Unable to leave ServiceCall audio:',
-            error
-        );
-    }
-}
-
-/* -------------------------
-   UI STATE
-------------------------- */
-
-function setMode(
-    newMode
-) {
-
-    currentMode =
-        newMode;
-
-
-    incomingActions
-        .classList
-        .add('hidden');
-
-    callingActions
-        .classList
-        .add('hidden');
-
-    connectedActions
-        .classList
-        .add('hidden');
-
-    timerElement
-        .classList
-        .add('hidden');
-
-
-    if (
-        newMode ===
-        'incoming'
-    ) {
-
-        statusText.textContent =
-            isConference
-                ? 'Conference call'
-                : 'is calling you...';
-
-        incomingActions
-            .classList
-            .remove('hidden');
-
-
-        startRingtone('incoming');
-        return;
-    }
-
-
-    if (
-        newMode ===
-        'calling'
-    ) {
-
-        statusText.textContent =
-            'Ringing';
-
-        callingActions
-            .classList
-            .remove('hidden');
-
-        startRingtone('outgoing');
-
-        return;
-    }
-
-
-    if (
-        newMode ===
-        'connected'
-    ) {
-
-        stopRingtone();
-
-        statusText.textContent =
-            'Connected';
-
-        connectedActions
-            .classList
-            .remove('hidden');
-
-        /*
- * Normal calls can start their timer
- * immediately.
+                        /*
+ * Do not use the entire button text because
+ * some navigation buttons can contain badges.
  *
- * Meetings wait for ServiceNow's
- * authoritative started_at value so
- * Rejoin never flashes 00:00 first.
+ * Example:
+ *
+ * Notifications + unread badge "3"
+ *
+ * should still produce the page title:
+ *
+ * Notifications
  */
-if (!isMeeting) {
+let pageName = '';
 
-    timerElement
-        .classList
-        .remove('hidden');
 
-    startDurationTimer();
+const explicitPageNames = {
+
+    homeView:
+        'Home',
+
+    peopleView:
+        'People',
+
+    meetingsView:
+        'Meetings',
+
+    notificationsView:
+        'Notifications',
+
+    chatView:
+        'Chat',
+
+    historyView:
+        'History',
+
+    recordingsView:
+        'Recordings',
+
+    settingsView:
+        'Settings'
+};
+
+
+pageName =
+    explicitPageNames[
+        targetView
+    ] ||
+    button.textContent.trim();
+
+
+if (currentPageTitle) {
+
+    currentPageTitle.textContent =
+        pageName;
 }
 
-startAgoraAudio();
+
+                       if (
+    targetView ===
+    'meetingsView'
+) {
+
+    await loadMeetings();
+
+    startMeetingsAutoRefresh();
+
+} else {
+
+    stopMeetingsAutoRefresh();
+}
+
+
+/*
+ * Notifications are different from Meetings.
+ *
+ * Their background monitor runs globally,
+ * but opening the Notifications page performs
+ * a normal visible refresh.
+ */
+if (
+    targetView ===
+    'notificationsView'
+) {
+
+    currentNotificationPage =
+        1;
+
+    await loadNotifications(
+        false
+    );
+}
+                    }
+                );
+            }
+        );
+
+
+        /* -------------------------------------------------
+           MEETING HELPERS
+        ------------------------------------------------- */
+
+        function escapeHtml(
+            value
+        ) {
+
+            return String(
+                value || ''
+            )
+                .replace(
+                    /&/g,
+                    '&amp;'
+                )
+                .replace(
+                    /</g,
+                    '&lt;'
+                )
+                .replace(
+                    />/g,
+                    '&gt;'
+                )
+                .replace(
+                    /"/g,
+                    '&quot;'
+                )
+                .replace(
+                    /'/g,
+                    '&#039;'
+                );
+        }
+
+
+        function formatMeetingDate(
+            value
+        ) {
+
+            if (!value) {
+                return '';
+            }
+
+
+            /*
+             * ServiceNow returns:
+             *
+             * YYYY-MM-DD HH:mm:ss
+             *
+             * For now we display that authoritative
+             * value without applying timezone
+             * conversion in the renderer.
+             */
+            return value;
+        }
+
+
+        function getStatusClass(
+            state
+        ) {
+
+            const normalized =
+                String(
+                    state || ''
+                )
+                    .toLowerCase()
+                    .trim();
+
+
+            if (
+                normalized ===
+                'in progress'
+            ) {
+
+                return 'in-progress';
+            }
+
+
+            if (
+                normalized ===
+                'scheduled'
+            ) {
+
+                return 'scheduled';
+            }
+
+
+            return '';
+        }
+
+        function formatMeetingDetailsValue(
+    value
+) {
+
+    const text =
+        String(
+            value || ''
+        ).trim();
+
+    return text || '—';
+}
+
+
+function formatMeetingDetailsStatus(
+    value
+) {
+
+    const text =
+        String(
+            value || ''
+        )
+            .trim()
+            .toLowerCase();
+
+    if (!text) {
+        return '—';
+    }
+
+    return text
+        .split(' ')
+        .map(
+            word =>
+                word
+                    ? word.charAt(0).toUpperCase() +
+                      word.slice(1)
+                    : ''
+        )
+        .join(' ');
+}
+
+
+function closeMeetingDetailsModal() {
+
+    if (!meetingDetailsModal) {
+        return;
+    }
+
+    meetingDetailsModal.classList.remove(
+        'open'
+    );
+
+    meetingDetailsModal.setAttribute(
+        'aria-hidden',
+        'true'
+    );
+}
+
+function getDateTimeLocalValueInTimezone(
+    date,
+    timeZone
+) {
+
+    if (!date || !timeZone) {
+        return '';
+    }
+
+    const parts =
+        new Intl.DateTimeFormat(
+            'en-CA',
+            {
+                timeZone: timeZone,
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hourCycle: 'h23'
+            }
+        ).formatToParts(date);
+
+
+    const values = {};
+
+    parts.forEach(
+        part => {
+
+            if (part.type !== 'literal') {
+                values[part.type] =
+                    part.value;
+            }
+        }
+    );
+
+
+    return (
+        values.year +
+        '-' +
+        values.month +
+        '-' +
+        values.day +
+        'T' +
+        values.hour +
+        ':' +
+        values.minute
+    );
+}
+
+function openScheduleMeetingModal() {
+
+    if (!scheduleMeetingModal) {
+        return;
+    }
+
+    /*
+ * Normal Schedule Meeting button always
+ * opens the form in CREATE mode.
+ */
+meetingFormMode =
+    'create';
+
+editingMeetingSysId =
+    '';
+
+    if (scheduleMeetingHeading) {
+
+    scheduleMeetingHeading.textContent =
+        'Schedule Meeting';
+}
+
+
+if (scheduleMeetingSubtitle) {
+
+    scheduleMeetingSubtitle.textContent =
+        'Create a new ServiceCall meeting.';
+}
+
+
+if (scheduleMeetingSubmitButton) {
+
+    scheduleMeetingSubmitButton.textContent =
+        'Schedule Meeting';
+}
+
+    if (scheduleMeetingTimezone) {
+
+    scheduleMeetingTimezone.textContent =
+        currentMeetingTimezone ||
+        'Loading...';
+}
+
+
+    /*
+     * Start every new scheduling attempt
+     * with a clean form.
+     */
+
+    if (scheduleMeetingTitle) {
+        scheduleMeetingTitle.value = '';
+    }
+
+    if (scheduleMeetingDescription) {
+        scheduleMeetingDescription.value = '';
+    }
+
+    /*
+ * Default meeting times are based on
+ * the authenticated ServiceNow user's
+ * timezone, NOT the laptop timezone.
+ */
+if (
+    currentMeetingTimezone &&
+    scheduleMeetingStart &&
+    scheduleMeetingEnd
+) {
+
+    const now =
+        new Date();
+
+    /*
+     * Default start = 5 minutes from now.
+     */
+    const defaultStart =
+        new Date(
+            now.getTime() +
+            (5 * 60 * 1000)
+        );
+
+    /*
+     * Default end = 35 minutes from now,
+     * giving a 30-minute meeting.
+     */
+    const defaultEnd =
+        new Date(
+            now.getTime() +
+            (35 * 60 * 1000)
+        );
+
+
+    scheduleMeetingStart.value =
+        getDateTimeLocalValueInTimezone(
+            defaultStart,
+            currentMeetingTimezone
+        );
+
+
+    scheduleMeetingEnd.value =
+        getDateTimeLocalValueInTimezone(
+            defaultEnd,
+            currentMeetingTimezone
+        );
+
+} else {
+
+    if (scheduleMeetingStart) {
+        scheduleMeetingStart.value = '';
+    }
+
+    if (scheduleMeetingEnd) {
+        scheduleMeetingEnd.value = '';
+    }
+}
+
+    selectedMeetingPeople = [];
+
+    if (scheduleMeetingPeopleSearch) {
+        scheduleMeetingPeopleSearch.value = '';
+    }
+
+    if (scheduleMeetingPeopleResults) {
+        scheduleMeetingPeopleResults.innerHTML = '';
+        scheduleMeetingPeopleResults.style.display = 'none';
+    }
+
+    if (scheduleMeetingSelectedPeople) {
+
+        scheduleMeetingSelectedPeople.innerHTML = `
+            <div
+                id="scheduleMeetingNoPeople"
+                class="schedule-meeting-no-people"
+            >
+                No people selected.
+            </div>
+        `;
+    }
+
+    if (scheduleMeetingMessage) {
+        scheduleMeetingMessage.textContent = '';
     }
 
 
-    if (
-    newMode ===
-    'declined'
-) {
+    scheduleMeetingModal.classList.add(
+        'open'
+    );
 
-    stopRingtone();
- 
-    statusText.textContent =
-        'Call declined';
- 
-    stopAllTimers();
- 
-    closeCallWindowAfterDelay();
- 
-    return;
+    scheduleMeetingModal.setAttribute(
+        'aria-hidden',
+        'false'
+    );
+
+
+    /*
+     * Put the cursor directly in Title.
+     */
+
+    setTimeout(
+        () => {
+
+            if (scheduleMeetingTitle) {
+                scheduleMeetingTitle.focus();
+            }
+
+        },
+        0
+    );
 }
 
 
-    if (
-    newMode ===
-    'cancelled'
-) {
+function closeScheduleMeetingModal() {
 
-    stopRingtone();
- 
-    statusText.textContent =
-        'Call cancelled';
- 
-    stopAllTimers();
- 
-    closeCallWindowAfterDelay();
- 
-    return;
-}
-
-
-    if (
-    newMode ===
-    'completed'
-) {
-
-    stopRingtone();
-
-    statusText.textContent =
-        'Call ended';
-
-    stopAllTimers();
-
-    stopAgoraAudio();
-
-    closeCallWindowAfterDelay();
-
-    return;
-}
-}
-
-
-/* -------------------------
-   CALL TIMER
-------------------------- */
-
-function startDurationTimer() {
-
-    if (durationTimer) {
+    if (!scheduleMeetingModal) {
         return;
     }
 
 
-    /*
-     * For meetings, prefer the authoritative
-     * start time returned by ServiceNow.
-     *
-     * For normal calls, preserve the existing
-     * local timer behavior.
-     */
-    if (
-        isMeeting &&
-        serverCallStartedAt
-    ) {
+    scheduleMeetingModal.classList.remove(
+        'open'
+    );
 
-        callStartedAt =
-            serverCallStartedAt;
+    scheduleMeetingModal.setAttribute(
+        'aria-hidden',
+        'true'
+    );
 
-    } else {
 
-        callStartedAt =
-            Date.now();
+    if (scheduleMeetingPeopleResults) {
+        scheduleMeetingPeopleResults.style.display =
+            'none';
+    }
+}
+
+
+function meetingDisplayValueToDateTimeLocal(
+    value
+) {
+
+    const text =
+        String(
+            value || ''
+        ).trim();
+
+
+    if (!text) {
+        return '';
     }
 
-
-    function updateDurationDisplay() {
-
-        if (!callStartedAt) {
-            return;
-        }
-
-
-        const seconds =
-            Math.max(
-                0,
-                Math.floor(
-                    (
-                        Date.now() -
-                        callStartedAt
-                    ) / 1000
-                )
-            );
-
-
-        const hours =
-            Math.floor(
-                seconds / 3600
-            );
-
-
-        const minutes =
-            Math.floor(
-                (
-                    seconds % 3600
-                ) / 60
-            );
-
-
-        const remainingSeconds =
-            seconds % 60;
-
-
-        /*
-         * Under one hour:
-         *     07:24
-         *
-         * One hour or more:
-         *     01:07:24
-         */
-        if (hours > 0) {
-
-            timerElement.textContent =
-                String(hours)
-                    .padStart(
-                        2,
-                        '0'
-                    ) +
-                ':' +
-                String(minutes)
-                    .padStart(
-                        2,
-                        '0'
-                    ) +
-                ':' +
-                String(
-                    remainingSeconds
-                )
-                    .padStart(
-                        2,
-                        '0'
-                    );
-
-        } else {
-
-            timerElement.textContent =
-                String(minutes)
-                    .padStart(
-                        2,
-                        '0'
-                    ) +
-                ':' +
-                String(
-                    remainingSeconds
-                )
-                    .padStart(
-                        2,
-                        '0'
-                    );
-        }
-    }
-
-
-    /*
-     * Display immediately instead of waiting
-     * one second for the first interval.
-     */
-    updateDurationDisplay();
-
-
-    durationTimer =
-        setInterval(
-            updateDurationDisplay,
-            1000
+    return text
+        .replace(
+            ' ',
+            'T'
+        )
+        .substring(
+            0,
+            16
         );
 }
 
-/* -------------------------
-   STATUS POLLING
-------------------------- */
+async function openEditMeetingModal(
+    meetingSysId
+) {
 
-async function checkCallStatus() {
-
-    if (!callSysId) {
+    if (
+        !meetingSysId ||
+        !scheduleMeetingModal
+    ) {
         return;
     }
+
+
+    /*
+     * EDIT mode.
+     */
+    meetingFormMode =
+        'edit';
+
+    editingMeetingSysId =
+        meetingSysId;
+
+
+    /*
+     * Change the existing modal UI.
+     */
+    if (scheduleMeetingHeading) {
+
+        scheduleMeetingHeading.textContent =
+            'Edit Meeting';
+    }
+
+
+    if (scheduleMeetingSubtitle) {
+
+        scheduleMeetingSubtitle.textContent =
+            'Update this ServiceCall meeting.';
+    }
+
+
+    if (scheduleMeetingSubmitButton) {
+
+        scheduleMeetingSubmitButton.textContent =
+            'Loading...';
+
+        scheduleMeetingSubmitButton.disabled =
+            true;
+    }
+
+
+    if (scheduleMeetingMessage) {
+
+        scheduleMeetingMessage.textContent =
+            '';
+    }
+
+
+    /*
+     * Clear old participant search results.
+     */
+    if (scheduleMeetingPeopleSearch) {
+
+        scheduleMeetingPeopleSearch.value =
+            '';
+    }
+
+
+    if (scheduleMeetingPeopleResults) {
+
+        scheduleMeetingPeopleResults.innerHTML =
+            '';
+
+        scheduleMeetingPeopleResults.style.display =
+            'none';
+    }
+
+
+    /*
+     * Open modal immediately while details load.
+     */
+    scheduleMeetingModal.classList.add(
+        'open'
+    );
+
+    scheduleMeetingModal.setAttribute(
+        'aria-hidden',
+        'false'
+    );
 
 
     try {
 
         const result =
-            await window.serviceCall
-                .getCallStatus(
-                    callSysId
+            await window
+                .serviceCall
+                .getMeetingDetails(
+                    meetingSysId
                 );
 
 
         if (
             !result ||
-            !result.success
+            result.success !== true
         ) {
-            return;
+
+            throw new Error(
+                result &&
+                result.message
+                    ? result.message
+                    : 'Unable to load meeting.'
+            );
         }
 
-        /*
- * Keep the live participant list
- * synchronized with ServiceNow.
- *
- * /call-status already runs every
- * 2 seconds, so no extra polling
- * request is required.
- */
-renderParticipants(
-    Array.isArray(result.participants)
-        ? result.participants
-        : []
-);
 
-
-        const state =
-            result.state;
-
-            console.log(
-    'SERVICECALL TIMER DEBUG:',
-    {
-        isMeeting:
-            isMeeting,
-
-        answered_at:
-            result.answered_at,
-
-        localNow:
-            new Date()
-                .toISOString()
-    }
-);
-
-        /*
- * ServiceNow is authoritative for when
- * the meeting/call actually started.
- *
- * GlideDateTime.getValue() is returned as:
- * YYYY-MM-DD HH:mm:ss
- *
- * ServiceNow stores this value in UTC,
- * therefore explicitly parse it as UTC.
- */
-if (
-    isMeeting &&
-    result.started_at
-) {
-
-    const parsedStartedAt =
-        Date.parse(
-            result.started_at
-                .replace(
-                    ' ',
-                    'T'
-                ) +
-            'Z'
+        console.log(
+            'Editing meeting:',
+            result
         );
 
 
-    if (
-    !Number.isNaN(
-        parsedStartedAt
-    )
-) {
+        /*
+         * Title + Description
+         */
+        if (scheduleMeetingTitle) {
 
-    serverCallStartedAt =
-        parsedStartedAt;
-
-    callStartedAt =
-        serverCallStartedAt;
+            scheduleMeetingTitle.value =
+                result.title || '';
+        }
 
 
-    /*
-     * Meeting timer becomes visible only
-     * after the authoritative start time
-     * has been received.
-     */
-    timerElement
-        .classList
-        .remove('hidden');
+        if (scheduleMeetingDescription) {
 
+            scheduleMeetingDescription.value =
+                result.description || '';
+        }
 
-    startDurationTimer();
-}
-}
 
         /*
- * Keep the recording indicator synchronized
- * for every participant in the call.
- *
- * /call-status is already polled every
- * 2 seconds, so no additional timer or
- * REST request is required.
- */
-syncRecordingIndicator(
-    result.recording_active === true
-);
+         * Meeting Details API currently returns:
+         *
+         * YYYY-MM-DD HH:mm:ss
+         *
+         * datetime-local requires:
+         *
+         * YYYY-MM-DDTHH:mm
+         */
+        if (scheduleMeetingStart) {
 
-        /* -------------------------
-   OWNER / PARTICIPANT STATE
-------------------------- */
-
-currentUserIsOwner =
-    result.is_owner === true;
-
-
-participantRole =
-    result.participant_role ||
-    'participant';
-
-
-const endButton =
-    document.getElementById(
-        'endButton'
-    );
-
-
-if (currentUserIsOwner) {
-
-    endButton.textContent =
-        isMeeting
-            ? 'End Meeting'
-            : 'End Conference';
-
-} else {
-
-    endButton.textContent =
-        isMeeting
-            ? 'Leave Meeting'
-            : 'Leave Call';
-}
-
-
-/* -------------------------
-   PARTICIPANT LEFT
-------------------------- */
-
-const participantStatus =
-    result.participant_status ||
-    '';
-
-
-if (
-    participantStatus === 'left' ||
-    participantStatus === 'disconnected'
-) {
-
-    /*
-     * The overall conference may still be
-     * connected, but THIS participant is
-     * no longer part of it.
-     */
-
-    await stopAgoraAudio();
-
-    stopRingtone();
-
-    stopAllTimers();
-
-    statusText.textContent =
-        participantStatus === 'left'
-            ? 'You left the call'
-            : 'Call ended';
-
-    closeCallWindowAfterDelay();
-
-    return;
-}
-
-        if (
-            state === 'connected' &&
-            currentMode !==
-                'connected'
-        ) {
-
-            setMode(
-                'connected'
-            );
-
-            return;
+            scheduleMeetingStart.value =
+                meetingDisplayValueToDateTimeLocal(
+                    result.scheduled_start
+                );
         }
 
 
-        if (
-            state === 'declined'
-        ) {
+        if (scheduleMeetingEnd) {
 
-            setMode(
-                'declined'
-            );
-
-            return;
+            scheduleMeetingEnd.value =
+                meetingDisplayValueToDateTimeLocal(
+                    result.scheduled_end
+                );
         }
 
 
-        if (
-            state === 'cancelled'
-        ) {
+        /*
+         * Display authenticated user's
+         * ServiceNow timezone.
+         */
+        if (scheduleMeetingTimezone) {
 
-            setMode(
-                'cancelled'
-            );
-
-            return;
+            scheduleMeetingTimezone.textContent =
+                currentMeetingTimezone ||
+                'Unavailable';
         }
 
 
-        if (
-            state === 'completed'
-        ) {
+        /*
+         * Populate existing attendees.
+         *
+         * Do not add the organizer as a
+         * selectable attendee.
+         */
+        selectedMeetingPeople =
+            Array.isArray(
+                result.participants
+            )
+                ? result.participants
+                    .filter(
+                        participant =>
+                            participant.role !==
+                            'organizer'
+                    )
+                    .map(
+                        participant => ({
+                            sys_id:
+                                participant.user_sys_id,
 
-            setMode(
-                'completed'
-            );
+                            name:
+                                participant.user_name
+                        })
+                    )
+                : [];
 
-            return;
+
+        /*
+         * Re-render selected participant chips.
+         */
+        renderSelectedMeetingPeople();
+
+
+        if (scheduleMeetingSubmitButton) {
+
+            scheduleMeetingSubmitButton.disabled =
+                false;
+
+            scheduleMeetingSubmitButton.textContent =
+                'Save Changes';
         }
+
+
+        if (scheduleMeetingTitle) {
+
+            scheduleMeetingTitle.focus();
+        }
+
 
     } catch (error) {
 
         console.error(
-            'Call status error:',
+            'Unable to open Edit Meeting:',
             error
         );
+
+
+        if (scheduleMeetingMessage) {
+
+            scheduleMeetingMessage.textContent =
+                error.message ||
+                'Unable to load meeting.';
+        }
+
+
+        if (scheduleMeetingSubmitButton) {
+
+            scheduleMeetingSubmitButton.disabled =
+                true;
+
+            scheduleMeetingSubmitButton.textContent =
+                'Save Changes';
+        }
     }
 }
 
 
-function startCallStatusPolling() {
+function openMeetingDetailsModal(
+    details
+) {
 
-    if (!callSysId) {
+    if (!meetingDetailsModal) {
         return;
     }
 
+    /*
+     * Remember the meeting currently
+     * displayed in the Details modal.
+     */
+    currentMeetingDetails =
+        details;
 
-    checkCallStatus();
-
-
-    callStatusTimer =
-        setInterval(
-            checkCallStatus,
-            2000
-        );
-}
+    console.log('ServiceCall Meeting Details:', details);
 
 
-/* -------------------------
-   ACCEPT
+    /*
+     * Reset the contextual action button.
+     *
+     * We will determine its exact action
+     * from the meeting state/permissions next.
+     */
+    if (meetingDetailsActionButton) {
+
+        meetingDetailsActionButton.style.display =
+            'none';
+
+        meetingDetailsActionButton.disabled =
+            false;
+
+        meetingDetailsActionButton.textContent =
+            'Join Meeting';
+    }
+
+    /* -------------------------
+   PRIMARY MEETING ACTION
 ------------------------- */
 
-document
-    .getElementById(
-        'acceptButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
+if (meetingDetailsActionButton) {
 
-            try {
-
-                const result =
-                    await window
-                        .serviceCall
-                        .acceptCall(
-                            callSysId
-                        );
-
-
-                if (
-                    result.success
-                ) {
-
-                    setMode(
-                        'connected'
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    'Accept call failed:',
-                    error
-                );
-
-                statusText.textContent =
-                    error.message ||
-                    'Unable to accept call.';
-            }
-        }
-    );
-
-
-/* -------------------------
-   DECLINE
-------------------------- */
-
-document
-    .getElementById(
-        'declineButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
-
-            try {
-
-                const result =
-                    await window
-                        .serviceCall
-                        .declineCall(
-                            callSysId
-                        );
-
-
-                if (
-                    result.success
-                ) {
-
-                    setMode(
-                        'declined'
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    'Decline call failed:',
-                    error
-                );
-
-                statusText.textContent =
-                    error.message ||
-                    'Unable to decline call.';
-            }
-        }
-    );
-
-
-/* -------------------------
-   CANCEL
-------------------------- */
-
-document
-    .getElementById(
-        'cancelButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
-
-            try {
-
-                const result =
-                    await window
-                        .serviceCall
-                        .cancelCall(
-                            callSysId
-                        );
-
-
-                if (
-                    result.success
-                ) {
-
-                    setMode(
-                        'cancelled'
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    'Cancel call failed:',
-                    error
-                );
-
-                statusText.textContent =
-                    error.message ||
-                    'Unable to cancel call.';
-            }
-        }
-    );
-
-/* -------------------------
-   MUTE / UNMUTE
-------------------------- */
-
-document
-    .getElementById(
-        'muteButton'
-    )
-    .addEventListener(
-        'click',
-        async () => {
-
-            try {
-
-                if (
-                    !window.ServiceCallAgora ||
-                    !window.ServiceCallAgora.isJoined()
-                ) {
-
-                    statusText.textContent =
-                        'Audio is not connected';
-
-                    return;
-                }
-
-
-                const currentlyMuted =
-                    window.ServiceCallAgora
-                        .isMuted();
-
-
-                const result =
-                    await window.ServiceCallAgora
-                        .setMuted(
-                            !currentlyMuted
-                        );
-
-
-                if (result.success) {
-
-                    document
-                        .getElementById(
-                            'muteButton'
-                        )
-                        .textContent =
-                            result.muted
-                                ? 'Unmute'
-                                : 'Mute';
-
-
-                    console.log(
-                        result.muted
-                            ? 'ServiceCall microphone muted.'
-                            : 'ServiceCall microphone unmuted.'
-                    );
-                }
-
-
-            } catch (error) {
-
-                console.error(
-                    'ServiceCall mute failed:',
-                    error
-                );
-
-
-                statusText.textContent =
-                    'Unable to change microphone state';
-            }
-        }
-    );
-
-/* =======================================================
-   LIVE PARTICIPANTS PANEL
-======================================================= */
-
-function getParticipantInitials(
-    name
-) {
-
-    return String(
-        name ||
-        'Unknown User'
-    )
-        .split(' ')
-        .filter(Boolean)
-        .slice(0, 2)
-        .map(
-            part =>
-                part.charAt(0)
-                    .toUpperCase()
-        )
-        .join('') ||
-        '?';
-}
-
-
-function getParticipantStatusLabel(
-    status
-) {
-
-    switch (
-        String(status || '')
-            .toLowerCase()
+    if (
+        details.can_start === true
     ) {
 
-        case 'connected':
-            return 'Connected';
+        meetingDetailsActionButton.textContent =
+            'Start Meeting';
 
-        case 'ringing':
-            return 'Ringing';
+        meetingDetailsActionButton.style.display =
+            '';
 
-        case 'invited':
-            return 'Invited';
+    }
+    else if (
+        details.can_join === true
+    ) {
 
-        default:
-            return status ||
-                'Participant';
+        meetingDetailsActionButton.textContent =
+            'Join Meeting';
+
+        meetingDetailsActionButton.style.display =
+            '';
+
     }
 }
 
+    /* -------------------------
+       BASIC INFORMATION
+    ------------------------- */
 
-function renderParticipants(
-    participants
-) {
+    meetingDetailsNumber.textContent =
+        formatMeetingDetailsValue(
+            details.meeting_number
+        );
 
-    latestCallParticipants =
-        Array.isArray(participants)
-            ? participants
+
+    meetingDetailsHeading.textContent =
+        formatMeetingDetailsValue(
+            details.title
+        );
+
+
+    meetingDetailsStatus.textContent =
+        formatMeetingDetailsStatus(
+            details.state
+        );
+
+
+    meetingDetailsDescription.textContent =
+        String(
+            details.description || ''
+        ).trim() ||
+        'No description.';
+
+
+    meetingDetailsOrganizer.textContent =
+        formatMeetingDetailsValue(
+            details.organizer_name
+        );
+
+    meetingDetailsStart.textContent =
+        formatMeetingDetailsValue(
+            details.scheduled_start
+        );
+
+
+    meetingDetailsEnd.textContent =
+        formatMeetingDetailsValue(
+            details.scheduled_end
+        );
+
+
+    /* -------------------------
+       STARTED INFORMATION
+    ------------------------- */
+
+    const hasStartedBy =
+        Boolean(
+            String(
+                details.started_by_name ||
+                ''
+            ).trim()
+        );
+
+
+    const hasStartedAt =
+        Boolean(
+            String(
+                details.started_at ||
+                ''
+            ).trim()
+        );
+
+
+    const hasEndedAt =
+        Boolean(
+            String(
+                details.ended_at ||
+                ''
+            ).trim()
+        );
+
+
+    meetingDetailsStartedByField.style.display =
+        hasStartedBy
+            ? ''
+            : 'none';
+
+
+    meetingDetailsStartedAtField.style.display =
+        hasStartedAt
+            ? ''
+            : 'none';
+
+
+    meetingDetailsEndedAtField.style.display =
+        hasEndedAt
+            ? ''
+            : 'none';
+
+
+    meetingDetailsStartedBy.textContent =
+        formatMeetingDetailsValue(
+            details.started_by_name
+        );
+
+
+    meetingDetailsStartedAt.textContent =
+        formatMeetingDetailsValue(
+            details.started_at
+        );
+
+
+    meetingDetailsEndedAt.textContent =
+        formatMeetingDetailsValue(
+            details.ended_at
+        );
+
+
+    /* -------------------------
+       PARTICIPANTS
+    ------------------------- */
+
+    const participants =
+        Array.isArray(
+            details.participants
+        )
+            ? details.participants
             : [];
 
-    const connectedParticipantCount =
-    latestCallParticipants.filter(
-        participant =>
-            String(
-                participant.status || ''
-            ).toLowerCase() ===
-            'connected'
-    ).length;
 
-if (participantsPanelCount) {
- 
-    participantsPanelCount
-        .textContent =
-            String(
-                connectedParticipantCount
-            );
-}
- 
- 
-if (participantsButtonCount) {
- 
-    participantsButtonCount
-        .textContent =
-            String(
-                connectedParticipantCount
-            );
-}
-
-    if (!participantsPanelBody) {
-        return;
-    }
+    meetingDetailsParticipantCount.textContent =
+        String(
+            participants.length
+        );
 
 
-    participantsPanelBody.innerHTML =
+    meetingDetailsParticipants.innerHTML =
         '';
 
 
-    /* -------------------------
-       SECTION LABEL
-    ------------------------- */
-
-    const sectionLabel =
-        document.createElement(
-            'div'
-        );
-
-    sectionLabel.className =
-        'participants-section-label';
-
-    sectionLabel.textContent =
-        isMeeting
-            ? 'In this meeting'
-            : 'In this call';
-
-
-    participantsPanelBody
-        .appendChild(
-            sectionLabel
-        );
-
-
-    /* -------------------------
-       EMPTY STATE
-    ------------------------- */
-
     if (
-        latestCallParticipants.length === 0
+        participants.length === 0
     ) {
 
         const empty =
@@ -1598,533 +1914,19 @@ if (participantsButtonCount) {
             );
 
         empty.className =
-            'participants-empty';
+            'meeting-details-empty';
 
         empty.textContent =
-            'No active participants.';
+            'No participants.';
 
-
-        participantsPanelBody
-            .appendChild(
-                empty
-            );
-
-        return;
-    }
-
-
-    /* -------------------------
-       PARTICIPANTS
-    ------------------------- */
-
-    latestCallParticipants.forEach(
-        participant => {
-
-            const row =
-                document.createElement(
-                    'div'
-                );
-
-            row.className =
-                'live-participant';
-
-
-            /* -------------------------
-               AVATAR
-            ------------------------- */
-
-            const participantAvatar =
-                document.createElement(
-                    'div'
-                );
-
-            participantAvatar.className =
-                'live-participant-avatar';
-
-            participantAvatar.textContent =
-                getParticipantInitials(
-                    participant.name
-                );
-
-
-            /* -------------------------
-               INFO
-            ------------------------- */
-
-            const info =
-                document.createElement(
-                    'div'
-                );
-
-            info.className =
-                'live-participant-info';
-
-
-            const name =
-                document.createElement(
-                    'div'
-                );
-
-            name.className =
-                'live-participant-name';
-
-            name.textContent =
-                participant.name ||
-                'Unknown User';
-
-
-            const meta =
-                document.createElement(
-                    'div'
-                );
-
-            meta.className =
-                'live-participant-meta';
-
-
-            const metaParts =
-                [];
-
-
-            if (
-                participant.is_owner === true
-            ) {
-
-                metaParts.push(
-                    isMeeting
-                        ? 'Organizer'
-                        : 'Owner'
-                );
-
-            } else if (
-                participant.role
-            ) {
-
-                metaParts.push(
-                    participant.role
-                );
-            }
-
-
-            if (
-                participant.department
-            ) {
-
-                metaParts.push(
-                    participant.department
-                );
-            }
-
-
-            meta.textContent =
-                metaParts.join(
-                    ' • '
-                ) ||
-                (
-                    isMeeting
-                        ? 'Meeting participant'
-                        : 'Call participant'
-                );
-
-
-            info.appendChild(
-                name
-            );
-
-            info.appendChild(
-                meta
-            );
-
-
-            /* -------------------------
-               STATUS
-            ------------------------- */
-
-            const participantStatus =
-                document.createElement(
-                    'div'
-                );
-
-            participantStatus.className =
-                'live-participant-status';
-
-
-            const statusDot =
-                document.createElement(
-                    'span'
-                );
-
-            statusDot.className =
-                'live-participant-status-dot';
-
-
-            const statusLabel =
-                document.createElement(
-                    'span'
-                );
-
-            statusLabel.textContent =
-                getParticipantStatusLabel(
-                    participant.status
-                );
-
-
-            participantStatus.appendChild(
-                statusDot
-            );
-
-            participantStatus.appendChild(
-                statusLabel
-            );
-
-
-            /* -------------------------
-               BUILD ROW
-            ------------------------- */
-
-            row.appendChild(
-                participantAvatar
-            );
-
-            row.appendChild(
-                info
-            );
-
-            row.appendChild(
-                participantStatus
-            );
-
-
-            participantsPanelBody
-                .appendChild(
-                    row
-                );
-        }
-    );
-}
-
-
-/* -------------------------
-   OPEN PANEL
-------------------------- */
-
-function openParticipantsPanel() {
-
-    if (!participantsPanel) {
-        return;
-    }
-
-
-    /*
-     * Render the latest data immediately.
-     */
-    renderParticipants(
-        latestCallParticipants
-    );
-
-
-    participantsPanel
-        .classList
-        .remove(
-            'hidden'
-        );
-}
-
-
-/* -------------------------
-   CLOSE PANEL
-------------------------- */
-
-function closeParticipantsPanel() {
-
-    if (!participantsPanel) {
-        return;
-    }
-
-
-    participantsPanel
-        .classList
-        .add(
-            'hidden'
-        );
-}
-
-
-/* -------------------------
-   PARTICIPANTS BUTTON
-------------------------- */
-
-if (participantsButton) {
-
-    participantsButton
-        .addEventListener(
-            'click',
-            () => {
-
-                if (
-                    currentMode !==
-                    'connected'
-                ) {
-                    return;
-                }
-
-
-                openParticipantsPanel();
-            }
-        );
-}
-
-
-/* -------------------------
-   CLOSE BUTTON
-------------------------- */
-
-if (closeParticipantsPanelButton) {
-
-    closeParticipantsPanelButton
-        .addEventListener(
-            'click',
-            closeParticipantsPanel
-        );
-}
-
-
-/* -------------------------
-   ESCAPE TO CLOSE
-------------------------- */
-
-document.addEventListener(
-    'keydown',
-    event => {
-
-        if (
-            event.key ===
-                'Escape' &&
-            participantsPanel &&
-            !participantsPanel
-                .classList
-                .contains(
-                    'hidden'
-                )
-        ) {
-
-            closeParticipantsPanel();
-        }
-    }
-);
-
-/* -------------------------
-   ADD PARTICIPANT
-------------------------- */
-
-const addUserButton =
-    document.getElementById(
-        'addUserButton'
-    );
-
-const addParticipantModal =
-    document.getElementById(
-        'addParticipantModal'
-    );
-
-const closeParticipantModalButton =
-    document.getElementById(
-        'closeParticipantModal'
-    );
-
-const participantSearch =
-    document.getElementById(
-        'participantSearch'
-    );
-
-const participantResults =
-    document.getElementById(
-        'participantResults'
-    );
-
-const participantMessage =
-    document.getElementById(
-        'participantMessage'
-    );
-
-
-let participantSearchTimer =
-    null;
-
-
-/* -------------------------
-   OPEN MODAL
-------------------------- */
-
-function openParticipantModal() {
-
-    participantMessage.textContent =
-        '';
-
-    participantMessage.className =
-        'participant-message';
-
-
-    participantSearch.value =
-        '';
-
-
-    participantResults.innerHTML =
-        '<div class="participant-empty">' +
-        'Start typing a user\'s name.' +
-        '</div>';
-
-
-    addParticipantModal
-        .classList
-        .remove(
-            'hidden'
+        meetingDetailsParticipants.appendChild(
+            empty
         );
 
+    } else {
 
-    setTimeout(
-        () => {
-
-            participantSearch.focus();
-
-        },
-        100
-    );
-}
-
-
-/* -------------------------
-   CLOSE MODAL
-------------------------- */
-
-function closeParticipantModal() {
-
-    addParticipantModal
-        .classList
-        .add(
-            'hidden'
-        );
-
-
-    if (participantSearchTimer) {
-
-        clearTimeout(
-            participantSearchTimer
-        );
-
-        participantSearchTimer =
-            null;
-    }
-}
-
-
-/* -------------------------
-   SEARCH USERS
-------------------------- */
-
-async function searchParticipantUsers() {
-
-    const searchText =
-        participantSearch
-            .value
-            .trim();
-
-
-    participantMessage.textContent =
-        '';
-
-    participantMessage.className =
-        'participant-message';
-
-
-    if (
-        searchText.length < 2
-    ) {
-
-        participantResults.innerHTML =
-            '<div class="participant-empty">' +
-            'Enter at least 2 characters.' +
-            '</div>';
-
-        return;
-    }
-
-
-    participantResults.innerHTML =
-        '<div class="participant-empty">' +
-        'Searching...' +
-        '</div>';
-
-
-    try {
-
-        const result =
-            await window.serviceCall
-                .searchUsers(
-                    searchText
-                );
-
-
-        /*
-         * Ignore an old search result if the
-         * user has already typed something else.
-         */
-        if (
-            participantSearch
-                .value
-                .trim() !==
-            searchText
-        ) {
-            return;
-        }
-
-
-        if (
-            !result ||
-            !result.success
-        ) {
-
-            throw new Error(
-                result &&
-                result.message
-                    ? result.message
-                    : 'Unable to search users.'
-            );
-        }
-
-
-        const users =
-            Array.isArray(
-                result.users
-            )
-                ? result.users
-                : [];
-
-
-        if (
-            users.length === 0
-        ) {
-
-            participantResults.innerHTML =
-                '<div class="participant-empty">' +
-                'No matching users found.' +
-                '</div>';
-
-            return;
-        }
-
-
-        /*
-         * Build results safely with DOM APIs.
-         * Do not inject ServiceNow user values
-         * directly into HTML.
-         */
-        participantResults.innerHTML =
-            '';
-
-
-        users.forEach(
-            (user) => {
+        participants.forEach(
+            participant => {
 
                 const row =
                     document.createElement(
@@ -2132,16 +1934,20 @@ async function searchParticipantUsers() {
                     );
 
                 row.className =
-                    'participant-result';
+                    'meeting-details-participant';
 
 
-                const details =
+                /* -----------------
+                   PERSON
+                ----------------- */
+
+                const main =
                     document.createElement(
                         'div'
                     );
 
-                details.className =
-                    'participant-details';
+                main.className =
+                    'meeting-details-participant-main';
 
 
                 const name =
@@ -2150,2747 +1956,6672 @@ async function searchParticipantUsers() {
                     );
 
                 name.className =
-                    'participant-name';
+                    'meeting-details-participant-name';
 
                 name.textContent =
-                    user.name ||
-                    'Unknown User';
+                    formatMeetingDetailsValue(
+                        participant.user_name
+                    );
 
 
-                const subtitle =
+                const role =
                     document.createElement(
                         'div'
                     );
 
-                subtitle.className =
-                    'participant-subtitle';
+                role.className =
+                    'meeting-details-participant-role';
 
-
-                const subtitleParts =
-                    [];
-
-
-                if (user.department) {
-
-                    subtitleParts.push(
-                        user.department
+                role.textContent =
+                    formatMeetingDetailsStatus(
+                        participant.role
                     );
-                }
 
 
-                if (user.email) {
-
-                    subtitleParts.push(
-                        user.email
-                    );
-                }
-
-
-                subtitle.textContent =
-                    subtitleParts.join(
-                        ' • '
-                    ) ||
-                    user.user_name ||
-                    'ServiceNow user';
-
-
-                details.appendChild(
+                main.appendChild(
                     name
                 );
 
-                details.appendChild(
-                    subtitle
+                main.appendChild(
+                    role
                 );
 
 
-                const addButton =
+                /* -----------------
+                   STATUSES
+                ----------------- */
+
+                const statuses =
                     document.createElement(
-                        'button'
+                        'div'
                     );
 
-                addButton.className =
-                    'participant-add';
-
-                addButton.textContent =
-                    'Add';
+                statuses.className =
+                    'meeting-details-participant-statuses';
 
 
-                addButton.addEventListener(
-                    'click',
-                    async () => {
+                if (
+                    participant.invitation_status
+                ) {
 
-                        await inviteServiceCallParticipant(
-                            user,
-                            addButton
+                    const invitationBadge =
+                        document.createElement(
+                            'span'
                         );
-                    }
-                );
+
+                    invitationBadge.className =
+                        'meeting-details-badge';
+
+                    invitationBadge.textContent =
+                        formatMeetingDetailsStatus(
+                            participant.invitation_status
+                        );
+
+                    statuses.appendChild(
+                        invitationBadge
+                    );
+                }
+
+
+                if (
+                    participant.join_status
+                ) {
+
+                    const joinBadge =
+                        document.createElement(
+                            'span'
+                        );
+
+                    joinBadge.className =
+                        'meeting-details-badge';
+
+                    joinBadge.textContent =
+                        formatMeetingDetailsStatus(
+                            participant.join_status
+                        );
+
+                    statuses.appendChild(
+                        joinBadge
+                    );
+                }
 
 
                 row.appendChild(
-                    details
+                    main
                 );
 
                 row.appendChild(
-                    addButton
+                    statuses
                 );
 
 
-                participantResults.appendChild(
+                meetingDetailsParticipants.appendChild(
                     row
                 );
             }
         );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall user search failed:',
-            error
-        );
-
-
-        participantResults.innerHTML =
-            '<div class="participant-empty">' +
-            'Unable to search users.' +
-            '</div>';
-
-
-        participantMessage.textContent =
-            error.message ||
-            'Unable to search users.';
-
-        participantMessage.className =
-            'participant-message error';
-    }
-}
-
-
-/* -------------------------
-   INVITE USER
-------------------------- */
-
-async function inviteServiceCallParticipant(
-    user,
-    addButton
-) {
-
-    if (
-        !user ||
-        !user.sys_id
-    ) {
-        return;
     }
 
 
-    addButton.disabled =
-        true;
+    /* -------------------------
+       OPEN
+    ------------------------- */
 
-    addButton.textContent =
-        'Adding...';
-
-
-    participantMessage.textContent =
-        'Inviting ' +
-        (
-            user.name ||
-            'user'
-        ) +
-        '...';
-
-    participantMessage.className =
-        'participant-message';
-
-
-    try {
-
-        const result =
-            await window.serviceCall
-                .inviteParticipant(
-                    callSysId,
-                    user.sys_id
-                );
-
-
-        if (
-            !result ||
-            !result.success
-        ) {
-
-            throw new Error(
-                result &&
-                result.message
-                    ? result.message
-                    : 'Unable to invite participant.'
-            );
-        }
-
-
-        addButton.textContent =
-            'Invited';
-
-
-        participantMessage.textContent =
-            (
-                user.name ||
-                'Participant'
-            ) +
-            ' has been invited to the call.';
-
-        participantMessage.className =
-            'participant-message success';
-
-
-        /*
-         * Leave the success message visible
-         * briefly, then close the modal.
-         */
-        setTimeout(
-            () => {
-
-                closeParticipantModal();
-
-            },
-            1000
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall participant invite failed:',
-            error
-        );
-
-
-        addButton.disabled =
-            false;
-
-        addButton.textContent =
-            'Add';
-
-
-        participantMessage.textContent =
-            error.message ||
-            'Unable to invite participant.';
-
-        participantMessage.className =
-            'participant-message error';
-    }
-}
-
-
-/* -------------------------
-   ADD USER EVENTS
-------------------------- */
-
-addUserButton.addEventListener(
-    'click',
-    () => {
-
-        if (
-            currentMode !==
-            'connected'
-        ) {
-            return;
-        }
-
-
-        openParticipantModal();
-    }
-);
-
-
-closeParticipantModalButton
-    .addEventListener(
-        'click',
-        closeParticipantModal
+    meetingDetailsModal.classList.add(
+        'open'
     );
 
-
-/*
- * Clicking the dark area outside
- * the card closes the modal.
- */
-addParticipantModal.addEventListener(
-    'click',
-    (event) => {
-
-        if (
-            event.target ===
-            addParticipantModal
-        ) {
-
-            closeParticipantModal();
-        }
-    }
-);
-
-
-/*
- * Escape closes the modal.
- */
-document.addEventListener(
-    'keydown',
-    (event) => {
-
-        if (
-            event.key ===
-            'Escape' &&
-            !addParticipantModal
-                .classList
-                .contains(
-                    'hidden'
-                )
-        ) {
-
-            closeParticipantModal();
-        }
-    }
-);
-
-
-/*
- * Small debounce so we don't hit
- * ServiceNow on every keystroke.
- */
-participantSearch.addEventListener(
-    'input',
-    () => {
-
-        if (participantSearchTimer) {
-
-            clearTimeout(
-                participantSearchTimer
-            );
-        }
-
-
-        participantSearchTimer =
-            setTimeout(
-                searchParticipantUsers,
-                350
-            );
-    }
-);
-
-/* =======================================================
-   SERVICECALL SCREEN SHARING
-======================================================= */
-
-const shareScreenButton =
-    document.getElementById(
-        'shareScreenButton'
+    meetingDetailsModal.setAttribute(
+        'aria-hidden',
+        'false'
     );
-
-const screenShareContainer =
-    document.getElementById(
-        'screenShareContainer'
-    );
-
-const screenShareVideo =
-    document.getElementById(
-        'screenShareVideo'
-    );
-
-const screenSharePlaceholder =
-    document.getElementById(
-        'screenSharePlaceholder'
-    );
-
-const screenShareTitle =
-    document.getElementById(
-        'screenShareTitle'
-    );
-
-const screenSourceModal =
-    document.getElementById(
-        'screenSourceModal'
-    );
-
-const screenSourceResults =
-    document.getElementById(
-        'screenSourceResults'
-    );
-
-const closeScreenSourceModalButton =
-    document.getElementById(
-        'closeScreenSourceModal'
-    );
-
-
-let localScreenStream =
-    null;
-
-let localScreenAgoraTrack =
-    null;
-
-let localScreenNativeTrack =
-    null;
-
-let screenShareActionInProgress =
-    false;
-
-let activeRemoteScreenUid =
-    null;
-
-
-/* -------------------------------------------------------
-   CALL WINDOW LAYOUT
-------------------------------------------------------- */
-
-async function setScreenCallLayout() {
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .setCallWindowLayout !==
-            'function'
-    ) {
-        return;
-    }
-
-
-    try {
-
-        await window.serviceCall
-            .setCallWindowLayout(
-                'screen'
-            );
-
-    } catch (error) {
-
-        console.error(
-            'Unable to expand ServiceCall window:',
-            error
-        );
-    }
 }
 
+/* =========================================
+   MEETING DETAILS PRIMARY ACTION
+========================================= */
 
-async function setCompactCallLayout() {
+if (meetingDetailsActionButton) {
 
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .setCallWindowLayout !==
-            'function'
-    ) {
-        return;
-    }
-
-
-    try {
-
-        await window.serviceCall
-            .setCallWindowLayout(
-                'compact'
-            );
-
-    } catch (error) {
-
-        console.error(
-            'Unable to restore ServiceCall window:',
-            error
-        );
-    }
-}
-
-
-/* -------------------------------------------------------
-   SCREEN VIEW
-------------------------------------------------------- */
-
-async function showScreenShareView(
-    title
-) {
-
-    screenShareTitle.textContent =
-        title ||
-        'Screen sharing';
-
-
-    screenShareContainer
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    screenSharePlaceholder
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    await setScreenCallLayout();
-}
-
-
-async function hideScreenShareView() {
-
-    screenShareVideo.innerHTML =
-        '';
-
-
-    screenSharePlaceholder
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    screenShareContainer
-        .classList
-        .add(
-            'hidden'
-        );
-
-
-    activeRemoteScreenUid =
-        null;
-
-
-    /*
-     * Do not collapse if THIS participant
-     * is still sharing.
-     */
-    if (
-        !window.ServiceCallAgora ||
-        !window.ServiceCallAgora
-            .isScreenSharing()
-    ) {
-
-        await setCompactCallLayout();
-    }
-}
-
-
-/* -------------------------------------------------------
-   SOURCE MODAL
-------------------------------------------------------- */
-
-function closeScreenSourceModal() {
-
-    screenSourceModal
-        .classList
-        .add(
-            'hidden'
-        );
-
-
-    screenSourceResults.innerHTML =
-        '';
-}
-
-
-async function openScreenSourceModal() {
-
-    if (
-        currentMode !==
-        'connected'
-    ) {
-
-        statusText.textContent =
-            'The call must be connected before sharing your screen.';
-
-        return;
-    }
-
-
-    if (
-        !window.ServiceCallAgora ||
-        !window.ServiceCallAgora
-            .isJoined()
-    ) {
-
-        statusText.textContent =
-            'Call media is not connected yet.';
-
-        return;
-    }
-
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .getScreenSources !==
-            'function'
-    ) {
-
-        statusText.textContent =
-            'Screen sharing is unavailable.';
-
-        return;
-    }
-
-
-    screenSourceModal
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    screenSourceResults.innerHTML =
-        '<div class="screen-source-message">' +
-        'Loading screens and windows...' +
-        '</div>';
-
-
-    try {
-
-        const result =
-            await window.serviceCall
-                .getScreenSources();
-
-
-        if (
-            !result ||
-            !result.success
-        ) {
-
-            throw new Error(
-                result &&
-                result.message
-                    ? result.message
-                    : 'Unable to retrieve screens and windows.'
-            );
-        }
-
-
-        const sources =
-            Array.isArray(
-                result.sources
-            )
-                ? result.sources
-                : [];
-
-
-        screenSourceResults.innerHTML =
-            '';
-
-
-        if (
-            sources.length === 0
-        ) {
-
-            screenSourceResults.innerHTML =
-                '<div class="screen-source-message">' +
-                'No screens or windows are available.' +
-                '</div>';
-
-            return;
-        }
-
-
-        sources.forEach(
-            (source) => {
-
-                const item =
-                    document.createElement(
-                        'button'
-                    );
-
-
-                item.type =
-                    'button';
-
-                item.className =
-                    'screen-source-item';
-
-
-                if (source.thumbnail) {
-
-                    const thumbnail =
-                        document.createElement(
-                            'img'
-                        );
-
-
-                    thumbnail.className =
-                        'screen-source-thumbnail';
-
-                    thumbnail.src =
-                        source.thumbnail;
-
-                    thumbnail.alt =
-                        '';
-
-
-                    item.appendChild(
-                        thumbnail
-                    );
-                }
-
-
-                const sourceName =
-                    document.createElement(
-                        'div'
-                    );
-
-
-                sourceName.className =
-                    'screen-source-name';
-
-                sourceName.textContent =
-                    source.name ||
-                    'Screen';
-
-
-                item.appendChild(
-                    sourceName
-                );
-
-
-                item.addEventListener(
-                    'click',
-
-                    async () => {
-
-                        await startServiceCallScreenShare(
-                            source
-                        );
-                    }
-                );
-
-
-                screenSourceResults.appendChild(
-                    item
-                );
-            }
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'Unable to open ServiceCall screen picker:',
-            error
-        );
-
-
-        screenSourceResults.innerHTML =
-            '';
-
-
-        const message =
-            document.createElement(
-                'div'
-            );
-
-
-        message.className =
-            'screen-source-message';
-
-        message.textContent =
-            error.message ||
-            'Unable to load screens and windows.';
-
-
-        screenSourceResults.appendChild(
-            message
-        );
-    }
-}
-
-
-/* -------------------------------------------------------
-   CAPTURE ELECTRON SOURCE
-------------------------------------------------------- */
-
-async function captureDesktopSource(
-    sourceId
-) {
-
-    if (!sourceId) {
-
-        throw new Error(
-            'Screen source ID was not provided.'
-        );
-    }
-
-
-    /*
-     * Electron DesktopCapturerSource.id is passed
-     * to Chromium as chromeMediaSourceId.
-     *
-     * We deliberately capture VIDEO ONLY.
-     *
-     * Conference audio already comes from Agora,
-     * therefore desktop/system audio must not be
-     * injected into the call.
-     */
-    const stream =
-        await navigator.mediaDevices
-            .getUserMedia({
-
-                audio:
-                    false,
-
-                video: {
-
-                    mandatory: {
-
-                        chromeMediaSource:
-                            'desktop',
-
-                        chromeMediaSourceId:
-                            sourceId,
-
-                        maxWidth:
-                            1920,
-
-                        maxHeight:
-                            1080,
-
-                        maxFrameRate:
-                            30
-                    }
-                }
-            });
-
-
-    const videoTracks =
-        stream.getVideoTracks();
-
-
-    if (
-        videoTracks.length === 0
-    ) {
-
-        stream
-            .getTracks()
-            .forEach(
-                track =>
-                    track.stop()
-            );
-
-
-        throw new Error(
-            'The selected screen did not provide a video track.'
-        );
-    }
-
-
-    return stream;
-}
-
-
-/* -------------------------------------------------------
-   START LOCAL SCREEN SHARE
-------------------------------------------------------- */
-
-async function startServiceCallScreenShare(
-    source
-) {
-
-    if (screenShareActionInProgress) {
-        return;
-    }
-
-
-    screenShareActionInProgress =
-        true;
-
-    shareScreenButton.disabled =
-        true;
-
-
-    try {
-
-        if (
-            !source ||
-            !source.id
-        ) {
-
-            throw new Error(
-                'Please select a valid screen or window.'
-            );
-        }
-
-
-        if (
-            !window.ServiceCallAgora ||
-            !window.ServiceCallAgora
-                .isJoined()
-        ) {
-
-            throw new Error(
-                'Call media is not connected.'
-            );
-        }
-
-
-        closeScreenSourceModal();
-
-
-        statusText.textContent =
-            'Starting screen share...';
-
-
-        /*
-         * -----------------------------------------
-         * 1. CAPTURE WINDOWS SCREEN/WINDOW
-         * -----------------------------------------
-         */
-
-        const stream =
-            await captureDesktopSource(
-                source.id
-            );
-
-
-        const nativeTrack =
-            stream
-                .getVideoTracks()[0];
-
-
-        /*
-         * -----------------------------------------
-         * 2. CREATE AGORA VIDEO TRACK
-         * -----------------------------------------
-         */
-
-        const agoraTrack =
-            await window.ServiceCallAgora
-                .createScreenVideoTrack(
-                    nativeTrack
-                );
-
-
-        /*
-         * Keep references BEFORE publication so
-         * cleanup remains possible if publication
-         * fails.
-         */
-        localScreenStream =
-            stream;
-
-        localScreenNativeTrack =
-            nativeTrack;
-
-        localScreenAgoraTrack =
-            agoraTrack;
-
-
-        /*
-         * -----------------------------------------
-         * 3. HANDLE WINDOWS/OS STOP SHARING
-         * -----------------------------------------
-         */
-
-        nativeTrack.addEventListener(
-            'ended',
-
-            () => {
-
-                console.log(
-                    'ServiceCall screen capture ended by the operating system.'
-                );
-
-
-                stopServiceCallScreenShare()
-                    .catch(
-                        error => {
-
-                            console.error(
-                                'Unable to stop ServiceCall screen share:',
-                                error
-                            );
-                        }
-                    );
-            },
-
-            {
-                once: true
-            }
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 4. PUBLISH THROUGH EXISTING AGORA CALL
-         * -----------------------------------------
-         */
-
-        await window.ServiceCallAgora
-            .startScreenShare(
-                agoraTrack
-            );
-
-        /*
- * If recording is already running,
- * tell the recorder that screen video
- * has now entered the recording.
- */
-if (
-    window.ServiceCallRecorder &&
-    window.ServiceCallRecorder
-        .isRecording()
-) {
-
-    await window.ServiceCallRecorder
-        .attachScreen(
-            agoraTrack
-        );
-}
-
-
-        /*
-         * -----------------------------------------
-         * 5. SHOW LOCAL PREVIEW
-         * -----------------------------------------
-         */
-
-        await showScreenShareView(
-            'You are sharing: ' +
-            (
-                source.name ||
-                'Screen'
-            )
-        );
-
-
-        screenShareVideo.innerHTML =
-            '';
-
-
-        screenSharePlaceholder
-            .classList
-            .add(
-                'hidden'
-            );
-
-
-        agoraTrack.play(
-            screenShareVideo
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 6. BUTTON/UI
-         * -----------------------------------------
-         */
-
-        shareScreenButton.textContent =
-            'Stop Sharing';
-
-
-        shareScreenButton
-            .classList
-            .add(
-                'screen-sharing-active'
-            );
-
-
-        statusText.textContent =
-            'Connected';
-
-
-        console.log(
-            'ServiceCall screen sharing started:',
-            source.name ||
-            source.id
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'Unable to start ServiceCall screen sharing:',
-            error
-        );
-
-
-        /*
-         * Clean up any partially-created capture.
-         */
-        if (localScreenAgoraTrack) {
-
-            try {
-
-                localScreenAgoraTrack.stop();
-
-            } catch (stopError) {
-                // Ignore.
-            }
-
-
-            try {
-
-                localScreenAgoraTrack.close();
-
-            } catch (closeError) {
-                // Ignore.
-            }
-        }
-
-
-        if (localScreenStream) {
-
-            localScreenStream
-                .getTracks()
-                .forEach(
-                    track => {
-
-                        try {
-                            track.stop();
-                        } catch (stopError) {
-                            // Ignore.
-                        }
-                    }
-                );
-        }
-
-
-        localScreenAgoraTrack =
-            null;
-
-        localScreenNativeTrack =
-            null;
-
-        localScreenStream =
-            null;
-
-
-        shareScreenButton.textContent =
-            'Share Screen';
-
-
-        shareScreenButton
-            .classList
-            .remove(
-                'screen-sharing-active'
-            );
-
-
-        statusText.textContent =
-            error.message ||
-            'Unable to share screen.';
-
-
-    } finally {
-
-        screenShareActionInProgress =
-            false;
-
-        shareScreenButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------------------------------------
-   STOP LOCAL SCREEN SHARE
-------------------------------------------------------- */
-
-async function stopServiceCallScreenShare() {
-
-    if (screenShareActionInProgress) {
-        return;
-    }
-
-
-    screenShareActionInProgress =
-        true;
-
-    shareScreenButton.disabled =
-        true;
-
-
-    try {
-
-        /*
- * Recording continues even though
- * live screen sharing is stopping.
- *
- * The recorder returns to blank video,
- * but remembers that screen sharing
- * occurred, therefore final output
- * remains MP4.
- */
-if (
-    window.ServiceCallRecorder &&
-    window.ServiceCallRecorder
-        .isRecording()
-) {
-
-    window.ServiceCallRecorder
-        .detachScreen();
-}
-
-        /*
-         * Agora owns publication state.
-         */
-        if (
-            window.ServiceCallAgora &&
-            window.ServiceCallAgora
-                .isScreenSharing()
-        ) {
-
-            await window.ServiceCallAgora
-                .stopScreenShare();
-        }
-
-
-        /*
-         * Stop the underlying Electron capture.
-         */
-        if (localScreenStream) {
-
-            localScreenStream
-                .getTracks()
-                .forEach(
-                    track => {
-
-                        try {
-
-                            track.stop();
-
-                        } catch (error) {
-                            // Ignore cleanup error.
-                        }
-                    }
-                );
-        }
-
-
-        localScreenStream =
-            null;
-
-        localScreenNativeTrack =
-            null;
-
-        localScreenAgoraTrack =
-            null;
-
-
-        screenShareVideo.innerHTML =
-            '';
-
-
-        screenShareContainer
-            .classList
-            .add(
-                'hidden'
-            );
-
-
-        shareScreenButton.textContent =
-            'Share Screen';
-
-
-        shareScreenButton
-            .classList
-            .remove(
-                'screen-sharing-active'
-            );
-
-
-        /*
-         * If nobody else's screen is currently
-         * being displayed, return to compact mode.
-         */
-        if (!activeRemoteScreenUid) {
-
-            await setCompactCallLayout();
-        }
-
-
-        if (
-            currentMode ===
-            'connected'
-        ) {
-
-            statusText.textContent =
-                'Connected';
-        }
-
-
-        console.log(
-            'ServiceCall local screen sharing stopped.'
-        );
-
-
-    } finally {
-
-        screenShareActionInProgress =
-            false;
-
-        shareScreenButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------------------------------------
-   REMOTE SCREEN SHARE
-------------------------------------------------------- */
-
-function configureRemoteScreenSharing() {
-
-    if (
-        !window.ServiceCallAgora ||
-        typeof window.ServiceCallAgora
-            .setRemoteScreenHandler !==
-            'function'
-    ) {
-
-        console.error(
-            'ServiceCall remote screen handler is unavailable.'
-        );
-
-        return;
-    }
-
-
-    window.ServiceCallAgora
-        .setRemoteScreenHandler(
-
-            async (event) => {
-
-                if (!event) {
-                    return;
-                }
-
-
-                /*
-                 * ---------------------------------
-                 * REMOTE SCREEN STARTED
-                 * ---------------------------------
-                 */
-                if (
-                    event.action ===
-                    'started' &&
-                    event.track
-                ) {
-
-                    activeRemoteScreenUid =
-                        String(
-                            event.uid
-                        );
-
-/*
-     * If I am recording and another
-     * participant starts sharing,
-     * include their screen in my recording.
-     */
-    if (
-        window.ServiceCallRecorder &&
-        window.ServiceCallRecorder
-            .isRecording()
-    ) {
-
-        await window.ServiceCallRecorder
-            .attachScreen(
-                event.track
-            );
-    }
-
-
-                    await showScreenShareView(
-                        'Participant is sharing their screen'
-                    );
-
-
-                    screenShareVideo.innerHTML =
-                        '';
-
-
-                    screenSharePlaceholder
-                        .classList
-                        .add(
-                            'hidden'
-                        );
-
-
-                    try {
-
-                        event.track.play(
-                            screenShareVideo
-                        );
-
-
-                        console.log(
-                            'ServiceCall remote screen displayed:',
-                            event.uid
-                        );
-
-
-                    } catch (error) {
-
-                        console.error(
-                            'Unable to display remote ServiceCall screen:',
-                            error
-                        );
-
-
-                        screenSharePlaceholder.textContent =
-                            'Unable to display shared screen.';
-
-                        screenSharePlaceholder
-                            .classList
-                            .remove(
-                                'hidden'
-                            );
-                    }
-
-
-                    return;
-                }
-
-
-                /*
-                 * ---------------------------------
-                 * REMOTE SCREEN STOPPED
-                 * ---------------------------------
-                 */
-                if (
-                    event.action ===
-                    'stopped'
-                ) {
-
-                    const stoppedUid =
-                        String(
-                            event.uid ||
-                            ''
-                        );
-
-
-                    /*
-                     * Ignore stop events for some
-                     * other remote video track.
-                     */
-                    if (
-                        activeRemoteScreenUid &&
-                        stoppedUid !==
-                            activeRemoteScreenUid
-                    ) {
-                        return;
-                    }
-
-
-                    activeRemoteScreenUid =
-                        null;
-
-                    /*
- * The remote participant stopped
- * sharing their screen.
- *
- * Recording itself continues.
- * It still remembers that a screen
- * was used, so final output remains MP4.
- */
-if (
-    window.ServiceCallRecorder &&
-    window.ServiceCallRecorder
-        .isRecording()
-) {
-
-    window.ServiceCallRecorder
-        .detachScreen();
-}
-
-
-                    screenShareVideo.innerHTML =
-                        '';
-
-
-                    /*
-                     * If THIS user is sharing,
-                     * their local preview should
-                     * remain visible.
-                     */
-                    if (
-                        window.ServiceCallAgora &&
-                        window.ServiceCallAgora
-                            .isScreenSharing() &&
-                        localScreenAgoraTrack
-                    ) {
-
-                        screenShareTitle.textContent =
-                            'You are sharing your screen';
-
-
-                        screenSharePlaceholder
-                            .classList
-                            .add(
-                                'hidden'
-                            );
-
-
-                        try {
-
-                            localScreenAgoraTrack.play(
-                                screenShareVideo
-                            );
-
-                        } catch (error) {
-
-                            console.error(
-                                'Unable to restore local screen preview:',
-                                error
-                            );
-                        }
-
-
-                        return;
-                    }
-
-
-                    await hideScreenShareView();
-
-
-                    console.log(
-                        'ServiceCall remote screen sharing stopped.'
-                    );
-                }
-            }
-        );
-}
-
-
-/* -------------------------------------------------------
-   SHARE SCREEN BUTTON
-------------------------------------------------------- */
-
-shareScreenButton.addEventListener(
-    'click',
-
-    async () => {
-
-        if (
-            currentMode !==
-            'connected'
-        ) {
-            return;
-        }
-
-
-        try {
-
-            if (
-                window.ServiceCallAgora &&
-                window.ServiceCallAgora
-                    .isScreenSharing()
-            ) {
-
-                await stopServiceCallScreenShare();
-
-            } else {
-
-                await openScreenSourceModal();
-            }
-
-
-        } catch (error) {
-
-            console.error(
-                'ServiceCall screen sharing action failed:',
-                error
-            );
-
-
-            statusText.textContent =
-                error.message ||
-                'Unable to change screen sharing.';
-        }
-    }
-);
-
-
-/* -------------------------------------------------------
-   SCREEN MODAL EVENTS
-------------------------------------------------------- */
-
-closeScreenSourceModalButton
-    .addEventListener(
-        'click',
-        closeScreenSourceModal
-    );
-
-
-screenSourceModal.addEventListener(
-    'click',
-
-    (event) => {
-
-        if (
-            event.target ===
-            screenSourceModal
-        ) {
-
-            closeScreenSourceModal();
-        }
-    }
-);
-
-
-/*
- * We already have an Escape handler for the
- * participant modal. This separate listener is
- * safe and handles only the screen picker.
- */
-document.addEventListener(
-    'keydown',
-
-    (event) => {
-
-        if (
-            event.key ===
-            'Escape' &&
-            !screenSourceModal
-                .classList
-                .contains(
-                    'hidden'
-                )
-        ) {
-
-            closeScreenSourceModal();
-        }
-    }
-);
-
-
-/* -------------------------------------------------------
-   INITIALIZE REMOTE SCREEN HANDLER
-------------------------------------------------------- */
-
-configureRemoteScreenSharing();
-
-/* -------------------------
-   SERVICECALL RECORDING
-------------------------- */
-
-const recordButton =
-    document.getElementById(
-        'recordButton'
-    );
-
-const recordingText =
-    document.getElementById(
-        'recordingText'
-    );
-
-
-let recordingStartedAt =
-    null;
-
-let serviceNowRecordingSysId =
-    null;
-
-let recordingActionInProgress =
-    false;
-
-let remoteRecordingActive = false;
-
-
-/* -------------------------
-   SHOW RECORDING MESSAGE
-------------------------- */
-
-function showRecordingMessage(
-    message,
-    autoHide = false
-) {
-
-    recordingText.textContent =
-        message;
-
-
-    recordingText
-        .classList
-        .remove(
-            'hidden'
-        );
-
-
-    if (autoHide) {
-
-        setTimeout(
-            () => {
-
-                /*
-                 * Do not hide the message if
-                 * another recording has started
-                 * during the timeout.
-                 */
-                if (
-                    !window.ServiceCallRecorder ||
-                    !window.ServiceCallRecorder
-                        .isRecording()
-                ) {
-
-                    recordingText
-                        .classList
-                        .add(
-                            'hidden'
-                        );
-                }
-
-            },
-            3000
-        );
-    }
-}
-
-/* -------------------------
-   SYNC RECORDING INDICATOR
-------------------------- */
-
-function syncRecordingIndicator(
-    recordingActive
-) {
-
-    remoteRecordingActive =
-        recordingActive === true;
-
-
-    /*
-     * Never overwrite local recording
-     * workflow messages such as:
-     *
-     * Starting recording...
-     * Processing recording...
-     * Saving recording...
-     */
-    if (recordingActionInProgress) {
-        return;
-    }
-
-
-    /*
-     * This desktop is itself actively
-     * recording the call.
-     *
-     * Its local state is authoritative.
-     */
-    if (
-        window.ServiceCallRecorder &&
-        window.ServiceCallRecorder
-            .isRecording()
-    ) {
-
-        showRecordingMessage(
-            'Call is being recorded'
-        );
-
-        return;
-    }
-
-
-    /*
-     * Another participant is recording,
-     * or this participant joined after
-     * recording had already started.
-     */
-    if (remoteRecordingActive) {
-
-        showRecordingMessage(
-            'Call is being recorded'
-        );
-
-        return;
-    }
-
-
-    /*
-     * No active recording exists.
-     */
-    recordingText
-        .classList
-        .add(
-            'hidden'
-        );
-}
-
-
-/* -------------------------
-   START RECORDING
-------------------------- */
-
-async function startServiceCallRecording() {
-
-    if (recordingActionInProgress) {
-        return;
-    }
-
-
-    if (
-        currentMode !==
-        'connected'
-    ) {
-
-        throw new Error(
-            'The call must be connected before recording.'
-        );
-    }
-
-
-    if (
-        !window.ServiceCallRecorder
-    ) {
-
-        throw new Error(
-            'ServiceCall recording service is unavailable.'
-        );
-    }
-
-
-    if (
-        !window.ServiceCallAgora ||
-        !window.ServiceCallAgora
-            .isJoined()
-    ) {
-
-        throw new Error(
-            'Call audio is not connected yet.'
-        );
-    }
-
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .startRecording !==
-            'function'
-    ) {
-
-        throw new Error(
-            'ServiceCall recording API is unavailable.'
-        );
-    }
-
-
-    recordingActionInProgress =
-        true;
-
-
-    recordButton.disabled =
-        true;
-
-
-    showRecordingMessage(
-        'Starting recording...'
-    );
-
-
-    try {
-
-        /*
-         * -----------------------------------------
-         * 1. CREATE SERVICENOW RECORDING SESSION
-         * -----------------------------------------
-         */
-
-        const serviceNowResult =
-            await window.serviceCall
-                .startRecording(
-                    callSysId
-                );
-
-
-        if (
-            !serviceNowResult ||
-            !serviceNowResult.success
-        ) {
-
-            throw new Error(
-                serviceNowResult &&
-                serviceNowResult.message
-                    ? serviceNowResult.message
-                    : 'Unable to create ServiceCall recording.'
-            );
-        }
-
-
-        const recordingSysId =
-            serviceNowResult
-                .recording_sys_id;
-
-
-        if (!recordingSysId) {
-
-            throw new Error(
-                'ServiceNow did not return a recording ID.'
-            );
-        }
-
-
-        serviceNowRecordingSysId =
-            recordingSysId;
-
-
-        /*
-         * -----------------------------------------
-         * 2. START LOCAL MIXED AUDIO CAPTURE
-         * -----------------------------------------
-         */
-
-        const localResult =
-            await window.ServiceCallRecorder
-                .start();
-
-
-        if (
-            !localResult ||
-            !localResult.success
-        ) {
-
-            throw new Error(
-                localResult &&
-                localResult.message
-                    ? localResult.message
-                    : 'Unable to start local recording.'
-            );
-        }
-
-
-        recordingStartedAt =
-            Date.now();
-
-
-        recordButton.textContent =
-            'Stop Recording';
-
-
-        showRecordingMessage(
-            'Call is being recorded'
-        );
-
-
-        console.log(
-            'ServiceCall recording started.',
-            'Recording:',
-            serviceNowRecordingSysId,
-            'Capture format:',
-            localResult.mimeType
-        );
-
-
-    } catch (error) {
-
-        /*
-         * If ServiceNow successfully created the
-         * recording record but local capture could
-         * not start, keep the sys_id for diagnostics.
-         *
-         * Later we can add a dedicated failed-state
-         * endpoint. Do not falsely mark it Available.
-         */
-
-        console.error(
-            'Unable to start ServiceCall recording:',
-            error
-        );
-
-
-        recordButton.textContent =
-            'Record Call';
-
-
-        showRecordingMessage(
-            error.message ||
-            'Unable to start recording.',
-            true
-        );
-
-
-        throw error;
-
-
-    } finally {
-
-        recordingActionInProgress =
-            false;
-
-        recordButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------
-   STOP + FINALIZE RECORDING
-------------------------- */
-
-async function stopServiceCallRecording() {
-
-    if (recordingActionInProgress) {
-        return;
-    }
-
-
-    if (
-        !window.ServiceCallRecorder ||
-        !window.ServiceCallRecorder
-            .isRecording()
-    ) {
-
-        return;
-    }
-
-
-    if (!serviceNowRecordingSysId) {
-
-        throw new Error(
-            'ServiceNow recording ID is unavailable.'
-        );
-    }
-
-
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .finalizeVoiceRecording !==
-            'function'
-    ) {
-
-        throw new Error(
-            'ServiceCall recording finalization API is unavailable.'
-        );
-    }
-
-
-    recordingActionInProgress =
-        true;
-
-
-    recordButton.disabled =
-        true;
-
-
-    showRecordingMessage(
-        'Processing recording...'
-    );
-
-
-    try {
-
-        /*
-         * -----------------------------------------
-         * 1. STOP LOCAL MEDIARECORDER
-         * -----------------------------------------
-         */
-
-        const localResult =
-            await window.ServiceCallRecorder
-                .stop();
-
-
-        if (
-            !localResult ||
-            !localResult.success ||
-            !localResult.blob
-        ) {
-
-            throw new Error(
-                localResult &&
-                localResult.message
-                    ? localResult.message
-                    : 'Unable to stop local recording.'
-            );
-        }
-
-
-        const durationSeconds =
-            recordingStartedAt
-                ? Math.max(
-                    1,
-                    Math.round(
-                        (
-                            Date.now() -
-                            recordingStartedAt
-                        ) / 1000
-                    )
-                )
-                : 0;
-
-
-        console.log(
-            'ServiceCall local recording stopped.',
-            'Duration:',
-            durationSeconds,
-            'seconds',
-            'WebM size:',
-            localResult.size
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 2. BLOB -> UINT8ARRAY
-         * -----------------------------------------
-         *
-         * We do not expose OAuth credentials here.
-         *
-         * Only recording bytes cross the preload
-         * IPC bridge into Electron's main process.
-         */
-
-        const arrayBuffer =
-            await localResult.blob
-                .arrayBuffer();
-
-
-        const webmData =
-            new Uint8Array(
-                arrayBuffer
-            );
-
-
-        if (
-            webmData.byteLength <= 0
-        ) {
-
-            throw new Error(
-                'The captured recording is empty.'
-            );
-        }
-
-
-        /*
-         * -----------------------------------------
-         * 3. ELECTRON MAIN PROCESS
-         * -----------------------------------------
-         *
-         * main.js performs:
-         *
-         * WebM
-         *   -> FFmpeg
-         *   -> real MP3
-         *   -> /finish-recording
-         *   -> Attachment API
-         *   -> /complete-recording
-         */
-
-        showRecordingMessage(
-            'Saving recording...'
-        );
-
-
-        /*
- * Decide the final format from what actually
- * happened during this recording.
- *
- * No screen share:
- *     WebM audio -> MP3
- *
- * Screen share occurred at any point:
- *     WebM audio/video -> MP4
- */
-const hadScreenShare =
-    localResult.hadScreenShare === true;
-
-
-console.log(
-    'ServiceCall final recording type:',
-    hadScreenShare
-        ? 'MP4 - screen sharing occurred'
-        : 'MP3 - audio only'
-);
-
-
-let finalResult;
-
-
-if (hadScreenShare) {
-
-    /*
-     * Screen sharing occurred at least once.
-     *
-     * Even if sharing stopped before the
-     * recording stopped, the final recording
-     * remains MP4.
-     */
-    if (
-        !window.serviceCall ||
-        typeof window.serviceCall
-            .finalizeScreenRecording !==
-            'function'
-    ) {
-
-        throw new Error(
-            'ServiceCall screen recording finalization is unavailable.'
-        );
-    }
-
-
-    finalResult =
-        await window.serviceCall
-            .finalizeScreenRecording(
-                serviceNowRecordingSysId,
-                webmData
-            );
-
-} else {
-
-    /*
-     * Voice-only recording.
-     */
-    finalResult =
-        await window.serviceCall
-            .finalizeVoiceRecording(
-                serviceNowRecordingSysId,
-                webmData
-            );
-}
-
-
-        if (
-            !finalResult ||
-            !finalResult.success
-        ) {
-
-            throw new Error(
-                finalResult &&
-                finalResult.message
-                    ? finalResult.message
-                    : 'Unable to save ServiceCall recording.'
-            );
-        }
-
-
-        console.log(
-            'ServiceCall recording available.',
-            'Recording:',
-            finalResult.recording_sys_id,
-            'Attachment:',
-            finalResult.attachment_sys_id,
-            'Format:',
-            finalResult.format,
-            'Size:',
-            finalResult.file_size,
-            'Expires:',
-            finalResult.expires_at
-        );
-
-
-        /*
-         * -----------------------------------------
-         * 4. SUCCESS
-         * -----------------------------------------
-         */
-
-        serviceNowRecordingSysId =
-            null;
-
-        recordingStartedAt =
-            null;
-
-
-        recordButton.textContent =
-            'Record Call';
-
-
-        showRecordingMessage(
-            'Recording saved',
-            true
-        );
-
-
-    } catch (error) {
-
-        console.error(
-            'ServiceCall recording finalization failed:',
-            error
-        );
-
-
-        /*
-         * Local recording has already stopped,
-         * therefore reset the button.
-         *
-         * We intentionally do NOT pretend the
-         * ServiceNow recording is Available.
-         */
-
-        recordButton.textContent =
-            'Record Call';
-
-
-        recordingStartedAt =
-            null;
-
-
-        showRecordingMessage(
-            error.message ||
-            'Unable to save recording.'
-        );
-
-
-        throw error;
-
-
-    } finally {
-
-        recordingActionInProgress =
-            false;
-
-        recordButton.disabled =
-            false;
-    }
-}
-
-
-/* -------------------------
-   RECORD BUTTON
-------------------------- */
-
-recordButton.addEventListener(
-    'click',
-
-    async () => {
-
-        if (recordingActionInProgress) {
-            return;
-        }
-
-
-        try {
-
-            if (
-                window.ServiceCallRecorder &&
-                window.ServiceCallRecorder
-                    .isRecording()
-            ) {
-
-                await stopServiceCallRecording();
-
-            } else {
-
-                await startServiceCallRecording();
-            }
-
-
-        } catch (error) {
-
-            console.error(
-                'ServiceCall recording action failed:',
-                error
-            );
-        }
-    }
-);
-
-/* -------------------------
-   END CONFERENCE / LEAVE CALL
-------------------------- */
-
-document
-    .getElementById(
-        'endButton'
-    )
-    .addEventListener(
+    meetingDetailsActionButton.addEventListener(
         'click',
         async () => {
 
-            const endButton =
-                document.getElementById(
-                    'endButton'
-                );
-
-
-            if (recordingActionInProgress) {
-
-                statusText.textContent =
-                    'Please wait for the recording to finish processing.';
-
+            if (
+                !currentMeetingDetails ||
+                !currentMeetingDetails.meeting_sys_id
+            ) {
                 return;
             }
 
 
-            endButton.disabled =
+            const meetingSysId =
+                currentMeetingDetails.meeting_sys_id;
+
+
+            meetingDetailsActionButton.disabled =
                 true;
 
 
             try {
 
-                /*
-                 * -----------------------------------------
-                 * 1. FINALIZE ACTIVE RECORDING FIRST
-                 * -----------------------------------------
-                 *
-                 * Never terminate the call/media before
-                 * the active recording has been stopped,
-                 * converted, uploaded and completed.
-                 */
-                if (
-                    window.ServiceCallRecorder &&
-                    window.ServiceCallRecorder
-                        .isRecording()
-                ) {
-
-                    statusText.textContent =
-                        'Saving recording before ending call...';
-
-
-                    console.log(
-                        'ServiceCall call ending while recording is active. Finalizing recording first.'
-                    );
-
-
-                    await stopServiceCallRecording();
-
-
-                    console.log(
-                        'ServiceCall recording finalized before call termination.'
-                    );
-                }
-
-
-                let result;
-
-
                 /* -------------------------
-                   2. OWNER
+                   START MEETING
                 ------------------------- */
 
-                if (currentUserIsOwner) {
+                if (
+                    currentMeetingDetails.can_start ===
+                    true
+                ) {
 
-                    statusText.textContent =
-                        'Ending conference...';
+                    meetingDetailsActionButton.textContent =
+                        'Starting...';
 
 
-                    if (
-    isMeeting &&
-    meetingSysId
-) {
-
-    result =
-        await window
-            .serviceCall
-            .endMeeting(
-                meetingSysId
-            );
-
-} else {
-
-    result =
-        await window
-            .serviceCall
-            .endCall(
-                callSysId
-            );
-}
+                    const result =
+                        await window.serviceCall
+                            .startMeeting(
+                                meetingSysId
+                            );
 
 
                     if (
                         !result ||
-                        !result.success
+                        result.success !== true
                     ) {
 
                         throw new Error(
                             result &&
                             result.message
                                 ? result.message
-                                : 'Unable to end conference.'
+                                : 'Unable to start meeting.'
                         );
                     }
 
 
                     /*
-                     * ServiceNow has successfully
-                     * ended the conference.
-                     *
-                     * We can now leave Agora.
+                     * main.js already opens the
+                     * connected meeting call window.
                      */
-                    await stopAgoraAudio();
 
-                    /*
- * Tell the main ServiceCall window that
- * this meeting has changed.
- *
- * Normal calls/conferences do not send
- * this notification.
- */
-if (
-    isMeeting &&
-    meetingSysId &&
-    window.serviceCall &&
-    typeof window.serviceCall
-        .notifyMeetingChanged ===
-        'function'
-) {
-
-    window.serviceCall
-        .notifyMeetingChanged(
-            meetingSysId
-        );
-}
-
-                    setMode(
-                        'completed'
+                    meetingDetailsModal.classList.remove(
+                        'open'
                     );
 
+                    meetingDetailsModal.setAttribute(
+                        'aria-hidden',
+                        'true'
+                    );
+
+
+                    currentMeetingDetails =
+                        null;
+
+
+                    await loadMeetings(true);
 
                     return;
                 }
 
 
                 /* -------------------------
-   3. PARTICIPANT
-------------------------- */
+                   JOIN MEETING
+                ------------------------- */
 
-statusText.textContent =
-    isMeeting
-        ? 'Leaving meeting...'
-        : 'Leaving call...';
+                if (
+                    currentMeetingDetails.can_join ===
+                    true
+                ) {
+
+                    meetingDetailsActionButton.textContent =
+                        'Joining...';
 
 
-/*
- * Meetings use the meeting lifecycle API.
- *
- * Normal conferences continue using the
- * existing leave-call API.
- */
-if (
-    isMeeting &&
+                    const result =
+                        await window.serviceCall
+                            .joinMeeting(
+                                meetingSysId
+                            );
+
+
+                    if (
+                        !result ||
+                        result.success !== true
+                    ) {
+
+                        throw new Error(
+                            result &&
+                            result.message
+                                ? result.message
+                                : 'Unable to join meeting.'
+                        );
+                    }
+
+
+                    meetingDetailsModal.classList.remove(
+                        'open'
+                    );
+
+                    meetingDetailsModal.setAttribute(
+                        'aria-hidden',
+                        'true'
+                    );
+
+
+                    currentMeetingDetails =
+                        null;
+
+
+                    await loadMeetings(true);
+
+                    return;
+                }
+
+            } catch (error) {
+
+                console.error(
+                    'Meeting details action failed:',
+                    error
+                );
+
+
+                /*
+                 * Re-fetch the meeting because its
+                 * state may have changed on the server.
+                 */
+                try {
+
+                    const refreshed =
+                        await window.serviceCall
+                            .getMeetingDetails(
+                                meetingSysId
+                            );
+
+
+                    if (
+                        refreshed &&
+                        refreshed.success === true
+                    ) {
+
+                        openMeetingDetailsModal(
+                            refreshed
+                        );
+
+                        return;
+                    }
+
+                } catch (refreshError) {
+
+                    console.error(
+                        'Unable to refresh meeting details:',
+                        refreshError
+                    );
+                }
+
+
+                meetingDetailsActionButton.textContent =
+                    'Try Again';
+
+            } finally {
+
+                meetingDetailsActionButton.disabled =
+                    false;
+            }
+        }
+    );
+}
+
+/* =================================================
+   COPY MEETING LINK
+================================================= */
+
+async function copyMeetingLink(
     meetingSysId
 ) {
 
-    result =
-        await window
-            .serviceCall
-            .leaveMeeting(
-                meetingSysId
+    if (!meetingSysId) {
+        return false;
+    }
+
+
+    const meetingLink =
+        'servicecall://meeting/' +
+        encodeURIComponent(
+            meetingSysId
+        );
+
+
+    try {
+
+        await navigator.clipboard.writeText(
+            meetingLink
+        );
+
+
+        console.log(
+            'Meeting link copied:',
+            meetingLink
+        );
+
+
+        return true;
+
+    } catch (error) {
+
+        console.error(
+            'Unable to copy meeting link:',
+            error
+        );
+
+
+        return false;
+    }
+}
+
+/* =================================================
+   OPEN MEETING FROM DEEP LINK
+================================================= */
+
+async function openMeetingFromDeepLink(
+    meetingSysId
+) {
+
+    const cleanMeetingSysId =
+        String(
+            meetingSysId || ''
+        ).trim();
+
+
+    /*
+     * ServiceNow sys_id must be
+     * exactly 32 hexadecimal characters.
+     */
+    if (
+        !/^[0-9a-f]{32}$/i.test(
+            cleanMeetingSysId
+        )
+    ) {
+
+        console.error(
+            'Invalid ServiceCall meeting link.'
+        );
+
+        return;
+    }
+
+
+    try {
+
+        /*
+         * ServiceNow remains the security
+         * authority.
+         *
+         * Knowing a meeting sys_id does NOT
+         * automatically grant access.
+         */
+        const result =
+            await window
+                .serviceCall
+                .getMeetingDetails(
+                    cleanMeetingSysId
+                );
+
+
+        if (
+            !result ||
+            result.success !== true
+        ) {
+
+            throw new Error(
+                result &&
+                result.message
+                    ? result.message
+                    : 'Unable to retrieve meeting details.'
+            );
+        }
+
+
+        /*
+         * Reuse the exact same Details UI
+         * used by the View Details button.
+         */
+        openMeetingDetailsModal(
+            result
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            'Unable to open meeting link:',
+            error
+        );
+
+
+        if (message) {
+
+            message.textContent =
+                error.message ||
+                'Unable to open this meeting.';
+        }
+    }
+}
+        /* -------------------------------------------------
+           RENDER MEETING
+        ------------------------------------------------- */
+
+        function createMeetingCard(
+            meeting
+        ) {
+
+            const card =
+                document.createElement(
+                    'div'
+                );
+
+
+            card.className =
+                'meeting-card';
+
+
+            const statusClass =
+                getStatusClass(
+                    meeting.state
+                );
+
+
+            const organizer =
+                meeting.organizer_name ||
+                'Unknown organizer';
+
+
+            card.innerHTML = `
+
+                <div class="meeting-card-left">
+
+                    <div class="meeting-title">
+                        ${escapeHtml(
+                            meeting.title ||
+                            'Untitled meeting'
+                        )}
+                    </div>
+
+                    <div class="meeting-meta">
+
+                        ${escapeHtml(
+                            meeting.meeting_number ||
+                            ''
+                        )}
+
+                        <br>
+
+                        ${escapeHtml(
+                            formatMeetingDate(
+                                meeting.scheduled_start
+                            )
+                        )}
+
+                        ${
+                            meeting.scheduled_end
+                                ? ' – ' +
+                                  escapeHtml(
+                                      formatMeetingDate(
+                                          meeting.scheduled_end
+                                      )
+                                  )
+                                : ''
+                        }
+
+                        <br>
+
+                        Organizer:
+                        ${escapeHtml(
+                            organizer
+                        )}
+
+                    </div>
+
+                </div>
+
+
+                <div class="meeting-actions">
+
+                    <span
+                        class="
+                            meeting-status
+                            ${statusClass}
+                        "
+                    >
+                        ${escapeHtml(
+                            meeting.state ||
+                            'Unknown'
+                        )}
+                    </span>
+
+                </div>
+            `;
+
+
+            /*
+             * IMPORTANT:
+             *
+             * These buttons are based entirely
+             * on permissions/actions returned
+             * by ServiceNow.
+             *
+             * We are NOT deciding authorization
+             * in the Desktop application.
+             */
+
+            const actions =
+                card.querySelector(
+                    '.meeting-actions'
+                );
+
+            /* =========================================
+   VIEW MEETING DETAILS
+========================================= */
+
+const detailsButton =
+    document.createElement(
+        'button'
+    );
+
+
+detailsButton.type =
+    'button';
+
+detailsButton.className =
+    'secondary-button';
+
+detailsButton.textContent =
+    'View Details';
+
+
+detailsButton.addEventListener(
+    'click',
+
+    async () => {
+
+        detailsButton.disabled =
+            true;
+
+        detailsButton.textContent =
+            'Loading...';
+
+
+        try {
+
+            const result =
+                await window
+                    .serviceCall
+                    .getMeetingDetails(
+                        meeting.meeting_sys_id
+                    );
+
+
+            if (
+                !result ||
+                result.success !== true
+            ) {
+
+                throw new Error(
+                    result &&
+                    result.message
+                        ? result.message
+                        : 'Unable to retrieve meeting details.'
+                );
+            }
+
+
+            /*
+             * Temporary runtime test.
+             *
+             * Once confirmed, we'll replace
+             * this with the actual Details UI.
+             */
+            openMeetingDetailsModal(result);
+
+
+        } catch (error) {
+
+            console.error(
+                'Meeting details failed:',
+                error
             );
 
-} else {
 
-    result =
-        await window
-            .serviceCall
-            .leaveCall(
-                callSysId
+            if (message) {
+
+                message.textContent =
+                    error.message ||
+                    'Unable to retrieve meeting details.';
+            }
+
+
+        } finally {
+
+            detailsButton.disabled =
+                false;
+
+            detailsButton.textContent =
+                'View Details';
+        }
+    }
+);
+
+
+actions.appendChild(
+    detailsButton
+);
+
+/* -----------------------------------------
+   COPY MEETING LINK
+----------------------------------------- */
+
+const copyLinkButton =
+    document.createElement(
+        'button'
+    );
+
+
+copyLinkButton.className =
+    'secondary-button';
+
+
+copyLinkButton.textContent =
+    'Copy Link';
+
+
+copyLinkButton.addEventListener(
+    'click',
+    async () => {
+
+        const copied =
+            await copyMeetingLink(
+                meeting.meeting_sys_id
             );
+
+
+        if (!copied) {
+
+            copyLinkButton.textContent =
+                'Copy failed';
+
+
+            setTimeout(
+                () => {
+
+                    copyLinkButton.textContent =
+                        'Copy Link';
+
+                },
+                1500
+            );
+
+
+            return;
+        }
+
+
+        copyLinkButton.textContent =
+            'Copied!';
+
+
+        setTimeout(
+            () => {
+
+                copyLinkButton.textContent =
+                    'Copy Link';
+
+            },
+            1500
+        );
+    }
+);
+
+
+actions.appendChild(
+    copyLinkButton
+);
+
+/* =========================================
+   EDIT MEETING
+========================================= */
+
+if (
+    meeting.can_edit === true
+) {
+
+    const button =
+        document.createElement(
+            'button'
+        );
+
+    button.className =
+        'secondary-button';
+
+    button.textContent =
+        'Edit';
+
+
+    button.addEventListener(
+    'click',
+
+    async () => {
+
+        await openEditMeetingModal(
+            meeting.meeting_sys_id
+        );
+    }
+);
+
+
+    actions.appendChild(
+        button
+    );
+}
+
+
+            if (
+    meeting.can_start === true
+) {
+
+    const button =
+        document.createElement(
+            'button'
+        );
+
+    button.className =
+        'primary-button';
+
+    button.textContent =
+        'Start';
+
+
+    button.addEventListener(
+        'click',
+
+        async () => {
+
+            /*
+             * Prevent double-clicking Start.
+             */
+            button.disabled = true;
+
+            button.textContent =
+                'Starting...';
+
+
+            try {
+
+                const result =
+                    await window
+                        .serviceCall
+                        .startMeeting(
+                            meeting.meeting_sys_id
+                        );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    throw new Error(
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to start meeting.'
+                    );
+                }
+
+
+                console.log(
+                    'Meeting started:',
+                    result
+                );
+
+
+                /*
+                 * Refresh Meetings so the card
+                 * changes from Scheduled to
+                 * In Progress.
+                 */
+                await loadMeetings(true);
+
+
+            } catch (error) {
+
+                console.error(
+                    'Start meeting failed:',
+                    error
+                );
+
+
+                button.disabled = false;
+
+                button.textContent =
+                    'Start';
+
+
+                if (message) {
+
+                    message.textContent =
+                        error.message ||
+                        'Unable to start meeting.';
+                }
+            }
+        }
+    );
+
+
+    actions.appendChild(
+        button
+    );
+}
+
+
+            if (
+    meeting.can_join === true
+) {
+
+    const button =
+        document.createElement(
+            'button'
+        );
+
+    button.className =
+        'primary-button';
+
+    button.textContent =
+        'Join';
+
+
+    button.addEventListener(
+        'click',
+
+        async () => {
+
+            button.disabled =
+                true;
+
+            button.textContent =
+                'Joining...';
+
+
+            try {
+
+                const result =
+                    await window
+                        .serviceCall
+                        .joinMeeting(
+                            meeting.meeting_sys_id
+                        );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    throw new Error(
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to join meeting.'
+                    );
+                }
+
+
+                console.log(
+                    'Meeting joined:',
+                    result
+                );
+
+
+                /*
+                 * Refresh the card because
+                 * can_join / can_leave may
+                 * now have changed.
+                 */
+                await loadMeetings(true);
+
+
+            } catch (error) {
+
+                console.error(
+                    'Join meeting failed:',
+                    error
+                );
+
+
+                button.disabled =
+                    false;
+
+                button.textContent =
+                    'Join';
+
+
+                if (message) {
+
+                    message.textContent =
+                        error.message ||
+                        'Unable to join meeting.';
+                }
+            }
+        }
+    );
+
+
+    actions.appendChild(
+        button
+    );
+}
+
+
+            if (
+    meeting.can_leave === true
+) {
+
+    const button =
+        document.createElement(
+            'button'
+        );
+
+    button.className =
+        'secondary-button';
+
+    button.textContent =
+        'Leave';
+
+
+    button.addEventListener(
+        'click',
+
+        async () => {
+
+            button.disabled =
+                true;
+
+            button.textContent =
+                'Leaving...';
+
+
+            try {
+
+                const result =
+                    await window
+                        .serviceCall
+                        .leaveMeeting(
+                            meeting.meeting_sys_id
+                        );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    throw new Error(
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to leave meeting.'
+                    );
+                }
+
+
+                console.log(
+                    'Meeting left:',
+                    result
+                );
+
+
+                await loadMeetings(true);
+
+
+            } catch (error) {
+
+                console.error(
+                    'Leave meeting failed:',
+                    error
+                );
+
+
+                button.disabled =
+                    false;
+
+                button.textContent =
+                    'Leave';
+
+
+                if (message) {
+
+                    message.textContent =
+                        error.message ||
+                        'Unable to leave meeting.';
+                }
+            }
+        }
+    );
+
+
+    actions.appendChild(
+        button
+    );
+}
+
+
+            if (
+    meeting.can_end === true
+) {
+
+    const button =
+        document.createElement(
+            'button'
+        );
+
+    button.className =
+        'danger-button';
+
+    button.textContent =
+        'End';
+
+
+    button.addEventListener(
+        'click',
+
+        async () => {
+
+            /*
+             * Prevent accidental double-clicks.
+             */
+            button.disabled =
+                true;
+
+            button.textContent =
+                'Ending...';
+
+
+            try {
+
+                const result =
+                    await window
+                        .serviceCall
+                        .endMeeting(
+                            meeting.meeting_sys_id
+                        );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    throw new Error(
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to end meeting.'
+                    );
+                }
+
+
+                console.log(
+                    'Meeting ended:',
+                    result
+                );
+
+
+                /*
+                 * Refresh meeting cards.
+                 * The ended meeting should now
+                 * display as Ended and its live
+                 * action buttons disappear.
+                 */
+                await loadMeetings(true);
+
+
+            } catch (error) {
+
+                console.error(
+                    'End meeting failed:',
+                    error
+                );
+
+
+                button.disabled =
+                    false;
+
+                button.textContent =
+                    'End';
+
+
+                if (message) {
+
+                    message.textContent =
+                        error.message ||
+                        'Unable to end meeting.';
+                }
+            }
+        }
+    );
+
+
+    actions.appendChild(
+        button
+    );
+}
+
+if (
+    meeting.can_cancel === true
+) {
+
+    const button =
+        document.createElement(
+            'button'
+        );
+
+    button.className =
+        'danger-button';
+
+    button.textContent =
+        'Cancel';
+
+
+    button.addEventListener(
+        'click',
+
+        async () => {
+
+            button.disabled =
+                true;
+
+            button.textContent =
+                'Cancelling...';
+
+
+            try {
+
+                const result =
+                    await window
+                        .serviceCall
+                        .cancelMeeting(
+                            meeting.meeting_sys_id
+                        );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    throw new Error(
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to cancel meeting.'
+                    );
+                }
+
+
+                console.log(
+                    'Meeting cancelled:',
+                    result
+                );
+
+
+                /*
+                 * Refresh meeting cards.
+                 *
+                 * State should now be Cancelled
+                 * and Start / Cancel disappear.
+                 */
+                await loadMeetings(true);
+
+
+            } catch (error) {
+
+                console.error(
+                    'Cancel meeting failed:',
+                    error
+                );
+
+
+                button.disabled =
+                    false;
+
+                button.textContent =
+                    'Cancel';
+
+
+                if (message) {
+
+                    message.textContent =
+                        error.message ||
+                        'Unable to cancel meeting.';
+                }
+            }
+        }
+    );
+
+
+    actions.appendChild(
+        button
+    );
+}
+
+
+            return card;
+        }
+
+        if (
+    meetingDetailsCloseButton
+) {
+
+    meetingDetailsCloseButton.addEventListener(
+        'click',
+        closeMeetingDetailsModal
+    );
 }
 
 
 if (
+    meetingDetailsFooterCloseButton
+) {
+
+    meetingDetailsFooterCloseButton.addEventListener(
+        'click',
+        closeMeetingDetailsModal
+    );
+}
+
+
+if (
+    meetingDetailsModal
+) {
+
+    meetingDetailsModal.addEventListener(
+        'click',
+        event => {
+
+            if (
+                event.target.hasAttribute(
+                    'data-meeting-details-close'
+                )
+            ) {
+
+                closeMeetingDetailsModal();
+            }
+        }
+    );
+}
+
+document.addEventListener(
+    'keydown',
+    event => {
+
+        if (
+            event.key !== 'Escape'
+        ) {
+            return;
+        }
+
+
+        if (
+            scheduleMeetingModal &&
+            scheduleMeetingModal.classList.contains(
+                'open'
+            )
+        ) {
+
+            closeScheduleMeetingModal();
+
+            return;
+        }
+
+
+        if (
+            meetingDetailsModal &&
+            meetingDetailsModal.classList.contains(
+                'open'
+            )
+        ) {
+
+            closeMeetingDetailsModal();
+        }
+    }
+);
+        /* -------------------------------------------------
+   RENDER MEETING PAGINATION
+------------------------------------------------- */
+
+function renderMeetingPagination(
+    result
+) {
+
+    if (!meetingPagination) {
+        return;
+    }
+
+
+    meetingPagination.innerHTML =
+        '';
+
+
+    const totalPages =
+        parseInt(
+            result.total_pages,
+            10
+        ) || 0;
+
+
+    const currentPage =
+        parseInt(
+            result.current_page,
+            10
+        ) || 1;
+
+
+    /*
+     * No pagination is necessary when
+     * there is only one page.
+     */
+    if (totalPages <= 1) {
+        return;
+    }
+
+
+    /* -----------------------------
+       PREVIOUS
+    ----------------------------- */
+
+    const previousButton =
+        document.createElement(
+            'button'
+        );
+
+
+    previousButton.type =
+        'button';
+
+    previousButton.className =
+        'meeting-page-button';
+
+    previousButton.textContent =
+        '‹ Previous';
+
+    previousButton.disabled =
+        currentPage <= 1;
+
+
+    previousButton.addEventListener(
+        'click',
+        async () => {
+
+            if (currentPage <= 1) {
+                return;
+            }
+
+
+            currentMeetingPage =
+                currentPage - 1;
+
+
+            await loadMeetings();
+        }
+    );
+
+
+    meetingPagination.appendChild(
+        previousButton
+    );
+
+
+   /* -----------------------------
+   PAGE NUMBERS
+----------------------------- */
+
+function addPageButton(
+    pageNumber
+) {
+
+    const pageButton =
+        document.createElement(
+            'button'
+        );
+
+
+    pageButton.type =
+        'button';
+
+    pageButton.className =
+        'meeting-page-button';
+
+    pageButton.textContent =
+        String(
+            pageNumber
+        );
+
+
+    if (
+        pageNumber ===
+        currentPage
+    ) {
+
+        pageButton.classList.add(
+            'active'
+        );
+
+        pageButton.disabled =
+            true;
+    }
+
+
+    pageButton.addEventListener(
+        'click',
+        async () => {
+
+            if (
+                pageNumber ===
+                currentPage
+            ) {
+                return;
+            }
+
+
+            currentMeetingPage =
+                pageNumber;
+
+
+            await loadMeetings();
+        }
+    );
+
+
+    meetingPagination.appendChild(
+        pageButton
+    );
+}
+
+
+function addEllipsis() {
+
+    const ellipsis =
+        document.createElement(
+            'span'
+        );
+
+
+    ellipsis.className =
+        'meeting-page-info';
+
+    ellipsis.textContent =
+        '…';
+
+
+    meetingPagination.appendChild(
+        ellipsis
+    );
+}
+
+
+/*
+ * Small number of pages:
+ *
+ * 1 2 3 4 5
+ */
+if (
+    totalPages <= 5
+) {
+
+    for (
+        let pageNumber = 1;
+        pageNumber <= totalPages;
+        pageNumber++
+    ) {
+
+        addPageButton(
+            pageNumber
+        );
+    }
+
+}
+
+
+/*
+ * Near the beginning:
+ *
+ * 1 2 3 … 15
+ */
+else if (
+    currentPage <= 3
+) {
+
+    addPageButton(1);
+    addPageButton(2);
+    addPageButton(3);
+
+    addEllipsis();
+
+    addPageButton(
+        totalPages
+    );
+
+}
+
+
+/*
+ * Near the end:
+ *
+ * 1 … 13 14 15
+ */
+else if (
+    currentPage >=
+    totalPages - 2
+) {
+
+    addPageButton(1);
+
+    addEllipsis();
+
+    addPageButton(
+        totalPages - 2
+    );
+
+    addPageButton(
+        totalPages - 1
+    );
+
+    addPageButton(
+        totalPages
+    );
+
+}
+
+
+/*
+ * Somewhere in the middle:
+ *
+ * 1 … 7 8 9 … 15
+ */
+else {
+
+    addPageButton(1);
+
+    addEllipsis();
+
+    addPageButton(
+        currentPage - 1
+    );
+
+    addPageButton(
+        currentPage
+    );
+
+    addPageButton(
+        currentPage + 1
+    );
+
+    addEllipsis();
+
+    addPageButton(
+        totalPages
+    );
+}
+
+    /* -----------------------------
+       NEXT
+    ----------------------------- */
+
+    const nextButton =
+        document.createElement(
+            'button'
+        );
+
+
+    nextButton.type =
+        'button';
+
+    nextButton.className =
+        'meeting-page-button';
+
+    nextButton.textContent =
+        'Next ›';
+
+    nextButton.disabled =
+        currentPage >=
+        totalPages;
+
+
+    nextButton.addEventListener(
+        'click',
+        async () => {
+
+            if (
+                currentPage >=
+                totalPages
+            ) {
+                return;
+            }
+
+
+            currentMeetingPage =
+                currentPage + 1;
+
+
+            await loadMeetings();
+        }
+    );
+
+
+    meetingPagination.appendChild(
+        nextButton
+    );
+
+
+    /* -----------------------------
+       PAGE INFORMATION
+    ----------------------------- */
+
+    const pageInfo =
+        document.createElement(
+            'span'
+        );
+
+
+    pageInfo.className =
+        'meeting-page-info';
+
+
+    pageInfo.textContent =
+        'Page ' +
+        currentPage +
+        ' of ' +
+        totalPages;
+
+
+    meetingPagination.appendChild(
+        pageInfo
+    );
+}
+
+/* -------------------------------------------------
+   MEETINGS AUTO REFRESH
+------------------------------------------------- */
+
+function startMeetingsAutoRefresh() {
+
+    /*
+     * Prevent multiple timers from
+     * being created.
+     */
+    if (meetingsAutoRefreshTimer) {
+        return;
+    }
+
+
+    meetingsAutoRefreshTimer =
+        setInterval(
+            async () => {
+
+                /*
+                 * Refresh only when the
+                 * Meetings page is actually open.
+                 */
+                const meetingsView =
+                    document.getElementById(
+                        'meetingsView'
+                    );
+
+
+                if (
+                    !meetingsView ||
+                    !meetingsView.classList.contains(
+                        'active'
+                    )
+                ) {
+                    return;
+                }
+
+
+                /*
+                 * Don't disturb the user while
+                 * the Schedule Meeting modal
+                 * is open.
+                 */
+                if (
+                    scheduleMeetingModal &&
+                    scheduleMeetingModal.classList.contains(
+                        'open'
+                    )
+                ) {
+                    return;
+                }
+
+
+                try {
+
+                    console.log(
+                        'Auto-refreshing meetings...'
+                    );
+
+                    await loadMeetings(true);
+
+                } catch (error) {
+
+                    console.error(
+                        'Meeting auto-refresh failed:',
+                        error
+                    );
+                }
+
+            },
+            15000
+        );
+}
+
+
+function stopMeetingsAutoRefresh() {
+
+    if (!meetingsAutoRefreshTimer) {
+        return;
+    }
+
+
+    clearInterval(
+        meetingsAutoRefreshTimer
+    );
+
+
+    meetingsAutoRefreshTimer = null;
+}
+
+
+        /* -------------------------------------------------
+           LOAD MEETINGS
+        ------------------------------------------------- */
+
+        async function loadMeetings(
+    silent = false
+) {
+
+    if (!meetingsContainer) {
+        return;
+    }
+
+
+    /*
+     * Normal/manual load:
+     * show loading state.
+     *
+     * Background refresh:
+     * keep the existing UI visible.
+     */
+    if (!silent) {
+
+        if (meetingPagination) {
+
+            meetingPagination.innerHTML =
+                '';
+        }
+
+
+        meetingsContainer.innerHTML = `
+            <div class="loading">
+                Loading your meetings...
+            </div>
+        `;
+    }
+
+
+            try {
+
+                const result =
+                    await window
+                        .serviceCall
+                        .getMyMeetings(currentMeetingPage, currentMeetingSearch, currentMeetingStatus);
+
+                if (
     !result ||
-    !result.success
+    result.success !== true
 ) {
 
     throw new Error(
         result &&
         result.message
             ? result.message
-            : (
-                isMeeting
-                    ? 'Unable to leave meeting.'
-                    : 'Unable to leave call.'
-            )
+            : 'Unable to retrieve meetings.'
     );
 }
 
 
 /*
- * Leave Agora only on THIS desktop.
- *
- * Other participants remain connected.
+ * Save the authenticated user's
+ * ServiceNow timezone.
  */
-await stopAgoraAudio();
+currentMeetingTimezone =
+    String(
+        result.user_timezone ||
+        ''
+    ).trim();
+
+    console.log(
+    'ServiceNow user timezone:',
+    currentMeetingTimezone
+);
 
 
-/*
- * Meeting data changed.
- *
- * Tell the main desktop window so the
- * Meetings card refreshes automatically.
- */
+if (scheduleMeetingTimezone) {
+
+    scheduleMeetingTimezone.textContent =
+        currentMeetingTimezone ||
+        'Unavailable';
+}
+
+
+const meetings =
+    Array.isArray(
+        result.meetings
+    )
+        ? result.meetings
+        : [];
+
+                currentMeetingPage =
+    parseInt(
+        result.current_page,
+        10
+    ) || 1;
+
+
+renderMeetingPagination(
+    result
+);
+
+
+                meetingsContainer.innerHTML =
+                    '';
+
+
+               if (
+    meetings.length === 0
+) {
+
+    /*
+     * Search and/or status filter is active.
+     */
+    if (
+        currentMeetingSearch ||
+        currentMeetingStatus
+    ) {
+
+        meetingsContainer.innerHTML = `
+            <div class="empty-state">
+                No meetings found.
+            </div>
+        `;
+
+    } else {
+
+        meetingsContainer.innerHTML = `
+            <div class="empty-state">
+                You don't have any ServiceCall meetings yet.
+            </div>
+        `;
+    }
+
+
+    return;
+}
+
+
+                meetings.forEach(
+                    (meeting) => {
+
+                        meetingsContainer.appendChild(
+                            createMeetingCard(
+                                meeting
+                            )
+                        );
+                    }
+                );
+
+
+            } catch (error) {
+
+    console.error(
+        'Unable to load meetings:',
+        error
+    );
+
+
+    /*
+     * During a silent background refresh,
+     * keep the existing meeting cards visible.
+     */
+    if (!silent) {
+
+        meetingsContainer.innerHTML = `
+            <div class="empty-state">
+                Unable to load your meetings.
+            </div>
+        `;
+    }
+}
+        }
+
+
+/* -------------------------------------------------
+   MEETING SEARCH
+------------------------------------------------- */
+
+if (meetingSearchInput) {
+
+    meetingSearchInput.addEventListener(
+        'input',
+        () => {
+
+            const searchValue =
+                meetingSearchInput
+                    .value
+                    .trim();
+
+
+            /*
+             * Show the clear button whenever
+             * something has been entered.
+             */
+            if (meetingSearchClear) {
+
+                meetingSearchClear.style.display =
+                    searchValue
+                        ? 'flex'
+                        : 'none';
+            }
+
+
+            /*
+             * Cancel the previous pending search.
+             *
+             * This prevents an API request for
+             * every individual keystroke.
+             */
+            if (meetingSearchTimer) {
+
+                clearTimeout(
+                    meetingSearchTimer
+                );
+            }
+
+
+            meetingSearchTimer =
+                setTimeout(
+                    async () => {
+
+                        currentMeetingSearch =
+                            searchValue;
+
+
+                        /*
+                         * Every new search begins
+                         * from page 1.
+                         */
+                        currentMeetingPage =
+                            1;
+
+
+                        await loadMeetings();
+
+                    },
+                    300
+                );
+        }
+    );
+}
+
+if (meetingSearchClear) {
+
+    meetingSearchClear.addEventListener(
+        'click',
+        async () => {
+
+            if (meetingSearchTimer) {
+
+                clearTimeout(
+                    meetingSearchTimer
+                );
+
+                meetingSearchTimer =
+                    null;
+            }
+
+
+            if (meetingSearchInput) {
+
+                meetingSearchInput.value =
+                    '';
+
+                meetingSearchInput.focus();
+            }
+
+
+            meetingSearchClear.style.display =
+                'none';
+
+
+            currentMeetingSearch =
+                '';
+
+            currentMeetingPage =
+                1;
+
+
+            await loadMeetings();
+        }
+    );
+}
+
+/* -------------------------------------------------
+   MEETING STATUS FILTER
+------------------------------------------------- */
+
+if (meetingStatusFilter) {
+
+    meetingStatusFilter.addEventListener(
+        'change',
+        async () => {
+
+            /*
+             * Values come directly from the
+             * dropdown:
+             *
+             * ''            = All
+             * scheduled     = Scheduled
+             * in progress   = In Progress
+             * ended         = Ended
+             * cancelled     = Cancelled
+             */
+            currentMeetingStatus =
+                String(
+                    meetingStatusFilter.value ||
+                    ''
+                )
+                    .toLowerCase()
+                    .trim();
+
+
+            /*
+             * A new filter always begins
+             * from page 1.
+             */
+            currentMeetingPage =
+                1;
+
+
+            await loadMeetings();
+        }
+    );
+}
+        
+/* =======================================================
+   MEETING CHANGE REFRESH
+======================================================= */
+
 if (
-    isMeeting &&
-    meetingSysId &&
     window.serviceCall &&
     typeof window.serviceCall
-        .notifyMeetingChanged ===
+        .onMeetingChanged ===
         'function'
 ) {
 
     window.serviceCall
-        .notifyMeetingChanged(
-            meetingSysId
+        .onMeetingChanged(
+            async (data) => {
+
+                console.log(
+                    'ServiceCall meeting changed:',
+                    data
+                );
+
+                await loadMeetings(true);
+            }
         );
 }
 
 
-stopAllTimers();
+        /* -------------------------------------------------
+           SCHEDULE MEETING
+        ------------------------------------------------- */
 
-stopRingtone();
+        if (scheduleMeetingButton) {
+
+    scheduleMeetingButton.addEventListener(
+        'click',
+        () => {
+
+            openScheduleMeetingModal();
+        }
+    );
+}
 
 
-statusText.textContent =
-    isMeeting
-        ? 'You left the meeting'
-        : 'You left the call';
+/* =================================================
+   OPEN MEETING FROM DESKTOP NOTIFICATION
+================================================= */
+ 
+if (
+    window.serviceCall &&
+    typeof window.serviceCall
+        .onNotificationMeetingOpen ===
+        'function'
+) {
+ 
+    window.serviceCall
+        .onNotificationMeetingOpen(
+            async (data) => {
+ 
+                try {
+ 
+                    const meetingSysId =
+                        String(
+                            data &&
+                            data.meetingSysId
+                                ? data.meetingSysId
+                                : ''
+                        ).trim();
+ 
+ 
+                    console.log(
+                        'ServiceCall meeting notification received:',
+                        data
+                    );
+ 
+ 
+                    /*
+                     * Validate the meeting sys_id
+                     * before doing anything.
+                     */
+                    if (
+                        !/^[0-9a-f]{32}$/i.test(
+                            meetingSysId
+                        )
+                    ) {
+ 
+                        console.error(
+                            'Invalid meeting sys_id from notification.'
+                        );
+ 
+                        return;
+                    }
+ 
+ 
+                    /*
+                     * Use the existing Meetings
+                     * navigation button.
+                     *
+                     * This means we reuse the exact
+                     * same navigation logic already
+                     * used by the sidebar.
+                     */
+                    const meetingsNavigationButton =
+                        document.querySelector(
+                            '.nav-button[data-view="meetingsView"]'
+                        );
+ 
+ 
+                    if (
+                        meetingsNavigationButton
+                    ) {
+ 
+                        meetingsNavigationButton.click();
+                    }
+ 
+ 
+                    /*
+                     * Open the exact meeting using
+                     * the existing secure flow.
+                     *
+                     * This calls ServiceNow again
+                     * to retrieve/authorize the
+                     * meeting before displaying it.
+                     */
+                    await openMeetingFromDeepLink(
+                        meetingSysId
+                    );
+ 
+ 
+                } catch (error) {
+ 
+                    console.error(
+                        'Unable to open meeting from notification:',
+                        error
+                    );
+                }
+            }
+        );
+}
+   /* =================================================
+   SERVICECALL DEEP LINK
+================================================= */
+
+if (
+    window.serviceCall &&
+    window.serviceCall.onDeepLink
+) {
+
+    window.serviceCall.onDeepLink(
+        async (data) => {
+
+            try {
+
+                const deepLink =
+                    String(
+                        data &&
+                        data.url
+                            ? data.url
+                            : ''
+                    ).trim();
 
 
-closeCallWindowAfterDelay();
+                if (!deepLink) {
+                    return;
+                }
+
+
+                console.log(
+                    'ServiceCall deep link received in renderer:',
+                    deepLink
+                );
+
+
+/*
+ * Expected formats:
+ *
+ * servicecall://meeting/<meeting_sys_id>
+ * servicecall:///meeting/<meeting_sys_id>
+ */
+const meetingLinkMatch =
+    String(
+        deepLink || ''
+    )
+        .trim()
+        .match(
+            /^servicecall:\/\/\/?meeting\/([0-9a-f]{32})$/i
+        );
+
+
+if (!meetingLinkMatch) {
+
+    console.error(
+        'Unsupported ServiceCall deep link:',
+        deepLink
+    );
+
+    return;
+}
+
+
+const meetingSysId =
+    meetingLinkMatch[1];
+
+
+console.log(
+    'ServiceCall meeting sys_id from link:',
+    meetingSysId
+);
+
+
+
+                if (
+                    !/^[0-9a-f]{32}$/i.test(
+                        meetingSysId
+                    )
+                ) {
+
+                    console.error(
+                        'Invalid meeting sys_id in ServiceCall link.'
+                    );
+
+                    return;
+                }
+
+
+                /*
+                 * Open the meeting using our
+                 * existing secure details flow.
+                 */
+                await openMeetingFromDeepLink(
+                    meetingSysId
+                );
 
 
             } catch (error) {
 
                 console.error(
-                    currentUserIsOwner
-                        ? 'End conference failed:'
-                        : 'Leave call failed:',
+                    'Unable to process ServiceCall meeting link:',
                     error
                 );
+            }
+        }
+    );
+}
+
+
+/*
+ * Tell the main process that the renderer
+ * has installed its deep-link listener.
+ */
+if (
+    window.serviceCall &&
+    window.serviceCall.rendererReady
+) {
+
+    window.serviceCall.rendererReady();
+}
+
+function renderSelectedMeetingPeople() {
+
+    if (!scheduleMeetingSelectedPeople) {
+        return;
+    }
+
+
+    /*
+     * Clear the current display.
+     */
+    scheduleMeetingSelectedPeople.innerHTML =
+        '';
+
+
+    /*
+     * No selected people.
+     */
+    if (
+        selectedMeetingPeople.length === 0
+    ) {
+
+        scheduleMeetingSelectedPeople.innerHTML = `
+            <div
+                id="scheduleMeetingNoPeople"
+                class="schedule-meeting-no-people"
+            >
+                No people selected.
+            </div>
+        `;
+
+        return;
+    }
+
+
+    /*
+     * Render every selected person.
+     */
+    selectedMeetingPeople.forEach(
+        person => {
+
+            const selectedPerson =
+                document.createElement(
+                    'div'
+                );
+
+
+            selectedPerson.className =
+                'schedule-meeting-selected-person';
+
+
+            const name =
+                document.createElement(
+                    'span'
+                );
+
+
+            name.textContent =
+                person.name ||
+                'Unknown User';
+
+
+            const removeButton =
+                document.createElement(
+                    'button'
+                );
+
+
+            removeButton.type =
+                'button';
+
+            removeButton.textContent =
+                '×';
+
+            removeButton.title =
+                'Remove';
+
+
+            removeButton.addEventListener(
+                'click',
+                () => {
+
+                    /*
+                     * Remove the person from
+                     * our selected array.
+                     */
+                    selectedMeetingPeople =
+                        selectedMeetingPeople.filter(
+                            selected =>
+                                selected.sys_id !==
+                                person.sys_id
+                        );
+
+
+                    /*
+                     * Re-render everything.
+                     */
+                    renderSelectedMeetingPeople();
+                }
+            );
+
+
+            selectedPerson.appendChild(
+                name
+            );
+
+
+            selectedPerson.appendChild(
+                removeButton
+            );
+
+
+            scheduleMeetingSelectedPeople.appendChild(
+                selectedPerson
+            );
+        }
+    );
+}
+
+/* -------------------------------------------------
+   SCHEDULE MEETING - PEOPLE SEARCH
+------------------------------------------------- */
+
+if (
+    scheduleMeetingPeopleSearch
+) {
+
+    scheduleMeetingPeopleSearch.addEventListener(
+        'input',
+        () => {
+
+            const searchText =
+                scheduleMeetingPeopleSearch
+                    .value
+                    .trim();
+
+
+            if (
+                schedulePeopleSearchTimer
+            ) {
+
+                clearTimeout(
+                    schedulePeopleSearchTimer
+                );
+            }
+
+
+            /*
+             * Our existing /users API requires
+             * at least 2 characters.
+             */
+            if (
+                searchText.length < 2
+            ) {
+
+                scheduleMeetingPeopleResults.innerHTML =
+                    '';
+
+                scheduleMeetingPeopleResults.style.display =
+                    'none';
+
+                return;
+            }
+
+
+            schedulePeopleSearchTimer =
+                setTimeout(
+                    async () => {
+
+                        try {
+
+                            const result =
+                                await window
+                                    .serviceCall
+                                    .searchUsers(
+                                        searchText
+                                    );
+
+
+                            console.log(
+                                'Schedule meeting user search:',
+                                result
+                            );
+
+                            if (
+    !result ||
+    result.success !== true
+) {
+    return;
+}
+
+const users =
+    Array.isArray(result.users)
+        ? result.users.filter(
+            user =>
+                !selectedMeetingPeople.some(
+                    person =>
+                        person.sys_id ===
+                        user.sys_id
+                )
+        )
+        : [];
+
+
+scheduleMeetingPeopleResults.innerHTML =
+    '';
+
+
+users.forEach(
+    user => {
+
+        const item =
+            document.createElement(
+                'div'
+            );
+
+
+        item.className =
+            'schedule-meeting-person-result';
+
+
+        item.textContent =
+            user.name ||
+            'Unknown User';
+
+item.addEventListener(
+    'click',
+    () => {
+
+        /*
+         * Don't add the same person twice.
+         */
+        const alreadySelected =
+            selectedMeetingPeople.some(
+                person =>
+                    person.sys_id ===
+                    user.sys_id
+            );
+
+
+        if (!alreadySelected) {
+
+            selectedMeetingPeople.push(
+                {
+                    sys_id: user.sys_id,
+                    name:
+                        user.name ||
+                        'Unknown User'
+                }
+            );
+        }
+
+
+       renderSelectedMeetingPeople();
+        /*
+         * Clear search and hide results.
+         */
+        scheduleMeetingPeopleSearch.value =
+            '';
+
+        scheduleMeetingPeopleResults.innerHTML =
+            '';
+
+        scheduleMeetingPeopleResults.style.display =
+            'none';
+    }
+);
+
+
+        scheduleMeetingPeopleResults.appendChild(
+            item
+        );
+    }
+);
+
+
+scheduleMeetingPeopleResults.style.display =
+    users.length > 0
+        ? 'block'
+        : 'none';
+
+                        } catch (error) {
+
+                            console.error(
+                                'Schedule meeting user search failed:',
+                                error
+                            );
+                        }
+
+                    },
+                    300
+                );
+        }
+    );
+}
+
+/* -------------------------------------------------
+   SCHEDULE MEETING - VALIDATION
+------------------------------------------------- */
+
+if (scheduleMeetingSubmitButton) {
+
+    scheduleMeetingSubmitButton.addEventListener(
+        'click',
+        async () => {
+
+            const title =
+                scheduleMeetingTitle.value.trim();
+
+            const description =
+                scheduleMeetingDescription.value.trim();
+
+            const start =
+                scheduleMeetingStart.value;
+
+            const end =
+                scheduleMeetingEnd.value;
+
+
+            /*
+             * Clear previous message.
+             */
+            scheduleMeetingMessage.textContent =
+                '';
+
+
+            if (!title) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please enter a meeting title.';
+
+                scheduleMeetingTitle.focus();
+
+                return;
+            }
+
+
+            if (!start) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please select a start date and time.';
+
+                scheduleMeetingStart.focus();
+
+                return;
+            }
+
+
+            if (!end) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please select an end date and time.';
+
+                scheduleMeetingEnd.focus();
+
+                return;
+            }
+
+
+            /*
+ * datetime-local produces:
+ * YYYY-MM-DDTHH:mm
+ *
+ * Start and end represent wall-clock values
+ * in the SAME ServiceNow user timezone,
+ * so compare them directly.
+ *
+ * Do NOT use new Date() here because that
+ * would interpret them using the computer's
+ * local timezone.
+ */
+if (end <= start) {
+
+    scheduleMeetingMessage.textContent =
+        'End time must be after the start time.';
+
+    scheduleMeetingEnd.focus();
+
+    return;
+}
+
+if (!currentMeetingTimezone) {
+
+    scheduleMeetingMessage.textContent =
+        'Unable to determine your ServiceNow time zone. Please refresh Meetings and try again.';
+
+    return;
+}
+
+
+            if (
+                selectedMeetingPeople.length === 0
+            ) {
+
+                scheduleMeetingMessage.textContent =
+                    'Please select at least one person.';
+
+                scheduleMeetingPeopleSearch.focus();
+
+                return;
+            }
+
+
+            /*
+             * Build participant sys_id array.
+             */
+            const participants =
+                selectedMeetingPeople.map(
+                    person => person.sys_id
+                );
+
+
+            /*
+             * Build meeting payload.
+             */
+            const meetingData = {
+
+    title:
+        title,
+
+    description:
+        description,
+
+    scheduled_start:
+        start,
+
+    scheduled_end:
+        end,
+
+    timezone:
+        currentMeetingTimezone,
+
+    participants:
+        participants
+};
+
+
+            console.log(
+    meetingFormMode === 'edit'
+        ? 'Updating ServiceCall meeting:'
+        : 'Creating ServiceCall meeting:',
+    meetingData
+);
+
+
+            /*
+             * Prevent duplicate clicks while
+             * the meeting is being created.
+             */
+            scheduleMeetingSubmitButton.disabled =
+                true;
+
+
+            scheduleMeetingMessage.textContent =
+                'Scheduling meeting...';
+
+
+            try {
+
+                console.log(
+    'Meeting timezone test:',
+    {
+        start: start,
+        end: end,
+        timezone:
+            currentMeetingTimezone,
+        browserTimezone:
+            Intl.DateTimeFormat()
+                .resolvedOptions()
+                .timeZone
+    }
+);
+
+                let result;
+
+
+/*
+ * CREATE MODE
+ */
+if (
+    meetingFormMode === 'create'
+) {
+
+    result =
+        await window.serviceCall
+            .createMeeting(
+                meetingData
+            );
+
+}
+
+
+/*
+ * EDIT MODE
+ */
+else if (
+    meetingFormMode === 'edit'
+) {
+
+    if (!editingMeetingSysId) {
+
+        throw new Error(
+            'Meeting sys_id is missing.'
+        );
+    }
+
+
+    result =
+    await window.serviceCall
+        .updateMeeting(
+            editingMeetingSysId,
+            meetingData
+        );
+}
+
+
+                console.log(
+                    'Create meeting result:',
+                    result
+                );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    scheduleMeetingMessage.textContent =
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to schedule meeting.';
+
+                    return;
+                }
+
+
+                /*
+                 * Meeting created successfully.
+                 */
+                scheduleMeetingMessage.textContent =
+    meetingFormMode === 'edit'
+        ? 'Meeting updated successfully.'
+        : 'Meeting scheduled successfully.';
+
+
+                /*
+                 * Refresh Meetings list.
+                 */
+                await loadMeetings();
+
+
+                /*
+                 * Close modal shortly after
+                 * successful creation.
+                 */
+                setTimeout(
+                    () => {
+
+                        closeScheduleMeetingModal();
+
+                    },
+                    700
+                );
+
+
+            } catch (error) {
+
+                console.error(
+                    'Schedule meeting failed:',
+                    error
+                );
+
+
+                scheduleMeetingMessage.textContent =
+                    error &&
+                    error.message
+                        ? error.message
+                        : 'Unable to schedule meeting.';
+
+
+            } finally {
+
+                scheduleMeetingSubmitButton.disabled =
+                    false;
+            }
+        }
+    );
+}
+
+/* =======================================================
+   SERVICECALL PEOPLE
+======================================================= */
+
+if (
+    peopleSearchInput &&
+    peopleSearchResults
+) {
+
+    peopleSearchInput.addEventListener(
+        'input',
+        () => {
+
+            const searchText =
+                peopleSearchInput
+                    .value
+                    .trim();
+
+
+            /*
+             * Cancel previous pending search.
+             */
+            if (peopleSearchTimer) {
+
+                clearTimeout(
+                    peopleSearchTimer
+                );
+
+                peopleSearchTimer =
+                    null;
+            }
+
+
+            /*
+             * Existing /users API requires
+             * at least two characters.
+             */
+            if (
+                searchText.length < 2
+            ) {
+
+                peopleSearchResults.innerHTML =
+                    '';
+
+                if (peopleSearchMessage) {
+
+                    peopleSearchMessage.textContent =
+                        searchText.length === 1
+                            ? 'Type at least 2 characters.'
+                            : '';
+                }
+
+                return;
+            }
+
+
+            if (peopleSearchMessage) {
+
+                peopleSearchMessage.textContent =
+                    'Searching...';
+            }
+
+
+            peopleSearchTimer =
+                setTimeout(
+                    async () => {
+
+                        try {
+
+                            const result =
+                                await window
+                                    .serviceCall
+                                    .searchUsers(
+                                        searchText
+                                    );
+
+
+                            /*
+                             * User may have typed something
+                             * different while this request
+                             * was running.
+                             */
+                            if (
+                                peopleSearchInput
+                                    .value
+                                    .trim() !==
+                                searchText
+                            ) {
+
+                                return;
+                            }
+
+
+                            if (
+                                !result ||
+                                result.success !== true
+                            ) {
+
+                                throw new Error(
+                                    result &&
+                                    result.message
+                                        ? result.message
+                                        : 'Unable to search users.'
+                                );
+                            }
+
+
+                            const users =
+                                Array.isArray(
+                                    result.users
+                                )
+                                    ? result.users
+                                    : [];
+
+
+                            peopleSearchResults.innerHTML =
+                                '';
+
+
+                            if (
+                                users.length === 0
+                            ) {
+
+                                if (
+                                    peopleSearchMessage
+                                ) {
+
+                                    peopleSearchMessage.textContent =
+                                        'No users found.';
+                                }
+
+                                return;
+                            }
+
+
+                            if (
+                                peopleSearchMessage
+                            ) {
+
+                                peopleSearchMessage.textContent =
+                                    '';
+                            }
+
+
+                            users.forEach(
+                                user => {
+
+                                    const row =
+                                        document.createElement(
+                                            'div'
+                                        );
+
+
+                                    row.className =
+                                        'people-result';
+
+
+                                    /* -------------------------
+                                       USER INFORMATION
+                                    ------------------------- */
+
+                                    const userInfo =
+                                        document.createElement(
+                                            'div'
+                                        );
+
+
+                                    const userName =
+                                        document.createElement(
+                                            'div'
+                                        );
+
+
+                                    userName.textContent =
+                                        user.name ||
+                                        'Unknown User';
+
+
+                                    userName.style.fontWeight =
+                                        '600';
+
+
+                                    const userDetails =
+                                        document.createElement(
+                                            'div'
+                                        );
+
+
+                                    userDetails.style.fontSize =
+                                        '13px';
+
+
+                                    userDetails.style.marginTop =
+                                        '4px';
+
+
+                                    const identityParts =
+                                        [];
+
+
+                                    if (
+                                        user.user_name
+                                    ) {
+
+                                        identityParts.push(
+                                            user.user_name
+                                        );
+                                    }
+
+
+                                    if (
+                                        user.email
+                                    ) {
+
+                                        identityParts.push(
+                                            user.email
+                                        );
+                                    }
+
+
+                                    userDetails.textContent =
+                                        identityParts.join(
+                                            ' • '
+                                        );
+
+
+                                    /* -------------------------
+                                       CURRENT STATUS
+                                    ------------------------- */
+
+                                    const userStatus =
+                                        document.createElement(
+                                            'div'
+                                        );
+
+
+                                    userStatus.style.fontSize =
+                                        '13px';
+
+
+                                    userStatus.style.marginTop =
+                                        '5px';
+
+
+                                    userStatus.textContent =
+                                        user.display_status ||
+                                        'Offline';
+
+
+                                    userInfo.appendChild(
+                                        userName
+                                    );
+
+
+                                    if (
+                                        identityParts.length >
+                                        0
+                                    ) {
+
+                                        userInfo.appendChild(
+                                            userDetails
+                                        );
+                                    }
+
+
+                                    userInfo.appendChild(
+                                        userStatus
+                                    );
+
+
+                                    /* -------------------------
+                                       CALL BUTTON
+                                    ------------------------- */
+
+                                    const callButton =
+                                        document.createElement(
+                                            'button'
+                                        );
+
+
+                                    callButton.type =
+                                        'button';
+
+
+                                    callButton.className =
+                                        'primary-button';
+
+
+                                    callButton.textContent =
+                                        'Call';
+
+
+                                    callButton.addEventListener(
+                                        'click',
+
+                                        async () => {
+
+                                            callButton.disabled =
+                                                true;
+
+
+                                            callButton.textContent =
+                                                'Calling...';
+
+
+                                            if (
+                                                peopleSearchMessage
+                                            ) {
+
+                                                peopleSearchMessage.textContent =
+                                                    'Calling ' +
+                                                    (
+                                                        user.name ||
+                                                        'user'
+                                                    ) +
+                                                    '...';
+                                            }
+
+
+                                            try {
+
+                                                const callResult =
+                                                    await window
+                                                        .serviceCall
+                                                        .startCall(
+                                                            user.sys_id
+                                                        );
+
+
+                                                console.log(
+                                                    'Start call result:',
+                                                    callResult
+                                                );
+
+
+                                                if (
+                                                    !callResult ||
+                                                    callResult.success !==
+                                                        true
+                                                ) {
+
+                                                    throw new Error(
+                                                        callResult &&
+                                                        callResult.message
+                                                            ? callResult.message
+                                                            : 'Unable to start call.'
+                                                    );
+                                                }
+
+
+                                                if (
+                                                    peopleSearchMessage
+                                                ) {
+
+                                                    peopleSearchMessage.textContent =
+                                                        'Calling ' +
+                                                        (
+                                                            callResult
+                                                                .target_user_name ||
+                                                            user.name ||
+                                                            'user'
+                                                        ) +
+                                                        '...';
+                                                }
+
+
+                                                /*
+                                                 * Do NOT manually open the
+                                                 * call window here.
+                                                 *
+                                                 * main.js already monitors
+                                                 * /outgoing-call and will
+                                                 * open the existing call
+                                                 * window for this call.
+                                                 */
+
+
+                                            } catch (error) {
+
+                                                console.error(
+                                                    'Start ServiceCall failed:',
+                                                    error
+                                                );
+
+
+                                                if (
+                                                    peopleSearchMessage
+                                                ) {
+
+                                                    peopleSearchMessage.textContent =
+                                                        error.message ||
+                                                        'Unable to start call.';
+                                                }
+
+
+                                                callButton.disabled =
+                                                    false;
+
+
+                                                callButton.textContent =
+                                                    'Call';
+                                            }
+                                        }
+                                    );
+
+
+                                    /* -------------------------
+                                       RESULT ROW
+                                    ------------------------- */
+
+                                    row.appendChild(
+                                        userInfo
+                                    );
+
+
+                                    row.appendChild(
+                                        callButton
+                                    );
+
+
+                                    /*
+                                     * Temporary functional layout.
+                                     * Final UI comes later.
+                                     */
+                                    row.style.display =
+                                        'flex';
+
+                                    row.style.alignItems =
+                                        'center';
+
+                                    row.style.justifyContent =
+                                        'space-between';
+
+                                    row.style.gap =
+                                        '16px';
+
+                                    row.style.padding =
+                                        '12px 0';
+
+                                    row.style.borderBottom =
+                                        '1px solid #e5e5e5';
+
+
+                                    peopleSearchResults.appendChild(
+                                        row
+                                    );
+                                }
+                            );
+
+
+                        } catch (error) {
+
+                            console.error(
+                                'People search failed:',
+                                error
+                            );
+
+
+                            peopleSearchResults.innerHTML =
+                                '';
+
+
+                            if (
+                                peopleSearchMessage
+                            ) {
+
+                                peopleSearchMessage.textContent =
+                                    error.message ||
+                                    'Unable to search users.';
+                            }
+                        }
+
+                    },
+                    300
+                );
+        }
+    );
+}
+
+/* =======================================================
+   SERVICECALL NOTIFICATIONS
+======================================================= */
+
+
+/* -------------------------------------------------
+   NOTIFICATION TYPE HELPERS
+------------------------------------------------- */
+
+function getNotificationCategory(
+    notification
+) {
+
+    const type =
+        String(
+            notification &&
+            notification.type
+                ? notification.type
+                : ''
+        )
+            .toLowerCase()
+            .trim();
+
+
+    if (
+        type.includes(
+            'meeting'
+        )
+    ) {
+
+        return 'meeting';
+    }
+
+
+    if (
+        type.includes(
+            'chat'
+        ) ||
+        type.includes(
+            'message'
+        )
+    ) {
+
+        return 'chat';
+    }
+
+
+    if (
+        type.includes(
+            'call'
+        ) ||
+        type.includes(
+            'recording'
+        )
+    ) {
+
+        return 'call';
+    }
+
+
+    return 'system';
+}
+
+
+/* -------------------------------------------------
+   NOTIFICATION ICON
+------------------------------------------------- */
+
+function getNotificationIcon(
+    notification
+) {
+
+    const category =
+        getNotificationCategory(
+            notification
+        );
+
+
+    switch (
+        category
+    ) {
+
+        case 'meeting':
+            return '📅';
+
+        case 'chat':
+            return '💬';
+
+        case 'call':
+            return '☎';
+
+        default:
+            return '🔔';
+    }
+}
+
+
+/* -------------------------------------------------
+   NOTIFICATION TIME
+------------------------------------------------- */
+
+function formatNotificationTime(
+    notification
+) {
+
+    if (!notification) {
+        return '';
+    }
+
+
+    return (
+        notification.created_at_display ||
+        notification.created_at ||
+        ''
+    );
+}
+
+
+/* -------------------------------------------------
+   UPDATE UNREAD BADGE
+------------------------------------------------- */
+
+function updateNotificationUnreadBadge(
+    unreadCount
+) {
+
+    const count =
+        Math.max(
+            0,
+            parseInt(
+                unreadCount,
+                10
+            ) || 0
+        );
+
+
+    /*
+     * -----------------------------------------
+     * SIDEBAR BADGE
+     * -----------------------------------------
+     */
+
+    if (
+        notificationUnreadBadge
+    ) {
+
+        notificationUnreadBadge.textContent =
+            count > 99
+                ? '99+'
+                : String(
+                    count
+                );
+
+
+        notificationUnreadBadge.style.display =
+            count > 0
+                ? 'flex'
+                : 'none';
+    }
+
+
+    /*
+     * -----------------------------------------
+     * UNREAD FILTER COUNT
+     * -----------------------------------------
+     */
+
+    if (
+        notificationUnreadFilterCount
+    ) {
+
+        notificationUnreadFilterCount.textContent =
+            count > 99
+                ? '99+'
+                : String(
+                    count
+                );
+
+
+        notificationUnreadFilterCount.style.display =
+            count > 0
+                ? 'inline-flex'
+                : 'none';
+    }
+
+
+    /*
+     * -----------------------------------------
+     * MARK ALL AS READ
+     * -----------------------------------------
+     *
+     * Keep hidden until the Mark All backend
+     * functionality is implemented.
+     */
+
+    if (
+        markAllNotificationsReadButton
+    ) {
+
+        markAllNotificationsReadButton.style.display =
+            'none';
+    }
+}
+
+/* -------------------------------------------------
+   BRIEF NEW-NOTIFICATION PULSE
+------------------------------------------------- */
+
+function pulseNotificationsNavigation() {
+
+    if (
+        !notificationsNavButton
+    ) {
+        return;
+    }
+
+
+    notificationsNavButton.classList.remove(
+        'notification-arrived'
+    );
+
+
+    /*
+     * Force a reflow so the animation can
+     * restart even if another notification
+     * arrives shortly afterwards.
+     */
+    void notificationsNavButton.offsetWidth;
+
+
+    notificationsNavButton.classList.add(
+        'notification-arrived'
+    );
+
+
+    setTimeout(
+        () => {
+
+            notificationsNavButton.classList.remove(
+                'notification-arrived'
+            );
+
+        },
+        2200
+    );
+}
+
+/* -------------------------------------------------
+   HIGHLIGHT NOTIFICATION SEARCH MATCH
+------------------------------------------------- */
+
+function highlightNotificationSearch(
+    text,
+    search
+) {
+
+    const value =
+        String(
+            text || ''
+        );
+
+
+    const searchValue =
+        String(
+            search || ''
+        ).trim();
+
+
+    /*
+     * No active search.
+     */
+    if (!searchValue) {
+
+        return escapeHtml(
+            value
+        );
+    }
+
+
+    /*
+     * Escape the original text first
+     * so notification content cannot
+     * inject HTML.
+     */
+    const safeText =
+        escapeHtml(
+            value
+        );
+
+
+    /*
+     * Escape special RegExp characters
+     * entered by the user.
+     */
+    const safeSearch =
+        searchValue.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            '\\$&'
+        );
+
+
+    const expression =
+        new RegExp(
+            '(' + safeSearch + ')',
+            'gi'
+        );
+
+
+    return safeText.replace(
+        expression,
+        '<mark class="notification-search-highlight">$1</mark>'
+    );
+}
+
+/* -------------------------------------------------
+   OPEN NOTIFICATION DETAIL
+------------------------------------------------- */
+
+function openNotificationDetail(
+    notification
+) {
+
+    if (
+        !notification ||
+        !notificationListPanel ||
+        !notificationDetailPanel
+    ) {
+        return;
+    }
+
+
+    /*
+     * Populate detail information.
+     */
+    if (notificationDetailIcon) {
+
+        notificationDetailIcon.textContent =
+            getNotificationIcon(
+                notification
+            );
+    }
+
+
+    if (notificationDetailType) {
+
+        notificationDetailType.textContent =
+            notification.type_display ||
+            notification.type ||
+            'Notification';
+    }
+
+
+    if (notificationDetailTitle) {
+
+        /*
+         * Detail view deliberately does not
+         * use search highlighting.
+         */
+        notificationDetailTitle.textContent =
+            notification.title ||
+            notification.type_display ||
+            'ServiceCall notification';
+    }
+
+
+    if (notificationDetailTime) {
+
+        notificationDetailTime.textContent =
+            formatNotificationTime(
+                notification
+            );
+    }
+
+
+    if (notificationDetailMessage) {
+
+        notificationDetailMessage.textContent =
+            notification.message ||
+            'No additional information.';
+    }
+
+
+    /*
+     * Clear actions left by the previously
+     * opened notification.
+     */
+    if (notificationDetailActions) {
+
+        notificationDetailActions.innerHTML =
+            '';
+
+
+        /*
+         * Meeting notification.
+         */
+        if (
+            notification.action_type ===
+                'open_meeting' &&
+            notification.meeting_sys_id
+        ) {
+
+            const openMeetingButton =
+                document.createElement(
+                    'button'
+                );
+
+
+            openMeetingButton.type =
+                'button';
+
+            openMeetingButton.className =
+                'primary-button';
+
+            openMeetingButton.textContent =
+                'Open Meeting';
+
+
+            openMeetingButton.addEventListener(
+                'click',
+
+                async (event) => {
+
+                    event.stopPropagation();
+
+                    openMeetingButton.disabled =
+                        true;
+
+                    openMeetingButton.textContent =
+                        'Opening...';
+
+
+                    try {
+
+                        await openMeetingFromDeepLink(
+                            notification.meeting_sys_id
+                        );
+
+                    } catch (error) {
+
+                        console.error(
+                            'Unable to open notification meeting:',
+                            error
+                        );
+
+                    } finally {
+
+                        openMeetingButton.disabled =
+                            false;
+
+                        openMeetingButton.textContent =
+                            'Open Meeting';
+                    }
+                }
+            );
+
+
+            notificationDetailActions.appendChild(
+                openMeetingButton
+            );
+        }
+    }
+
+
+    /*
+     * Move from list → detail.
+     */
+    notificationListPanel.classList.add(
+        'detail-open'
+    );
+
+
+    notificationDetailPanel.classList.add(
+        'active'
+    );
+
+
+    notificationDetailPanel.setAttribute(
+        'aria-hidden',
+        'false'
+    );
+
+    /*
+ * Mark this specific notification as read
+ * after it has already opened.
+ *
+ * Do not delay the detail UI while waiting
+ * for ServiceNow.
+ */
+/*
+ * Mark only THIS notification as read.
+ *
+ * The detail view is already open, so
+ * ServiceNow does not delay the UI.
+ */
+if (
+    notification.read !== true &&
+    notification.sys_id
+) {
+
+    window.serviceCall
+        .markNotificationRead(
+            notification.sys_id
+        )
+        .then(
+            result => {
+
+                console.log(
+                    'Mark notification read result:',
+                    result
+                );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    console.error(
+                        'ServiceNow did not mark notification as read:',
+                        result
+                    );
+
+                    return;
+                }
+
+
+                /*
+                 * -----------------------------------------
+                 * UPDATE THIS NOTIFICATION LOCALLY
+                 * -----------------------------------------
+                 */
+
+                notification.read =
+                    true;
+
+                notification.read_at =
+                    result.read_at || '';
+
+
+                /*
+                 * cachedNotifications normally contains
+                 * this same object, but update by sys_id
+                 * as well so we are explicit.
+                 */
+                const cachedNotification =
+                    cachedNotifications.find(
+                        item =>
+                            String(
+                                item.sys_id || ''
+                            ) ===
+                            String(
+                                notification.sys_id
+                            )
+                    );
+
+
+                if (cachedNotification) {
+
+                    cachedNotification.read =
+                        true;
+
+                    cachedNotification.read_at =
+                        result.read_at || '';
+                }
+
+
+                /*
+                 * -----------------------------------------
+                 * UPDATE AUTHORITATIVE UNREAD COUNT
+                 * -----------------------------------------
+                 */
+
+                const unreadCount =
+                    Number(
+                        result.unread_count || 0
+                    );
+
+
+                if (
+                    cachedNotificationResult
+                ) {
+
+                    cachedNotificationResult.unread_count =
+                        unreadCount;
+                }
+
+
+                /*
+                 * Sidebar Notifications badge.
+                 */
+                updateNotificationUnreadBadge(
+                    unreadCount
+                );
+
+
+                /*
+                 * Do NOT redraw the list while the
+                 * detail screen is open.
+                 *
+                 * Back will render the correct state.
+                 */
+            }
+        )
+        .catch(
+            error => {
+
+                console.error(
+                    'Unable to mark notification as read:',
+                    error
+                );
+            }
+        );
+}
+}
+
+/* -------------------------------------------------
+   CREATE NOTIFICATION CARD
+------------------------------------------------- */
+
+function createNotificationCard(
+    notification,
+    animateArrival = false
+) {
+
+    const card =
+        document.createElement(
+            'div'
+        );
+
+
+    card.className =
+        'notification-card';
+
+
+    if (
+        notification.read === true
+    ) {
+
+        card.classList.add(
+            'read'
+        );
+
+    } else {
+
+        card.classList.add(
+            'unread'
+        );
+    }
+
+
+    if (
+        animateArrival
+    ) {
+
+        card.classList.add(
+            'notification-card-arriving'
+        );
+    }
+
+
+    /*
+     * Unread indicator.
+     */
+    if (
+        notification.read !== true
+    ) {
+
+        const unreadDot =
+            document.createElement(
+                'div'
+            );
+
+
+        unreadDot.className =
+            'notification-unread-dot';
+
+
+        card.appendChild(
+            unreadDot
+        );
+    }
+
+
+    /*
+     * Icon.
+     */
+    const icon =
+        document.createElement(
+            'div'
+        );
+
+
+    icon.className =
+        'notification-icon';
+
+
+    icon.textContent =
+        getNotificationIcon(
+            notification
+        );
+
+
+    card.appendChild(
+        icon
+    );
+
+
+    /*
+     * Main body.
+     */
+    const body =
+        document.createElement(
+            'div'
+        );
+
+
+    body.className =
+        'notification-body';
+
+
+    const titleRow =
+        document.createElement(
+            'div'
+        );
+
+
+    titleRow.className =
+        'notification-title-row';
+
+
+    const title =
+        document.createElement(
+            'div'
+        );
+
+
+    title.className =
+        'notification-title';
+
+
+    title.innerHTML =
+    highlightNotificationSearch(
+        notification.title ||
+        notification.type_display ||
+        'ServiceCall notification',
+
+        currentNotificationSearch
+    );
+
+
+    const time =
+        document.createElement(
+            'div'
+        );
+
+
+    time.className =
+        'notification-time';
+
+
+    time.textContent =
+        formatNotificationTime(
+            notification
+        );
+
+
+    titleRow.appendChild(
+        title
+    );
+
+
+    titleRow.appendChild(
+        time
+    );
+
+
+    body.appendChild(
+        titleRow
+    );
+
+
+    /*
+     * Message.
+     */
+    if (
+        notification.message
+    ) {
+
+        const notificationMessage =
+            document.createElement(
+                'div'
+            );
+
+
+        notificationMessage.className =
+            'notification-message';
+
+
+        notificationMessage.innerHTML =
+    highlightNotificationSearch(
+        notification.message,
+        currentNotificationSearch
+    );
+
+
+        body.appendChild(
+            notificationMessage
+        );
+    }
+
+
+    /*
+     * Actions.
+     */
+    const actions =
+        document.createElement(
+            'div'
+        );
+
+
+    actions.className =
+        'notification-actions';
+
+
+    /*
+     * OPEN MEETING
+     *
+     * Reuses the existing secure meeting
+     * details flow.
+     */
+    if (
+        notification.action_type ===
+            'open_meeting' &&
+        notification.meeting_sys_id
+    ) {
+
+        const openMeetingButton =
+            document.createElement(
+                'button'
+            );
+
+
+        openMeetingButton.type =
+            'button';
+
+
+        openMeetingButton.className =
+            'notification-action-button primary';
+
+
+        openMeetingButton.textContent =
+            'Open Meeting';
+
+
+        openMeetingButton.addEventListener(
+            'click',
+
+            async () => {
+
+                openMeetingButton.disabled =
+                    true;
+
+
+                openMeetingButton.textContent =
+                    'Opening...';
+
+
+                try {
+
+                    await openMeetingFromDeepLink(
+                        notification
+                            .meeting_sys_id
+                    );
+
+
+                } catch (error) {
+
+                    console.error(
+                        'Unable to open notification meeting:',
+                        error
+                    );
+
+                } finally {
+
+                    openMeetingButton.disabled =
+                        false;
+
+
+                    openMeetingButton.textContent =
+                        'Open Meeting';
+                }
+            }
+        );
+
+
+        actions.appendChild(
+            openMeetingButton
+        );
+    }
+
+
+    /*
+     * Only append the action row if
+     * something was actually added.
+     */
+    if (
+        actions.children.length > 0
+    ) {
+
+        body.appendChild(
+            actions
+        );
+    }
+
+
+    card.appendChild(
+    body
+);
+
+
+/*
+ * Open the notification in the
+ * same-page detail view.
+ */
+card.addEventListener(
+    'click',
+
+    () => {
+
+        openNotificationDetail(
+            notification
+        );
+    }
+);
+
+
+card.setAttribute(
+    'role',
+    'button'
+);
+
+card.setAttribute(
+    'tabindex',
+    '0'
+);
+
+
+return card;
+}
+
+/* -------------------------------------------------
+   CLOSE NOTIFICATION DETAIL
+------------------------------------------------- */
+
+function closeNotificationDetail() {
+
+    if (
+        !notificationListPanel ||
+        !notificationDetailPanel
+    ) {
+        return;
+    }
+
+
+    /*
+     * Animate the detail screen out.
+     */
+    notificationDetailPanel.classList.remove(
+        'active'
+    );
+
+    notificationDetailPanel.classList.add(
+        'closing'
+    );
+
+
+    /*
+     * Wait for the exit animation before
+     * restoring the notification list.
+     */
+    setTimeout(
+        () => {
+
+            notificationDetailPanel.classList.remove(
+                'closing'
+            );
+
+            notificationDetailPanel.setAttribute(
+                'aria-hidden',
+                'true'
+            );
+
+
+            /*
+             * Restore list.
+             */
+            notificationListPanel.classList.remove(
+                'detail-open'
+            );
+
+            notificationListPanel.classList.add(
+                'returning'
+            );
+
+
+            /*
+             * Clean temporary animation class.
+             */
+            setTimeout(
+    () => {
+
+        notificationListPanel.classList.remove(
+            'returning'
+        );
+
+
+        /*
+         * Re-render from our local cache.
+         *
+         * No ServiceNow request is required.
+         */
+        renderNotifications(
+            cachedNotifications
+        );
+
+
+        if (
+            cachedNotificationResult
+        ) {
+
+            renderNotificationPagination(
+                cachedNotificationResult
+            );
+        }
+
+    },
+    220
+);
+
+        },
+        180
+    );
+}
+
+
+if (
+    notificationDetailBackButton
+) {
+
+    notificationDetailBackButton.addEventListener(
+        'click',
+        closeNotificationDetail
+    );
+}
+
+
+/* -------------------------------------------------
+   RENDER NOTIFICATIONS
+------------------------------------------------- */
+
+function renderNotifications(
+    notifications,
+    newlyArrivedIds = new Set()
+) {
+
+    if (
+        !notificationsContainer
+    ) {
+        return;
+    }
+
+
+    notificationsContainer.innerHTML =
+        '';
+
+
+    /*
+     * -----------------------------------------
+     * FILTER BY READ STATE
+     * -----------------------------------------
+     *
+     * all
+     *     Every notification.
+     *
+     * unread
+     *     Only notifications that have not
+     *     been opened/read.
+     *
+     * read
+     *     Only notifications already read.
+     */
+
+    const filteredNotifications =
+        notifications.filter(
+            notification => {
+
+                /*
+                 * ALL
+                 */
+                if (
+                    currentNotificationFilter ===
+                    'all'
+                ) {
+
+                    return true;
+                }
+
+
+                /*
+                 * UNREAD
+                 */
+                if (
+                    currentNotificationFilter ===
+                    'unread'
+                ) {
+
+                    return (
+                        notification.read !==
+                        true
+                    );
+                }
+
+
+                /*
+                 * READ
+                 */
+                if (
+                    currentNotificationFilter ===
+                    'read'
+                ) {
+
+                    return (
+                        notification.read ===
+                        true
+                    );
+                }
+
+
+                return true;
+            }
+        );
+
+
+    /*
+     * -----------------------------------------
+     * EMPTY STATE
+     * -----------------------------------------
+     */
+
+    if (
+        filteredNotifications.length ===
+        0
+    ) {
+
+        let emptyMessage =
+            'You don\'t have any ServiceCall notifications yet.';
+
+
+        if (
+            currentNotificationFilter ===
+            'unread'
+        ) {
+
+            emptyMessage =
+                'You have no unread notifications.';
+        }
+
+
+        if (
+            currentNotificationFilter ===
+            'read'
+        ) {
+
+            emptyMessage =
+                'You have no read notifications.';
+        }
+
+
+        notificationsContainer.innerHTML = `
+            <div class="notification-empty">
+                ${emptyMessage}
+            </div>
+        `;
+
+
+        return;
+    }
+
+
+    /*
+     * -----------------------------------------
+     * RENDER
+     * -----------------------------------------
+     */
+
+    filteredNotifications.forEach(
+        notification => {
+
+            notificationsContainer.appendChild(
+                createNotificationCard(
+                    notification,
+
+                    newlyArrivedIds.has(
+                        notification.sys_id
+                    )
+                )
+            );
+        }
+    );
+}
+
+/* -------------------------------------------------
+   NOTIFICATION PAGINATION
+------------------------------------------------- */
+
+function renderNotificationPagination(
+    result
+) {
+
+    if (
+        !notificationPagination
+    ) {
+        return;
+    }
+
+
+    notificationPagination.innerHTML =
+        '';
+
+
+    const page =
+        parseInt(
+            result.page,
+            10
+        ) || 1;
+
+
+    const hasMore =
+        result.has_more === true;
+
+
+    /*
+     * With the current notification API,
+     * we know the current page and whether
+     * another page exists.
+     *
+     * Therefore use simple Previous/Next
+     * pagination instead of pretending we
+     * know a total page count.
+     */
+    if (
+        page <= 1 &&
+        !hasMore
+    ) {
+
+        return;
+    }
+
+
+    const previousButton =
+        document.createElement(
+            'button'
+        );
+
+
+    previousButton.type =
+        'button';
+
+
+    previousButton.className =
+        'meeting-page-button';
+
+
+    previousButton.textContent =
+        '‹ Previous';
+
+
+    previousButton.disabled =
+        page <= 1;
+
+
+    previousButton.addEventListener(
+        'click',
+
+        async () => {
+
+            if (
+                page <= 1
+            ) {
+                return;
+            }
+
+
+            currentNotificationPage =
+                page - 1;
+
+
+            await loadNotifications(
+                false
+            );
+        }
+    );
+
+
+    notificationPagination.appendChild(
+        previousButton
+    );
+
+
+    const pageInfo =
+        document.createElement(
+            'span'
+        );
+
+
+    pageInfo.className =
+        'meeting-page-info';
+
+
+    pageInfo.textContent =
+        'Page ' +
+        page;
+
+
+    notificationPagination.appendChild(
+        pageInfo
+    );
+
+
+    const nextButton =
+        document.createElement(
+            'button'
+        );
+
+
+    nextButton.type =
+        'button';
+
+
+    nextButton.className =
+        'meeting-page-button';
+
+
+    nextButton.textContent =
+        'Next ›';
+
+
+    nextButton.disabled =
+        !hasMore;
+
+
+    nextButton.addEventListener(
+        'click',
+
+        async () => {
+
+            if (
+                !hasMore
+            ) {
+                return;
+            }
+
+
+            currentNotificationPage =
+                page + 1;
+
+
+            await loadNotifications(
+                false
+            );
+        }
+    );
+
+
+    notificationPagination.appendChild(
+        nextButton
+    );
+}
+
+
+/* -------------------------------------------------
+   LOAD NOTIFICATIONS
+------------------------------------------------- */
+
+async function loadNotifications(
+    silent = false
+) {
+
+    const requestSearch =
+    currentNotificationSearch;
+
+const requestSearchVersion =
+    notificationSearchVersion;
+
+    if (
+        !notificationsContainer
+    ) {
+        return;
+    }
+
+
+    /*
+     * Manual/open-page refresh:
+     * show a loading state.
+     *
+     * Background refresh:
+     * leave the existing UI untouched
+     * until fresh data arrives.
+     */
+    if (
+        !silent
+    ) {
+
+        notificationsContainer.innerHTML = `
+            <div class="loading">
+                Loading notifications...
+            </div>
+        `;
+
+
+        if (
+            notificationPagination
+        ) {
+
+            notificationPagination.innerHTML =
+                '';
+        }
+    }
+
+
+    try {
+
+        const result =
+    await window.serviceCall
+        .getNotifications(
+            currentNotificationPage,
+            20,
+            requestSearch
+        );
+
+        /*
+ * The user typed something else while
+ * this request was running.
+ *
+ * Ignore this old response completely.
+ */
+if (
+    requestSearchVersion !==
+        notificationSearchVersion ||
+    requestSearch !==
+        currentNotificationSearch
+) {
+
+    return;
+}
+
+        if (
+            !result ||
+            result.success !== true
+        ) {
+
+            throw new Error(
+                result &&
+                result.message
+                    ? result.message
+                    : 'Unable to retrieve notifications.'
+            );
+        }
+
+
+        const notifications =
+            Array.isArray(
+                result.notifications
+            )
+                ? result.notifications
+                : [];
+
+                /*
+ * Keep the latest ServiceNow result in memory.
+ *
+ * All / Unread / Read can now switch instantly.
+ */
+cachedNotifications =
+    notifications;
+
+cachedNotificationResult =
+    result;
+
+        /*
+         * Update unread count globally,
+         * regardless of which page the
+         * user currently has open.
+         */
+        updateNotificationUnreadBadge(
+            result.unread_count
+        );
+
+
+        const newlyArrivedIds =
+            new Set();
+
+
+        /*
+         * IMPORTANT:
+         *
+         * The first successful load establishes
+         * our baseline.
+         *
+         * Existing notifications must NOT all
+         * pulse as though they just arrived.
+         */
+        if (
+            notificationsInitialized
+        ) {
+
+            notifications.forEach(
+                notification => {
+
+                    const sysId =
+                        String(
+                            notification.sys_id ||
+                            ''
+                        ).trim();
+
+
+                    if (
+                        sysId &&
+                        !knownNotificationIds.has(
+                            sysId
+                        )
+                    ) {
+
+                        newlyArrivedIds.add(
+                            sysId
+                        );
+                    }
+                }
+            );
+        }
+
+
+        /*
+         * Remember everything returned by
+         * this API response.
+         */
+        notifications.forEach(
+            notification => {
+
+                const sysId =
+                    String(
+                        notification.sys_id ||
+                        ''
+                    ).trim();
+
+
+                if (
+                    sysId
+                ) {
+
+                    knownNotificationIds.add(
+                        sysId
+                    );
+                }
+            }
+        );
+
+
+        notificationsInitialized =
+            true;
+
+
+        if (
+    newlyArrivedIds.size > 0
+) {
+
+    pulseNotificationsNavigation();
+
+
+    /*
+     * Show a desktop popup only for
+     * genuinely new notifications.
+     */
+    notifications.forEach(
+        notification => {
+
+            const sysId =
+                String(
+                    notification.sys_id ||
+                    ''
+                ).trim();
+
+
+            if (
+                sysId &&
+                newlyArrivedIds.has(
+                    sysId
+                )
+            ) {
+
+                window.serviceCall
+    .showNotificationPopup(
+        {
+            notificationSysId:
+                sysId,
+ 
+            type:
+                notification.type_display ||
+                notification.type ||
+                'Notification',
+ 
+            title:
+                notification.title ||
+                'ServiceCall',
+ 
+            message:
+                notification.message ||
+                '',
+ 
+            meetingSysId:
+                notification.meeting_sys_id ||
+                ''
+        }
+    )
+                    .catch(
+                        error => {
+
+                            console.error(
+                                'Unable to show ServiceCall notification popup:',
+                                error
+                            );
+                        }
+                    );
+            }
+        }
+    );
+}
+
+
+        /*
+         * Only render the notification list
+         * when the Notifications page is open
+         * OR when this was an explicit load.
+         *
+         * Background polling while on Home,
+         * Meetings, Chat, etc. therefore only
+         * updates the badge/pulse.
+         */
+        const notificationsView =
+            document.getElementById(
+                'notificationsView'
+            );
+
+
+        if (
+            !silent ||
+            (
+                notificationsView &&
+                notificationsView.classList.contains(
+                    'active'
+                )
+            )
+        ) {
+
+            renderNotifications(
+                notifications,
+                newlyArrivedIds
+            );
+
+
+            renderNotificationPagination(
+                result
+            );
+        }
+
+
+    } catch (error) {
+
+        console.error(
+            'Unable to load notifications:',
+            error
+        );
+
+
+        /*
+         * Never destroy existing cards because
+         * a silent background refresh failed.
+         */
+        if (
+            !silent
+        ) {
+
+            notificationsContainer.innerHTML = `
+                <div class="notification-empty">
+                    Unable to load your notifications.
+                </div>
+            `;
+        }
+    }
+}
+
+
+/* -------------------------------------------------
+   MANUAL REFRESH
+------------------------------------------------- */
+
+if (
+    refreshNotificationsButton
+) {
+
+    refreshNotificationsButton.addEventListener(
+        'click',
+
+        async () => {
+
+            refreshNotificationsButton.disabled =
+                true;
+
+
+            const originalText =
+                refreshNotificationsButton
+                    .textContent;
+
+
+            refreshNotificationsButton.textContent =
+                'Refreshing...';
+
+
+            try {
+
+                await loadNotifications(
+                    true
+                );
+
+            } finally {
+
+                refreshNotificationsButton.disabled =
+                    false;
+
+
+                refreshNotificationsButton.textContent =
+                    originalText;
+            }
+        }
+    );
+}
+
+/* -------------------------------------------------
+   NOTIFICATION SEARCH
+------------------------------------------------- */
+
+if (notificationSearchInput) {
+
+    notificationSearchInput.addEventListener(
+        'input',
+        () => {
+
+            const searchValue =
+                notificationSearchInput
+                    .value
+                    .trim();
+
+            /*
+ * Update the active search immediately.
+ *
+ * This lets the already-loaded cards respond
+ * instantly while the full ServiceNow search
+ * is waiting for the debounce timer.
+ */
+currentNotificationSearch =
+    searchValue;
+
+notificationSearchVersion++;
+
+
+            /*
+             * Show / hide clear button.
+             */
+            if (notificationSearchClear) {
+
+                notificationSearchClear.style.display =
+                    searchValue
+                        ? 'flex'
+                        : 'none';
+            }
+
+
+            /*
+             * Cancel previous pending search.
+             */
+            if (notificationSearchTimer) {
+
+                clearTimeout(
+                    notificationSearchTimer
+                );
+            }
+
+
+            /*
+             * Wait briefly before searching
+             * so we don't call ServiceNow on
+             * every keystroke.
+             */
+            notificationSearchTimer =
+                setTimeout(
+                    async () => {
+
+                        /*
+                         * New search always begins
+                         * from page 1.
+                         */
+                        currentNotificationPage =
+                            1;
+
+
+                        await loadNotifications(
+                            true
+                        );
+
+                    },
+                    180
+                );
+        }
+    );
+}
+
+
+/* -------------------------------------------------
+   CLEAR NOTIFICATION SEARCH
+------------------------------------------------- */
+
+if (notificationSearchClear) {
+
+    notificationSearchClear.addEventListener(
+        'click',
+
+        async () => {
+
+            if (notificationSearchTimer) {
+
+                clearTimeout(
+                    notificationSearchTimer
+                );
+
+                notificationSearchTimer =
+                    null;
+            }
+
+
+            if (notificationSearchInput) {
+
+                notificationSearchInput.value =
+                    '';
+
+                notificationSearchInput.focus();
+            }
+
+
+            notificationSearchClear.style.display =
+                'none';
+
+
+            currentNotificationSearch =
+                '';
+
+            notificationSearchVersion++;
+
+            currentNotificationPage =
+                1;
+
+
+            await loadNotifications(
+                true
+            );
+        }
+    );
+}
+
+
+/* -------------------------------------------------
+   NOTIFICATION FILTERS
+------------------------------------------------- */
+
+notificationFilterButtons.forEach(
+    button => {
+
+        button.addEventListener(
+            'click',
+
+            () => {
+
+                /*
+                 * Update selected filter visually.
+                 */
+                notificationFilterButtons.forEach(
+                    filterButton => {
+
+                        filterButton.classList.remove(
+                            'active'
+                        );
+                    }
+                );
+
+
+                button.classList.add(
+                    'active'
+                );
+
+
+                currentNotificationFilter =
+                    String(
+                        button.dataset
+                            .notificationFilter ||
+                        'all'
+                    )
+                        .toLowerCase()
+                        .trim();
 
 
                 /*
                  * IMPORTANT:
                  *
-                 * If recording finalization failed,
-                 * we intentionally do NOT continue
-                 * with End Conference / Leave Call.
+                 * Do NOT contact ServiceNow here.
                  *
-                 * This gives the user a chance to
-                 * retry rather than knowingly
-                 * discarding the recording.
+                 * The notifications are already
+                 * available in memory, so switching
+                 * All / Unread / Read should feel
+                 * immediate.
                  */
-                statusText.textContent =
-                    error.message ||
-                    (
-                        currentUserIsOwner
-                            ? 'Unable to end conference.'
-                            : 'Unable to leave call.'
+                renderNotifications(
+                    cachedNotifications
+                );
+
+
+                /*
+                 * Pagination still belongs to the
+                 * server result currently loaded.
+                 */
+                if (
+                    cachedNotificationResult
+                ) {
+
+                    renderNotificationPagination(
+                        cachedNotificationResult
+                    );
+                }
+            }
+        );
+    }
+);
+
+
+/* -------------------------------------------------
+   GLOBAL NOTIFICATION AUTO REFRESH
+------------------------------------------------- */
+
+function startNotificationsAutoRefresh() {
+
+    if (
+        notificationAutoRefreshTimer
+    ) {
+        return;
+    }
+
+
+    /*
+     * Establish baseline immediately.
+     *
+     * This is silent because ServiceCall may
+     * currently be displaying Home/Meetings/etc.
+     */
+    loadNotifications(
+        true
+    );
+
+
+    notificationAutoRefreshTimer =
+        setInterval(
+            async () => {
+
+                try {
+
+                    /*
+                     * Background monitoring always
+                     * checks page 1 because that's
+                     * where newly created notifications
+                     * appear.
+                     *
+                     * Preserve the user's pagination.
+                     */
+                    const originalPage =
+                        currentNotificationPage;
+
+
+                    currentNotificationPage =
+                        1;
+
+
+                    await loadNotifications(
+                        true
                     );
 
 
-                endButton.disabled =
-                    false;
-            }
-        }
+                    currentNotificationPage =
+                        originalPage;
+
+
+                } catch (error) {
+
+                    console.error(
+                        'Notification auto-refresh failed:',
+                        error
+                    );
+                }
+
+            },
+            15000
+        );
+}
+
+
+/*
+ * Start notification monitoring for the
+ * lifetime of the ServiceCall renderer.
+ */
+startNotificationsAutoRefresh();
+
+const refreshRecordingsButton =
+    document.getElementById(
+        'refreshRecordingsButton'
+    );
+ 
+ 
+const recordingsMessage =
+    document.getElementById(
+        'recordingsMessage'
+    );
+ 
+ 
+const recordingsList =
+    document.getElementById(
+        'recordingsList'
     );
 
-/* -------------------------
-   CLOSE CALL WINDOW
-------------------------- */
+window.addEventListener(
+    'scroll',
+    () => {
+
+        if (
+            scheduleMeetingPeopleResults
+        ) {
+
+            scheduleMeetingPeopleResults.style.display =
+                'none';
+        }
+    },
+    true
+);
+
+document.addEventListener(
+    'click',
+    event => {
+
+        if (
+            !scheduleMeetingPeopleSearch ||
+            !scheduleMeetingPeopleResults
+        ) {
+            return;
+        }
+
+
+        const clickedSearch =
+            scheduleMeetingPeopleSearch.contains(
+                event.target
+            );
+
+
+        const clickedResults =
+            scheduleMeetingPeopleResults.contains(
+                event.target
+            );
+
+
+        /*
+         * Click anywhere outside the
+         * People search/results → close dropdown.
+         */
+        if (
+            !clickedSearch &&
+            !clickedResults
+        ) {
+
+            scheduleMeetingPeopleResults.style.display =
+                'none';
+        }
+    }
+);
  
-function closeCallWindowAfterDelay() {
  
-    if (closeTimer) {
+async function loadRecordingHistory() {
+ 
+    if (
+        !recordingsMessage ||
+        !recordingsList
+    ) {
         return;
     }
  
  
-    closeTimer =
-        setTimeout(
-            () => {
- 
-                stopAllTimers();
- 
-                window.close();
- 
-            },
-            1000
-        );
-}
-
-/* -------------------------
-   STOP TIMERS
-------------------------- */
-
-function stopAllTimers() {
-
-    if (callStatusTimer) {
-
-        clearInterval(
-            callStatusTimer
-        );
-
-        callStatusTimer =
-            null;
-    }
-
-
-    if (durationTimer) {
-
-        clearInterval(
-            durationTimer
-        );
-
-        durationTimer =
-            null;
-    }
-}
-
-
-/* -------------------------
-   START
-------------------------- */
-
-setMode(
-    currentMode
-);
-
-startCallStatusPolling();
-
-
-window.addEventListener(
-    'beforeunload',
-    () => {
- 
-        stopAllTimers();
- 
-        stopRingtone();
+    recordingsMessage.textContent =
+        'Loading recordings...';
  
  
-        /*
-         * Stop any local screen capture immediately.
-         *
-         * We deliberately stop the native MediaStream
-         * synchronously because beforeunload cannot
-         * reliably wait for asynchronous cleanup.
-         */
+    recordingsList.innerHTML =
+        '';
  
-        if (localScreenStream) {
  
-            localScreenStream
-                .getTracks()
-                .forEach(
-                    track => {
+    try {
  
-                        try {
+        const result =
+            await window.serviceCall
+                .getRecordingHistory();
  
-                            track.stop();
  
-                        } catch (error) {
+        if (
+            !result ||
+            result.success !== true
+        ) {
  
-                            // Ignore final cleanup errors.
-                        }
-                    }
-                );
+            recordingsMessage.textContent =
+                result &&
+                result.message
+                    ? result.message
+                    : 'Unable to load recordings.';
+ 
+            return;
         }
  
  
-        localScreenStream =
-            null;
- 
-        localScreenNativeTrack =
-            null;
- 
-        localScreenAgoraTrack =
-            null;
+        const recordings =
+            Array.isArray(
+                result.recordings
+            )
+                ? result.recordings
+                : [];
  
  
+        if (
+            recordings.length === 0
+        ) {
+ 
+            recordingsMessage.textContent =
+                'No recordings found.';
+ 
+            return;
+        }
+ 
+ 
+        recordingsMessage.textContent =
+            recordings.length +
+            (
+                recordings.length === 1
+                    ? ' recording'
+                    : ' recordings'
+            );
+ 
+ 
+        recordings.forEach(
+            (recording) => {
+ 
+                const card =
+                    document.createElement(
+                        'div'
+                    );
+ 
+ 
+                card.style.cssText = `
+                    border:1px solid #dfe8e5;
+                    border-radius:10px;
+                    padding:16px;
+                    margin-bottom:12px;
+                    background:#ffffff;
+                `;
+ 
+ 
+                /*
+                 * ---------------------------------
+                 * HEADER
+                 * ---------------------------------
+                 */
+ 
+                const title =
+                    document.createElement(
+                        'div'
+                    );
+ 
+ 
+                title.style.cssText = `
+                    font-weight:600;
+                    font-size:15px;
+                    margin-bottom:8px;
+                `;
+ 
+ 
+                title.textContent =
+                    recording.number ||
+                    'ServiceCall Recording';
+ 
+ 
+                card.appendChild(
+                    title
+                );
+ 
+ 
+                /*
+                 * ---------------------------------
+                 * DETAILS
+                 * ---------------------------------
+                 */
+ 
+                const details =
+                    document.createElement(
+                        'div'
+                    );
+ 
+ 
+                details.style.cssText = `
+                    font-size:13px;
+                    line-height:1.7;
+                    color:#52635f;
+                `;
+ 
+ 
+                const participants =
+                    Array.isArray(
+                        recording.participants
+                    )
+                        ? recording.participants
+                            .join(', ')
+                        : '';
+ 
+ 
+                details.textContent =
+                    'Call: ' +
+                    (
+                        recording.call_number ||
+                        '-'
+                    ) +
+                    '\n' +
+ 
+                    'Participants: ' +
+                    (
+                        participants ||
+                        '-'
+                    ) +
+                    '\n' +
+ 
+                    'Status: ' +
+                    (
+                        recording.status ||
+                        '-'
+                    ) +
+                    '\n' +
+ 
+                    'Format: ' +
+                    (
+                        recording.format ||
+                        '-'
+                    ) +
+                    '\n' +
+ 
+                    'Started: ' +
+                    (
+                        recording.started_at ||
+                        '-'
+                    );
+ 
+ 
+                details.style.whiteSpace =
+                    'pre-line';
+ 
+ 
+                card.appendChild(
+                    details
+                );
+ 
+ 
+                /*
+                 * ---------------------------------
+                 * AVAILABLE → DOWNLOAD
+                 * ---------------------------------
+                 */
+ 
+                if (
+                    recording.status ===
+                    'available'
+                ) {
+ 
+                    const downloadButton =
+                        document.createElement(
+                            'button'
+                        );
+ 
+ 
+                    downloadButton.type =
+                        'button';
+ 
+ 
+                    downloadButton.className =
+                        'button';
+ 
+ 
+                    downloadButton.textContent =
+                        'Download';
+ 
+ 
+                    downloadButton.style.marginTop =
+                        '12px';
+ 
+ 
+                    downloadButton.addEventListener(
+                        'click',
+ 
+                        async () => {
+ 
+                            downloadButton.disabled =
+                                true;
+ 
+ 
+                            downloadButton.textContent =
+                                'Downloading...';
+ 
+ 
+                            try {
+ 
+                                const downloadResult =
+                                    await window
+                                        .serviceCall
+                                        .downloadRecording(
+                                            recording
+                                                .recording_sys_id
+                                        );
+ 
+ 
+                                if (
+                                    downloadResult &&
+                                    downloadResult.success
+                                ) {
+ 
+                                    recordingsMessage
+                                        .textContent =
+                                        'Recording downloaded successfully.';
+ 
+                                } else if (
+                                    downloadResult &&
+                                    downloadResult.code ===
+                                        'DOWNLOAD_CANCELLED'
+                                ) {
+ 
+                                    recordingsMessage
+                                        .textContent =
+                                        'Download cancelled.';
+ 
+                                } else {
+ 
+                                    recordingsMessage
+                                        .textContent =
+                                        downloadResult &&
+                                        downloadResult.message
+                                            ? downloadResult.message
+                                            : 'Unable to download recording.';
+                                }
+ 
+ 
+                            } catch (error) {
+ 
+                                recordingsMessage
+                                    .textContent =
+                                    error.message ||
+                                    'Unable to download recording.';
+ 
+                            } finally {
+ 
+                                downloadButton.disabled =
+                                    false;
+ 
+ 
+                                downloadButton.textContent =
+                                    'Download';
+                            }
+                        }
+                    );
+ 
+ 
+                    card.appendChild(
+                        downloadButton
+                    );
+                }
+ 
+ 
+                /*
+                 * ---------------------------------
+                 * PROCESSING
+                 * ---------------------------------
+                 */
+ 
+                if (
+                    recording.status ===
+                    'processing'
+                ) {
+ 
+                    const state =
+                        document.createElement(
+                            'div'
+                        );
+ 
+ 
+                    state.style.cssText = `
+                        margin-top:12px;
+                        font-size:13px;
+                        color:#667773;
+                    `;
+ 
+ 
+                    state.textContent =
+                        'Recording is being processed...';
+ 
+ 
+                    card.appendChild(
+                        state
+                    );
+                }
+ 
+ 
+                /*
+                 * ---------------------------------
+                 * EXPIRED
+                 * ---------------------------------
+                 */
+ 
+                if (
+                    recording.status ===
+                    'expired'
+                ) {
+ 
+                    const state =
+                        document.createElement(
+                            'div'
+                        );
+ 
+ 
+                    state.style.cssText = `
+                        margin-top:12px;
+                        font-size:13px;
+                        color:#667773;
+                    `;
+ 
+ 
+                    state.textContent =
+                        'Recording expired';
+ 
+ 
+                    card.appendChild(
+                        state
+                    );
+                }
+ 
+ 
+                recordingsList.appendChild(
+                    card
+                );
+            }
+        );
+ 
+ 
+    } catch (error) {
+ 
+        console.error(
+            'Unable to load recording history:',
+            error
+        );
+ 
+ 
+        recordingsMessage.textContent =
+            error.message ||
+            'Unable to load recordings.';
+    }
+}
+ 
+ 
+if (
+    refreshRecordingsButton
+) {
+ 
+    refreshRecordingsButton.addEventListener(
+        'click',
+        loadRecordingHistory
+    );
+}
+
+function updatePresenceDisplay(
+    status
+) {
+
+    const normalized =
+        String(
+            status || 'available'
+        )
+            .trim()
+            .toLowerCase();
+
+
+    let label =
+        'Available';
+
+    let cssClass =
+        'available';
+
+
+    if (
+        normalized === 'busy'
+    ) {
+
+        label = 'Busy';
+        cssClass = 'busy';
+
+    } else if (
+        normalized === 'away'
+    ) {
+
+        label = 'Away';
+        cssClass = 'away';
+
+    } else if (
+        normalized === 'out of office'
+    ) {
+
+        label = 'Out of Office';
+        cssClass = 'out-of-office';
+
+    } else if (
+        normalized === 'in call'
+    ) {
+
+        label = 'In a Call';
+        cssClass = 'in-call';
+
+    } else if (
+        normalized === 'offline'
+    ) {
+
+        label = 'Offline';
+        cssClass = 'offline';
+    }
+
+
+    if (
+        presenceText
+    ) {
+
+        presenceText.textContent =
+            label;
+    }
+
+
+    if (
+        presenceDot
+    ) {
+
+        presenceDot.className =
+            'presence-dot ' +
+            cssClass;
+    }
+}
+
+async function loadMyPresence() {
+
+    try {
+
+        const result =
+            await window.serviceCall
+                .getMyPresence();
+
+
+        if (
+            !result ||
+            result.success !== true
+        ) {
+
+            console.warn(
+                'Unable to load presence:',
+                result
+            );
+
+            return;
+        }
+
+
         /*
-         * Final Agora cleanup.
+         * Display the effective status.
          *
-         * Do not await here because the renderer
-         * is already being destroyed.
-         *
-         * Agora leave() performs the remaining
-         * media cleanup.
+         * This respects:
+         * Offline → In Call → Ringing →
+         * user-selected presence.
          */
- 
-        stopAgoraAudio();
+        updatePresenceDisplay(
+            result.effective_status ||
+            result.presence_status ||
+            'available'
+        );
+
+
+        /*
+         * Keep the saved OOF reason ready
+         * for editing/reuse.
+         */
+        if (
+            oofReasonInput
+        ) {
+
+            oofReasonInput.value =
+                result.oof_reason || '';
+        }
+
+
+        console.log(
+            'ServiceCall presence loaded:',
+            result
+        );
+
+    } catch (error) {
+
+        console.error(
+            'Unable to load ServiceCall presence:',
+            error
+        );
+    }
+}
+
+/* =====================================================
+   PRESENCE MENU
+===================================================== */
+
+if (
+    presenceButton &&
+    presenceMenu
+) {
+
+    presenceButton.addEventListener(
+        'click',
+        event => {
+
+            event.stopPropagation();
+
+            const isOpen =
+                presenceMenu.style.display ===
+                'block';
+
+
+            presenceMenu.style.display =
+                isOpen
+                    ? 'none'
+                    : 'block';
+        }
+    );
+}
+
+
+/*
+ * Available / Busy / Away / OOF
+ */
+
+presenceOptions.forEach(
+    option => {
+
+        option.addEventListener(
+            'click',
+
+            async event => {
+
+                event.stopPropagation();
+
+
+                const status =
+                    String(
+                        option.dataset.presence ||
+                        ''
+                    )
+                        .trim()
+                        .toLowerCase();
+
+
+                if (!status) {
+                    return;
+                }
+
+
+                /*
+                 * OOF needs a reason before
+                 * being saved.
+                 */
+
+                if (
+                    status ===
+                    'out of office'
+                ) {
+
+                    if (
+                        oofReasonPanel
+                    ) {
+
+                        oofReasonPanel.style.display =
+                            'block';
+                    }
+
+
+                    if (
+                        oofReasonInput
+                    ) {
+
+                        oofReasonInput.focus();
+                    }
+
+
+                    return;
+                }
+
+
+                /*
+                 * Available / Busy / Away
+                 */
+
+                try {
+
+                    const result =
+                        await window.serviceCall
+                            .updatePresence(
+                                status,
+                                ''
+                            );
+
+
+                    if (
+                        !result ||
+                        result.success !== true
+                    ) {
+
+                        throw new Error(
+                            result &&
+                            result.message
+                                ? result.message
+                                : 'Unable to update presence.'
+                        );
+                    }
+
+
+                    updatePresenceDisplay(
+                        result.effective_status ||
+                        status
+                    );
+
+
+                    if (
+                        oofReasonPanel
+                    ) {
+
+                        oofReasonPanel.style.display =
+                            'none';
+                    }
+
+
+                    if (
+                        presenceMenu
+                    ) {
+
+                        presenceMenu.style.display =
+                            'none';
+                    }
+
+
+                } catch (error) {
+
+                    console.error(
+                        'Unable to update presence:',
+                        error
+                    );
+                }
+            }
+        );
     }
 );
- 
+
+/* =====================================================
+   OUT OF OFFICE
+===================================================== */
+
+if (
+    saveOofButton
+) {
+
+    saveOofButton.addEventListener(
+        'click',
+
+        async event => {
+
+            event.stopPropagation();
+
+
+            const reason =
+                String(
+                    oofReasonInput
+                        ? oofReasonInput.value
+                        : ''
+                ).trim();
+
+
+            if (!reason) {
+
+                if (
+                    oofReasonInput
+                ) {
+
+                    oofReasonInput.focus();
+                }
+
+                return;
+            }
+
+
+            try {
+
+                const result =
+                    await window.serviceCall
+                        .updatePresence(
+                            'out of office',
+                            reason
+                        );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    throw new Error(
+                        result &&
+                        result.message
+                            ? result.message
+                            : 'Unable to update Out of Office.'
+                    );
+                }
+
+
+                updatePresenceDisplay(
+                    result.effective_status ||
+                    'out of office'
+                );
+
+
+                if (
+                    oofReasonPanel
+                ) {
+
+                    oofReasonPanel.style.display =
+                        'none';
+                }
+
+
+                if (
+                    presenceMenu
+                ) {
+
+                    presenceMenu.style.display =
+                        'none';
+                }
+
+
+            } catch (error) {
+
+                console.error(
+                    'Unable to update Out of Office:',
+                    error
+                );
+            }
+        }
+    );
+}
+
+if (
+    cancelOofButton
+) {
+
+    cancelOofButton.addEventListener(
+        'click',
+        event => {
+
+            event.stopPropagation();
+
+
+            if (
+                oofReasonPanel
+            ) {
+
+                oofReasonPanel.style.display =
+                    'none';
+            }
+
+        }
+    );
+}
+
+document.addEventListener(
+    'click',
+    event => {
+
+        if (
+            presenceMenu &&
+            presenceButton &&
+            !presenceMenu.contains(
+                event.target
+            ) &&
+            !presenceButton.contains(
+                event.target
+            )
+        ) {
+
+            presenceMenu.style.display =
+                'none';
+
+
+            if (
+                oofReasonPanel
+            ) {
+
+                oofReasonPanel.style.display =
+                    'none';
+            }
+        }
+    }
+);
+
+if (resetPresenceButton) {
+
+    resetPresenceButton.addEventListener(
+        'click',
+        async () => {
+
+            try {
+
+                resetPresenceButton.disabled = true;
+
+                const result =
+                    await window.serviceCall
+                        .updatePresence(
+                            'available',
+                            ''
+                        );
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    console.error(
+                        'Unable to reset presence:',
+                        result
+                    );
+
+                    return;
+                }
+
+
+                updatePresenceDisplay(
+                    result.effective_status ||
+                    result.presence_status ||
+                    'available'
+                );
+
+
+                if (oofReasonPanel) {
+                    oofReasonPanel.style.display =
+                        'none';
+                }
+
+
+                if (presenceMenu) {
+                    presenceMenu.style.display =
+                        'none';
+                }
+
+
+                console.log(
+                    'ServiceCall presence reset:',
+                    result
+                );
+
+            } catch (error) {
+
+                console.error(
+                    'Unable to reset ServiceCall presence:',
+                    error
+                );
+
+            } finally {
+
+                resetPresenceButton.disabled =
+                    false;
+            }
+        }
+    );
+}
+
+async function loadCurrentAccount() {
+
+    const nameElement =
+        document.getElementById(
+            'currentAccountName'
+        );
+
+    const usernameElement =
+        document.getElementById(
+            'currentAccountUsername'
+        );
+
+    const serviceCallIdElement =
+        document.getElementById(
+            'currentAccountServiceCallId'
+        );
+
+    const accountMessage =
+        document.getElementById(
+            'accountMessage'
+        );
+
+
+    try {
+
+        const result =
+            await window.serviceCall
+                .getCurrentAccount();
+
+
+        console.log(
+            'Current ServiceCall account:',
+            result
+        );
+
+
+        if (
+            !result?.success ||
+            !result?.user
+        ) {
+
+            throw new Error(
+                'Current ServiceCall account could not be loaded.'
+            );
+        }
+
+
+        const user =
+            result.user;
+
+        const authorization =
+            result.authorization || {};
+
+
+        /*
+         * NAME
+         */
+
+        if (nameElement) {
+
+            nameElement.textContent =
+                user.name ||
+                'ServiceCall User';
+        }
+
+
+        /*
+         * USERNAME
+         */
+
+        if (usernameElement) {
+
+            usernameElement.textContent =
+                user.user_name
+                    ? `@${user.user_name}`
+                    : '';
+        }
+
+
+        /*
+         * SERVICECALL ID
+         */
+
+        if (serviceCallIdElement) {
+
+            serviceCallIdElement.textContent =
+                user.servicecall_id
+                    ? `ServiceCall ID: ${user.servicecall_id}`
+                    : '';
+        }
+
+
+        /*
+         * ACCESS LEVEL
+         */
+
+        if (accountMessage) {
+
+            if (
+                authorization
+                    .is_servicecall_admin ===
+                true
+            ) {
+
+                accountMessage.textContent =
+                    'ServiceCall Administrator';
+            }
+
+            else {
+
+                accountMessage.textContent =
+                    'ServiceCall User';
+            }
+        }
+
+    }
+    catch (error) {
+
+        console.error(
+            'Failed to load current account:',
+            error
+        );
+
+
+        if (accountMessage) {
+
+            accountMessage.textContent =
+                'Unable to load account information.';
+        }
+    }
+}
+
+
+/* =====================================================
+   SIGN OUT
+===================================================== */
+
+if (signOutButton) {
+
+    signOutButton.addEventListener(
+        'click',
+        async () => {
+
+            /*
+             * Prevent duplicate sign-out requests.
+             */
+            signOutButton.disabled =
+                true;
+
+            const originalText =
+                signOutButton.textContent;
+
+            signOutButton.textContent =
+                'Signing out...';
+
+
+            const signOutMessage =
+    document.getElementById(
+        'accountMessage'
+    );
+
+
+            try {
+
+                const result =
+                    await window.serviceCall
+                        .signOut();
+
+
+                console.log(
+                    'ServiceCall sign out result:',
+                    result
+                );
+
+
+                if (
+                    !result ||
+                    result.success !== true
+                ) {
+
+                    throw new Error(
+                        result?.message ||
+                        'Unable to sign out.'
+                    );
+                }
+
+
+                /*
+                 * main.js owns navigation.
+                 *
+                 * It will load:
+                 *
+                 * auth/auth-gate.html
+                 *
+                 * after the current runtime
+                 * session has been stopped.
+                 */
+
+            } catch (error) {
+
+                console.error(
+                    'ServiceCall sign out failed:',
+                    error
+                );
+
+
+                if (accountMessage) {
+
+                    accountMessage.textContent =
+                        error?.message ||
+                        'Unable to sign out.';
+                }
+
+
+                signOutButton.disabled =
+                    false;
+
+                signOutButton.textContent =
+                    originalText;
+            }
+        }
+    );
+}
+
+await loadCurrentAccount();
+});
