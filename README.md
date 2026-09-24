@@ -4222,6 +4222,10 @@
 
                             </div>
 
+                            <!-- SAVED CHAT CONVERSATIONS -->
+
+                            <div id="chatConversationList" class="chat-conversation-list"></div>
+
 
                             <div class="chat-conversations-header">
 
