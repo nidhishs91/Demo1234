@@ -7303,6 +7303,19 @@ document.addEventListener("DOMContentLoaded", async () => {
         const searchedUserSysId = String(user.sys_id || "").trim();
 
         /*
+         * Close and reset the people-search dropdown
+         * as soon as a user is selected.
+         */
+        if (chatPeopleSearchInput) {
+          chatPeopleSearchInput.value = "";
+        }
+
+        if (chatPeopleSearchResults) {
+          chatPeopleSearchResults.innerHTML = "";
+          chatPeopleSearchResults.style.display = "none";
+        }
+
+        /*
          * Check whether we already have a real
          * direct conversation with this user.
          */
@@ -7320,9 +7333,22 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (existingConversation) {
           await openChatConversation(existingConversation);
 
+          /*
+           * Close people-search dropdown
+           * after the conversation opens.
+           */
+          if (chatPeopleSearchInput) {
+            chatPeopleSearchInput.value = "";
+            chatPeopleSearchInput.blur();
+          }
+
+          if (chatPeopleSearchResults) {
+            chatPeopleSearchResults.innerHTML = "";
+            chatPeopleSearchResults.style.display = "none";
+          }
+
           return;
         }
-
         /*
          * No real conversation exists yet.
          * Open the local temporary chat.
@@ -7717,7 +7743,36 @@ document.addEventListener("DOMContentLoaded", async () => {
                 row.addEventListener(
                   "click",
 
-                  () => {
+                  async () => {
+                    const searchedUserSysId = String(user.sys_id || "").trim();
+
+                    /*
+                     * Check whether a real direct conversation
+                     * already exists with this exact user.
+                     */
+                    const existingConversation = loadedChatConversations.find(
+                      (conversation) =>
+                        conversation.type === "direct" &&
+                        String(conversation.other_user_sys_id || "").trim() ===
+                          searchedUserSysId,
+                    );
+
+                    /*
+                     * Existing conversation found:
+                     * open that exact chat.
+                     *
+                     * Do NOT create a temporary conversation.
+                     */
+                    if (existingConversation) {
+                      await openChatConversation(existingConversation);
+
+                      return;
+                    }
+
+                    /*
+                     * No existing conversation:
+                     * this is genuinely a new chat.
+                     */
                     openTemporaryChat(user);
                   },
                 );
