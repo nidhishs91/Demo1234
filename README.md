@@ -198,6 +198,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const meetingStatusFilter = document.getElementById("meetingStatusFilter");
 
+  let loadedChatConversations = [];
+
   /* -------------------------------------------------
    NOTIFICATION ELEMENTS
 ------------------------------------------------- */
@@ -4674,6 +4676,21 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    /*
+     * Remove any unsent temporary direct chat
+     * before opening a persisted conversation.
+     *
+     * A temporary row exists only locally and
+     * has no ServiceNow conversation sys_id.
+     */
+    if (chatConversationList) {
+      chatConversationList
+        .querySelectorAll('button[data-temporary-chat="true"]')
+        .forEach((row) => {
+          row.remove();
+        });
+    }
+
     activeChatConversation = conversation;
 
     /*
@@ -6806,6 +6823,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? result.conversations
         : [];
 
+      /*
+       * Keep the latest authoritative conversation
+       * list in renderer memory.
+       *
+       * Search-result clicks can use this to detect
+       * whether a real direct conversation already
+       * exists for that user.
+       */
+      loadedChatConversations = conversations;
+
       chatConversationList.innerHTML = "";
 
       if (conversations.length === 0) {
@@ -7269,9 +7296,40 @@ document.addEventListener("DOMContentLoaded", async () => {
      * Clicking the temporary sidebar row
      * simply reopens the same local chat.
      */
-    row.addEventListener("click", () => {
-      openTemporaryChat(user);
-    });
+    row.addEventListener(
+      "click",
+
+      async () => {
+        const searchedUserSysId = String(user.sys_id || "").trim();
+
+        /*
+         * Check whether we already have a real
+         * direct conversation with this user.
+         */
+        const existingConversation = loadedChatConversations.find(
+          (conversation) =>
+            conversation.type === "direct" &&
+            String(conversation.other_user_sys_id || "").trim() ===
+              searchedUserSysId,
+        );
+
+        /*
+         * Existing real conversation:
+         * open it instead of creating a temporary row.
+         */
+        if (existingConversation) {
+          await openChatConversation(existingConversation);
+
+          return;
+        }
+
+        /*
+         * No real conversation exists yet.
+         * Open the local temporary chat.
+         */
+        openTemporaryChat(user);
+      },
+    );
 
     row.addEventListener("mouseenter", () => {
       row.style.background = "#f5faf8";
