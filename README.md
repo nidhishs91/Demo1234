@@ -104,6 +104,44 @@ document.addEventListener("DOMContentLoaded", async () => {
     "chatGroupDetailsMembers",
   );
 
+  /* -------------------------------------------------
+   GROUP DETAILS - ADD PEOPLE
+------------------------------------------------- */
+
+  const chatGroupAddPeopleButton = document.getElementById(
+    "chatGroupAddPeopleButton",
+  );
+
+  const chatGroupAddPeoplePanel = document.getElementById(
+    "chatGroupAddPeoplePanel",
+  );
+
+  const chatGroupAddPeopleSearch = document.getElementById(
+    "chatGroupAddPeopleSearch",
+  );
+
+  const chatGroupAddPeopleResults = document.getElementById(
+    "chatGroupAddPeopleResults",
+  );
+
+  const chatGroupAddPeopleMessage = document.getElementById(
+    "chatGroupAddPeopleMessage",
+  );
+
+  const chatGroupAddPeopleCancelButton = document.getElementById(
+    "chatGroupAddPeopleCancelButton",
+  );
+
+  const chatGroupAddPeopleSaveButton = document.getElementById(
+    "chatGroupAddPeopleSaveButton",
+  );
+
+  let chatGroupAddPeopleSearchTimer = null;
+
+  const chatGroupAddPeopleSelectedUsers = new Map();
+
+  let currentChatGroupDetails = null;
+
   let chatPeopleSearchTimer = null;
 
   let activeChatUser = null;
@@ -3016,6 +3054,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         );
       }
 
+      currentChatGroupDetails = result;
+
       /*
        * User may have switched conversations
        * while the request was running.
@@ -3029,13 +3069,33 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       /* =========================================
-           GROUP NAME
-        ========================================= */
+   ADD PEOPLE PERMISSION
+========================================= */
+
+      if (chatGroupAddPeopleButton) {
+        const currentMember = result.current_member || {};
+
+        const currentRole = String(currentMember.role || "")
+          .trim()
+          .toLowerCase();
+
+        /*
+         * UI visibility is convenience only.
+         *
+         * ServiceNow remains the real authority.
+         */
+        const canAddPeople = currentRole === "owner";
+
+        chatGroupAddPeopleButton.style.display = canAddPeople ? "" : "none";
+      }
+
+      /* =========================================
+     GROUP NAME
+========================================= */
 
       if (chatGroupDetailsName && result.group) {
         chatGroupDetailsName.textContent = result.group.title || groupName;
       }
-
       /* =========================================
            MEMBERS
         ========================================= */
@@ -3160,6 +3220,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         memberList.innerHTML = "";
 
+        /* =========================================
+     FILTER MEMBERS
+  ========================================= */
+
         const filteredMembers = members.filter((member) => {
           if (!query) {
             return true;
@@ -3178,9 +3242,9 @@ document.addEventListener("DOMContentLoaded", async () => {
           );
         });
 
-        /* =====================================
-               NO SEARCH RESULTS
-            ===================================== */
+        /* =========================================
+     NO SEARCH RESULTS
+  ========================================= */
 
         if (filteredMembers.length === 0) {
           const noResults = document.createElement("div");
@@ -3198,9 +3262,23 @@ document.addEventListener("DOMContentLoaded", async () => {
           return;
         }
 
-        /* =====================================
-               MEMBER ROWS
-            ===================================== */
+        /* =========================================
+     CURRENT USER ROLE
+  ========================================= */
+
+        const currentMemberRole = String(
+          result.current_member && result.current_member.role
+            ? result.current_member.role
+            : "",
+        )
+          .trim()
+          .toLowerCase();
+
+        const currentUserIsOwner = currentMemberRole === "owner";
+
+        /* =========================================
+     MEMBER ROWS
+  ========================================= */
 
         filteredMembers.forEach((member) => {
           const row = document.createElement("div");
@@ -3217,9 +3295,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
           row.style.borderBottom = "1px solid rgba(0, 0, 0, 0.06)";
 
-          /* -------------------------
-                       LEFT SIDE
-                    ------------------------- */
+          /* =====================================
+         LEFT SIDE
+      ===================================== */
 
           const person = document.createElement("div");
 
@@ -3228,8 +3306,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           person.style.flex = "1";
 
           /* -------------------------
-                       NAME
-                    ------------------------- */
+         NAME
+      ------------------------- */
 
           const name = document.createElement("div");
 
@@ -3252,8 +3330,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           person.appendChild(name);
 
           /* -------------------------
-                       USERNAME
-                    ------------------------- */
+         USERNAME
+      ------------------------- */
 
           if (member.user_name) {
             const username = document.createElement("div");
@@ -3276,8 +3354,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           }
 
           /* -------------------------
-                       EMAIL
-                    ------------------------- */
+         EMAIL
+      ------------------------- */
 
           if (member.email) {
             const email = document.createElement("div");
@@ -3299,9 +3377,43 @@ document.addEventListener("DOMContentLoaded", async () => {
             person.appendChild(email);
           }
 
-          /* -------------------------
-                       ROLE
-                    ------------------------- */
+          /* =====================================
+         RIGHT SIDE
+      ===================================== */
+
+          const rightSide = document.createElement("div");
+
+          rightSide.style.display = "flex";
+
+          rightSide.style.alignItems = "center";
+
+          rightSide.style.gap = "8px";
+
+          rightSide.style.flexShrink = "0";
+
+          /* =====================================
+         MEMBER ROLE
+      ===================================== */
+
+          const rawMemberRole = String(member.role || "member")
+            .trim()
+            .toLowerCase();
+
+          /*
+           * New group model:
+           *
+           * Owner
+           * Member
+           *
+           * Legacy "admin" records are
+           * temporarily displayed as Member.
+           */
+
+          const memberRole = rawMemberRole === "owner" ? "owner" : "member";
+
+          /* =====================================
+         ROLE LABEL
+      ===================================== */
 
           const role = document.createElement("div");
 
@@ -3311,21 +3423,225 @@ document.addEventListener("DOMContentLoaded", async () => {
 
           role.style.whiteSpace = "nowrap";
 
-          role.style.flexShrink = "0";
+          role.textContent = memberRole === "owner" ? "Owner" : "Member";
 
-          const memberRole = String(member.role || "member");
+          rightSide.appendChild(role);
 
-          if (memberRole === "owner") {
-            role.textContent = "Owner";
-          } else if (memberRole === "admin") {
-            role.textContent = "Admin";
-          } else {
-            role.textContent = "Member";
+          /* =====================================
+         OWNER MANAGEMENT
+      ===================================== */
+
+          /*
+           * Only Owners receive management
+           * controls.
+           *
+           * Never show management controls
+           * against yourself.
+           */
+
+          if (currentUserIsOwner && !member.is_me) {
+            const targetUserSysId = String(member.user_sys_id || "").trim();
+
+            /* =================================
+           ROLE BUTTON
+        ================================= */
+
+            const newRole = memberRole === "owner" ? "member" : "owner";
+
+            const roleButton = document.createElement("button");
+
+            roleButton.type = "button";
+
+            roleButton.style.fontSize = "11px";
+
+            roleButton.style.padding = "5px 8px";
+
+            roleButton.style.borderRadius = "7px";
+
+            roleButton.style.cursor = "pointer";
+
+            roleButton.textContent =
+              memberRole === "owner" ? "Make Member" : "Make Owner";
+
+            roleButton.addEventListener("click", async () => {
+              if (roleButton.disabled) {
+                return;
+              }
+
+              if (!targetUserSysId) {
+                console.error("Missing member user sys_id.", member);
+
+                return;
+              }
+
+              /*
+               * Lock BOTH actions while
+               * this member is being changed.
+               */
+
+              roleButton.disabled = true;
+
+              removeButton.disabled = true;
+
+              roleButton.textContent =
+                newRole === "owner" ? "Making Owner..." : "Making Member...";
+
+              try {
+                const changeResult =
+                  await window.serviceCall.setGroupMemberRole(
+                    conversationSysId,
+                    targetUserSysId,
+                    newRole,
+                  );
+
+                if (!changeResult || changeResult.success !== true) {
+                  throw new Error(
+                    changeResult && changeResult.message
+                      ? changeResult.message
+                      : "Unable to change member role.",
+                  );
+                }
+
+                /* -------------------------
+                 STALE GROUP GUARD
+              ------------------------- */
+
+                if (
+                  !activeChatConversation ||
+                  String(activeChatConversation.sys_id) !== conversationSysId
+                ) {
+                  return;
+                }
+
+                /* -------------------------
+                 REFRESH DETAILS
+              ------------------------- */
+
+                await openChatGroupDetails();
+              } catch (error) {
+                console.error("Unable to change group member role:", error);
+
+                roleButton.disabled = false;
+
+                removeButton.disabled = false;
+
+                roleButton.textContent =
+                  memberRole === "owner" ? "Make Member" : "Make Owner";
+              }
+            });
+
+            /* =================================
+           REMOVE BUTTON
+        ================================= */
+
+            const removeButton = document.createElement("button");
+
+            removeButton.type = "button";
+
+            removeButton.style.fontSize = "11px";
+
+            removeButton.style.padding = "5px 8px";
+
+            removeButton.style.borderRadius = "7px";
+
+            removeButton.style.cursor = "pointer";
+
+            removeButton.textContent = "Remove";
+
+            removeButton.addEventListener("click", async () => {
+              if (removeButton.disabled) {
+                return;
+              }
+
+              if (!targetUserSysId) {
+                console.error("Missing member user sys_id.", member);
+
+                return;
+              }
+
+              /*
+               * We deliberately do not use
+               * window.confirm() here.
+               *
+               * Electron confirmation UX can
+               * be added later with our own
+               * modal during UI polish.
+               */
+
+              /* -------------------------
+               LOCK ACTIONS
+            ------------------------- */
+
+              removeButton.disabled = true;
+
+              roleButton.disabled = true;
+
+              removeButton.textContent = "Removing...";
+
+              try {
+                const removeResult = await window.serviceCall.removeGroupMember(
+                  conversationSysId,
+                  targetUserSysId,
+                );
+
+                if (!removeResult || removeResult.success !== true) {
+                  throw new Error(
+                    removeResult && removeResult.message
+                      ? removeResult.message
+                      : "Unable to remove group member.",
+                  );
+                }
+
+                /* -------------------------
+                 STALE GROUP GUARD
+              ------------------------- */
+
+                if (
+                  !activeChatConversation ||
+                  String(activeChatConversation.sys_id) !== conversationSysId
+                ) {
+                  return;
+                }
+
+                /* -------------------------
+                 REFRESH GROUP DETAILS
+              ------------------------- */
+
+                await openChatGroupDetails();
+
+                /*
+                 * The existing chat sync will
+                 * retrieve the system message:
+                 *
+                 * "X removed Y from the group."
+                 */
+              } catch (error) {
+                console.error("Unable to remove group member:", error);
+
+                removeButton.disabled = false;
+
+                roleButton.disabled = false;
+
+                removeButton.textContent = "Remove";
+              }
+            });
+
+            /* =================================
+           ADD OWNER CONTROLS
+        ================================= */
+
+            rightSide.appendChild(roleButton);
+
+            rightSide.appendChild(removeButton);
           }
+
+          /* =====================================
+         ADD ROW
+      ===================================== */
 
           row.appendChild(person);
 
-          row.appendChild(role);
+          row.appendChild(rightSide);
 
           memberList.appendChild(row);
         });
@@ -3369,6 +3685,437 @@ document.addEventListener("DOMContentLoaded", async () => {
     chatGroupDetailsModal.style.display = "none";
 
     chatGroupDetailsModal.setAttribute("aria-hidden", "true");
+  }
+
+  /* =======================================================
+   GROUP DETAILS - ADD PEOPLE PANEL
+======================================================= */
+
+  function resetChatGroupAddPeople() {
+    chatGroupAddPeopleSelectedUsers.clear();
+
+    if (chatGroupAddPeopleSearch) {
+      chatGroupAddPeopleSearch.value = "";
+    }
+
+    if (chatGroupAddPeopleResults) {
+      chatGroupAddPeopleResults.innerHTML = "";
+    }
+
+    if (chatGroupAddPeopleMessage) {
+      chatGroupAddPeopleMessage.textContent = "";
+    }
+
+    if (chatGroupAddPeopleSaveButton) {
+      chatGroupAddPeopleSaveButton.disabled = true;
+
+      chatGroupAddPeopleSaveButton.textContent = "Add Selected";
+    }
+  }
+
+  function openChatGroupAddPeople() {
+    if (
+      !activeChatConversation ||
+      activeChatConversation.type !== "group" ||
+      !activeChatConversation.sys_id ||
+      !currentChatGroupDetails
+    ) {
+      return;
+    }
+
+    resetChatGroupAddPeople();
+
+    if (chatGroupAddPeoplePanel) {
+      chatGroupAddPeoplePanel.style.display = "block";
+    }
+
+    if (chatGroupAddPeopleSearch) {
+      setTimeout(() => {
+        chatGroupAddPeopleSearch.focus();
+      }, 0);
+    }
+  }
+
+  function closeChatGroupAddPeople() {
+    if (chatGroupAddPeoplePanel) {
+      chatGroupAddPeoplePanel.style.display = "none";
+    }
+
+    resetChatGroupAddPeople();
+  }
+
+  /* =========================================
+   ADD PEOPLE - OPEN
+========================================= */
+
+  if (chatGroupAddPeopleButton) {
+    chatGroupAddPeopleButton.addEventListener("click", () => {
+      openChatGroupAddPeople();
+    });
+  }
+
+  /* =========================================
+   ADD PEOPLE - CANCEL
+========================================= */
+
+  if (chatGroupAddPeopleCancelButton) {
+    chatGroupAddPeopleCancelButton.addEventListener("click", () => {
+      closeChatGroupAddPeople();
+    });
+  }
+
+  function renderChatGroupAddPeopleResults(users) {
+    if (!chatGroupAddPeopleResults) {
+      return;
+    }
+
+    chatGroupAddPeopleResults.innerHTML = "";
+
+    const safeUsers = Array.isArray(users) ? users : [];
+
+    safeUsers.forEach((user) => {
+      const userSysId = String(user.sys_id || "").trim();
+
+      if (!userSysId) {
+        return;
+      }
+
+      const row = document.createElement("div");
+
+      row.style.display = "flex";
+
+      row.style.alignItems = "center";
+
+      row.style.gap = "10px";
+
+      row.style.padding = "9px 2px";
+
+      row.style.cursor = "pointer";
+
+      row.style.borderBottom = "1px solid rgba(0,0,0,0.06)";
+
+      /* -------------------------
+       CHECKBOX
+    ------------------------- */
+
+      const checkbox = document.createElement("input");
+
+      checkbox.type = "checkbox";
+
+      checkbox.checked = chatGroupAddPeopleSelectedUsers.has(userSysId);
+
+      /* -------------------------
+       PERSON
+    ------------------------- */
+
+      const person = document.createElement("div");
+
+      person.style.flex = "1";
+
+      person.style.minWidth = "0";
+
+      const name = document.createElement("div");
+
+      name.style.fontSize = "13px";
+
+      name.style.fontWeight = "600";
+
+      name.textContent = user.name || user.user_name || "Unknown User";
+
+      person.appendChild(name);
+
+      if (user.user_name) {
+        const username = document.createElement("div");
+
+        username.style.fontSize = "11px";
+
+        username.style.color = "#71827d";
+
+        username.style.marginTop = "2px";
+
+        username.textContent = "@" + user.user_name;
+
+        person.appendChild(username);
+      }
+
+      /* -------------------------
+       SELECTION
+    ------------------------- */
+
+      function updateSelection(selected) {
+        checkbox.checked = selected;
+
+        if (selected) {
+          chatGroupAddPeopleSelectedUsers.set(userSysId, user);
+        } else {
+          chatGroupAddPeopleSelectedUsers.delete(userSysId);
+        }
+
+        if (chatGroupAddPeopleSaveButton) {
+          const count = chatGroupAddPeopleSelectedUsers.size;
+
+          chatGroupAddPeopleSaveButton.disabled = count === 0;
+
+          chatGroupAddPeopleSaveButton.textContent =
+            count > 0 ? "Add Selected (" + count + ")" : "Add Selected";
+        }
+      }
+
+      /*
+       * Row click.
+       */
+      row.addEventListener("click", (event) => {
+        /*
+         * Checkbox has its own change event.
+         * Don't toggle twice.
+         */
+        if (event.target === checkbox) {
+          return;
+        }
+
+        updateSelection(!checkbox.checked);
+      });
+
+      /*
+       * Checkbox click/change.
+       *
+       * This explicitly fixes the checkbox
+       * problem we saw in Create Group where
+       * row clicks worked but the checkbox
+       * itself could behave inconsistently.
+       */
+      checkbox.addEventListener("change", () => {
+        updateSelection(checkbox.checked);
+      });
+
+      row.appendChild(checkbox);
+
+      row.appendChild(person);
+
+      chatGroupAddPeopleResults.appendChild(row);
+    });
+  }
+
+  /* =======================================================
+   GROUP DETAILS - ADD SELECTED PEOPLE
+======================================================= */
+
+  if (chatGroupAddPeopleSaveButton) {
+    chatGroupAddPeopleSaveButton.addEventListener("click", async () => {
+      /* -----------------------------------------
+         VALIDATE ACTIVE GROUP
+      ----------------------------------------- */
+
+      if (
+        !activeChatConversation ||
+        activeChatConversation.type !== "group" ||
+        !activeChatConversation.sys_id
+      ) {
+        return;
+      }
+
+      /* -----------------------------------------
+         SELECTED USERS
+      ----------------------------------------- */
+
+      const selectedUserSysIds = Array.from(
+        chatGroupAddPeopleSelectedUsers.keys(),
+      );
+
+      if (selectedUserSysIds.length === 0) {
+        return;
+      }
+
+      const conversationSysId = String(activeChatConversation.sys_id).trim();
+
+      /* -----------------------------------------
+         LOCK BUTTON
+      ----------------------------------------- */
+
+      chatGroupAddPeopleSaveButton.disabled = true;
+
+      chatGroupAddPeopleSaveButton.textContent = "Adding...";
+
+      if (chatGroupAddPeopleMessage) {
+        chatGroupAddPeopleMessage.textContent = "";
+      }
+
+      try {
+        /* -----------------------------------------
+           ADD MEMBERS
+        ----------------------------------------- */
+
+        const result = await window.serviceCall.addGroupMembers(
+          conversationSysId,
+          selectedUserSysIds,
+        );
+
+        if (!result || result.success !== true) {
+          throw new Error(
+            result && result.message ? result.message : "Unable to add people.",
+          );
+        }
+
+        console.log("Group members added:", result);
+
+        /* -----------------------------------------
+           CLOSE ADD PEOPLE PANEL
+        ----------------------------------------- */
+
+        closeChatGroupAddPeople();
+
+        /*
+         * Make sure we're still looking at
+         * the same group before refreshing.
+         */
+        if (
+          !activeChatConversation ||
+          String(activeChatConversation.sys_id) !== conversationSysId
+        ) {
+          return;
+        }
+
+        /* -----------------------------------------
+           REFRESH GROUP DETAILS
+        ----------------------------------------- */
+
+        await openChatGroupDetails();
+
+        /*
+         * Existing chat synchronization will
+         * retrieve the system message created
+         * by ServiceNow:
+         *
+         * "<User> added X to the group."
+         */
+      } catch (error) {
+        console.error("Unable to add group members:", error);
+
+        if (chatGroupAddPeopleMessage) {
+          chatGroupAddPeopleMessage.textContent =
+            error && error.message ? error.message : "Unable to add people.";
+        }
+
+        /*
+         * Restore button because the operation
+         * failed.
+         */
+
+        const count = chatGroupAddPeopleSelectedUsers.size;
+
+        chatGroupAddPeopleSaveButton.disabled = count === 0;
+
+        chatGroupAddPeopleSaveButton.textContent =
+          count > 0 ? "Add Selected (" + count + ")" : "Add Selected";
+      }
+    });
+  }
+
+  /* =======================================================
+   GROUP DETAILS - SEARCH PEOPLE TO ADD
+======================================================= */
+
+  if (chatGroupAddPeopleSearch) {
+    chatGroupAddPeopleSearch.addEventListener("input", () => {
+      clearTimeout(chatGroupAddPeopleSearchTimer);
+
+      const searchText = String(chatGroupAddPeopleSearch.value || "").trim();
+
+      /*
+       * Same minimum search length used by
+       * the existing ServiceCall user search.
+       */
+      if (searchText.length < 2) {
+        if (chatGroupAddPeopleResults) {
+          chatGroupAddPeopleResults.innerHTML = "";
+        }
+
+        if (chatGroupAddPeopleMessage) {
+          chatGroupAddPeopleMessage.textContent = searchText
+            ? "Enter at least 2 characters."
+            : "";
+        }
+
+        return;
+      }
+
+      chatGroupAddPeopleSearchTimer = setTimeout(async () => {
+        if (chatGroupAddPeopleMessage) {
+          chatGroupAddPeopleMessage.textContent = "Searching...";
+        }
+
+        try {
+          const result = await window.serviceCall.searchUsers(searchText);
+
+          /*
+           * Ignore an old response if the user
+           * has already typed something else.
+           */
+          if (
+            !chatGroupAddPeopleSearch ||
+            chatGroupAddPeopleSearch.value.trim() !== searchText
+          ) {
+            return;
+          }
+
+          if (!result || result.success !== true) {
+            throw new Error(
+              result && result.message
+                ? result.message
+                : "Unable to search users.",
+            );
+          }
+
+          const users = Array.isArray(result.users) ? result.users : [];
+
+          /*
+           * Current active group members must
+           * not appear in Add People results.
+           */
+          const existingMemberIds = new Set(
+            (Array.isArray(
+              currentChatGroupDetails && currentChatGroupDetails.members,
+            )
+              ? currentChatGroupDetails.members
+              : []
+            )
+              .map((member) =>
+                String(member.user_sys_id || member.sys_id || "").trim(),
+              )
+              .filter(Boolean),
+          );
+
+          const availableUsers = users.filter((user) => {
+            const userSysId = String(user.sys_id || "").trim();
+
+            if (!userSysId) {
+              return false;
+            }
+
+            return !existingMemberIds.has(userSysId);
+          });
+
+          renderChatGroupAddPeopleResults(availableUsers);
+
+          if (chatGroupAddPeopleMessage) {
+            chatGroupAddPeopleMessage.textContent = availableUsers.length
+              ? ""
+              : "No users available to add.";
+          }
+        } catch (error) {
+          console.error("Unable to search group users:", error);
+
+          if (chatGroupAddPeopleResults) {
+            chatGroupAddPeopleResults.innerHTML = "";
+          }
+
+          if (chatGroupAddPeopleMessage) {
+            chatGroupAddPeopleMessage.textContent =
+              error.message || "Unable to search users.";
+          }
+        }
+      }, 300);
+    });
   }
 
   if (chatGroupDetailsButton) {
