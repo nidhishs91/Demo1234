@@ -4838,6 +4838,10 @@
 
                                 <div class="chat-composer">
 
+                                    <div id="chatMembershipMessage"
+                                        style="display:none; margin:0 0 6px 2px; font-size:12px; color:#b42318;">
+                                    </div>
+
                                     <div class="chat-composer-actions">
 
                                         <button id="chatAttachButton" class="chat-composer-action" type="button"
@@ -4852,7 +4856,6 @@
                                         </button>
 
                                     </div>
-
 
                                     <textarea id="chatMessageInput" class="chat-message-input" rows="1"
                                         placeholder="Type a message..." disabled></textarea>
@@ -5926,13 +5929,41 @@
 
                 </div>
 
+                <div style="
+    margin-top:18px;
+    padding-top:14px;
+    border-top:1px solid rgba(0,0,0,0.08);
+  ">
+                    <button id="chatGroupLeaveButton" type="button" style="
+      width:100%;
+      padding:10px 14px;
+      border:1px solid #d9a7a7;
+      border-radius:8px;
+      background:#fff7f7;
+      color:#a33;
+      font-size:13px;
+      font-weight:600;
+      cursor:pointer;
+    ">
+                        Leave Group
+                    </button>
+
+                    <div id="chatGroupLeaveMessage" style="
+      display:none;
+      margin-top:8px;
+      font-size:12px;
+      color:#a33;
+      text-align:center;
+    "></div>
+                </div>
+
             </div>
 
         </div>
 
     </div>
 
-    
+
 
     <script src="renderer.js"></script>
 
