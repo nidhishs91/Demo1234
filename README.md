@@ -4785,6 +4785,205 @@ document.addEventListener("DOMContentLoaded", async () => {
     const messageSysId = String(message.sys_id || "").trim();
 
     /* =====================================================
+   SYSTEM MESSAGE
+
+   System events are not normal chat messages.
+
+   Examples:
+   - Group created by System Administrator
+   - System Administrator added Abel Tuter
+   - System Administrator made Abel Tuter an owner
+   - System Administrator changed Abel Tuter to a member
+   - System Administrator removed Test User from the group
+
+   Render them as a centered, subtle event imprint.
+===================================================== */
+
+    const messageType = String(message.type || "text")
+      .trim()
+      .toLowerCase();
+
+    if (messageType === "system") {
+      /*
+       * Duplicate protection for system messages.
+       */
+      if (messageSysId) {
+        const existingSystemMessage = Array.from(
+          chatMessages.querySelectorAll(".chat-message-row"),
+        ).find(
+          (existingRow) =>
+            String(existingRow.dataset.messageSysId || "") === messageSysId,
+        );
+
+        if (existingSystemMessage) {
+          console.log("Duplicate system message ignored:", messageSysId);
+
+          return;
+        }
+      }
+
+      /* =========================================
+     SYSTEM MESSAGE ROW
+  ========================================= */
+
+      const systemRow = document.createElement("div");
+
+      systemRow.className = "chat-message-row chat-system-message-row";
+
+      if (messageSysId) {
+        systemRow.dataset.messageSysId = messageSysId;
+      }
+
+      systemRow.style.cssText = `
+    width:100%;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    box-sizing:border-box;
+    margin:16px 0;
+    padding:0 24px;
+    position:relative;
+  `;
+
+      /* =========================================
+     EVENT LINE
+  ========================================= */
+
+      const systemLine = document.createElement("div");
+
+      systemLine.style.cssText = `
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:12px;
+  `;
+
+      /* -------------------------
+     LEFT LINE
+  ------------------------- */
+
+      const leftLine = document.createElement("div");
+
+      leftLine.style.cssText = `
+    width:42px;
+    height:1px;
+    flex-shrink:0;
+    background:linear-gradient(
+      to right,
+      transparent,
+      rgba(96, 112, 108, 0.28)
+    );
+  `;
+
+      /* -------------------------
+     SYSTEM TEXT
+  ------------------------- */
+
+      const systemText = document.createElement("div");
+
+      systemText.textContent = String(message.text || "");
+
+      systemText.style.cssText = `
+    max-width:70%;
+    text-align:center;
+
+    color:#7b8884;
+
+    font-size:11.5px;
+    font-weight:500;
+    font-style:italic;
+
+    line-height:1.45;
+
+    letter-spacing:0.25px;
+
+    white-space:normal;
+    overflow-wrap:anywhere;
+
+    opacity:0.88;
+
+    text-shadow:
+      0 1px 0 rgba(255,255,255,0.7);
+  `;
+
+      /* -------------------------
+     RIGHT LINE
+  ------------------------- */
+
+      const rightLine = document.createElement("div");
+
+      rightLine.style.cssText = `
+    width:42px;
+    height:1px;
+    flex-shrink:0;
+    background:linear-gradient(
+      to left,
+      transparent,
+      rgba(96, 112, 108, 0.28)
+    );
+  `;
+
+      systemLine.appendChild(leftLine);
+
+      systemLine.appendChild(systemText);
+
+      systemLine.appendChild(rightLine);
+
+      /* =========================================
+     TIME
+  ========================================= */
+
+      const systemTime = document.createElement("div");
+
+      systemTime.textContent = String(message.sent_at || "");
+
+      systemTime.style.cssText = `
+    margin-top:4px;
+
+    color:#a0aaa7;
+
+    font-size:9px;
+    font-weight:400;
+
+    letter-spacing:0.2px;
+
+    text-align:center;
+
+    opacity:0.78;
+  `;
+
+      /* =========================================
+     BUILD
+  ========================================= */
+
+      systemRow.appendChild(systemLine);
+
+      if (message.sent_at) {
+        systemRow.appendChild(systemTime);
+      }
+
+      chatMessages.appendChild(systemRow);
+
+      /*
+       * System messages deliberately have:
+       *
+       * - no chat bubble
+       * - no sender alignment
+       * - no reaction button
+       * - no reaction summary
+       * - no message background
+       *
+       * They visually behave like events
+       * imprinted into the conversation.
+       */
+
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      return;
+    }
+    /* =====================================================
    DUPLICATE MESSAGE PROTECTION
 
    The same ServiceNow message can reach the renderer
