@@ -4359,13 +4359,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         const leftConversationRow = chatConversationList
           ? chatConversationList.querySelector(
-              `[data-conversation-id="${conversationSysId}"]`,
+              `button[data-conversation-sys-id="${conversationSysId}"]`,
             )
           : null;
 
         if (leftConversationRow) {
           leftConversationRow.dataset.membershipActive = "false";
         }
+
+        await syncChatConversationList();
 
         /* -----------------------------------------
            DIAGNOSTIC
@@ -6173,14 +6175,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           const preview = information.children[1];
 
           if (preview) {
-            const isHistoricalGroup =
-              conversation.type === "group" &&
-              conversation.membership_active === false;
-
-            if (!isHistoricalGroup) {
-              preview.textContent =
-                conversation.last_message_preview || "No messages yet.";
-            }
+            preview.textContent =
+              conversation.last_message_preview || "No messages yet.";
           }
         }
 
@@ -6298,7 +6294,7 @@ document.addEventListener("DOMContentLoaded", async () => {
        VALIDATE ACTIVE CONVERSATION
     ========================================= */
 
-    if (!activeChatConversation || !activeChatConversation.sys_id) {
+    if (!activeChatConversation) {
       console.warn("No active conversation.");
 
       return;
@@ -6367,7 +6363,9 @@ document.addEventListener("DOMContentLoaded", async () => {
      * message, we must not accidentally
      * modify the new conversation UI.
      */
-    const sendingConversationSysId = String(activeChatConversation.sys_id);
+    const sendingConversationSysId = String(
+      activeChatConversation.sys_id || "",
+    ).trim();
 
     const recipientSysId = isDirectConversation
       ? String(activeChatConversation.other_user_sys_id || "").trim()
@@ -6376,6 +6374,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     const conversationSysId = isGroupConversation
       ? sendingConversationSysId
       : "";
+
+    /*
+     * Capture the identity of a temporary direct
+     * chat before the asynchronous send begins.
+     *
+     * A temporary chat has no conversation sys_id
+     * yet, so its recipient identifies it.
+     */
+    const sendingTemporaryRecipientSysId =
+      isDirectConversation && activeChatConversation.temporary === true
+        ? recipientSysId
+        : "";
 
     /* =========================================
        LOCK SEND
@@ -6417,6 +6427,65 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       /*
+       * =========================================
+       * PROMOTE TEMPORARY DIRECT CHAT
+       * =========================================
+       *
+       * Opening a searched user creates only a
+       * local temporary conversation.
+       *
+       * After the first successful message,
+       * ServiceNow has now created/reused the
+       * real direct conversation.
+       */
+      if (
+        isDirectConversation &&
+        activeChatConversation &&
+        activeChatConversation.temporary === true &&
+        result.conversation &&
+        result.conversation.sys_id
+      ) {
+        const realConversationSysId = String(result.conversation.sys_id).trim();
+
+        /*
+         * Only promote the currently-open temporary
+         * chat if it is still the same recipient
+         * that this message was sent to.
+         */
+        const isSameTemporaryRecipient =
+          String(activeChatConversation.other_user_sys_id || "").trim() ===
+          recipientSysId;
+
+        if (realConversationSysId && isSameTemporaryRecipient) {
+          activeChatConversation.sys_id = realConversationSysId;
+
+          activeChatConversation.temporary = false;
+
+          /*
+           * Promote the existing temporary sidebar
+           * row instead of adding a duplicate row.
+           */
+          const temporaryRow = chatConversationList
+            ? Array.from(
+                chatConversationList.querySelectorAll(
+                  'button[data-temporary-chat="true"]',
+                ),
+              ).find(
+                (row) => String(row.dataset.userSysId || "") === recipientSysId,
+              )
+            : null;
+
+          if (temporaryRow) {
+            temporaryRow.dataset.temporaryChat = "false";
+
+            temporaryRow.dataset.conversationSysId = realConversationSysId;
+
+            delete temporaryRow.dataset.userSysId;
+          }
+        }
+      }
+
+      /*
        * The user may have changed to another
        * conversation while the message was
        * being stored.
@@ -6426,9 +6495,25 @@ document.addEventListener("DOMContentLoaded", async () => {
        * wrong conversation.
        */
       const stillViewingSentConversation =
-        activeChatConversation &&
-        String(activeChatConversation.sys_id) === sendingConversationSysId;
-
+        !!activeChatConversation &&
+        /*
+         * Existing direct/group conversation:
+         * identify it using conversation sys_id.
+         */
+        ((sendingConversationSysId &&
+          String(activeChatConversation.sys_id || "").trim() ===
+            sendingConversationSysId) ||
+          /*
+           * Temporary direct conversation:
+           * there was no conversation sys_id when
+           * sending started, so identify it using
+           * the recipient's sys_id.
+           */
+          (!sendingConversationSysId &&
+            sendingTemporaryRecipientSysId &&
+            activeChatConversation.type === "direct" &&
+            String(activeChatConversation.other_user_sys_id || "").trim() ===
+              sendingTemporaryRecipientSysId));
       /*
        * Only clear the composer when the user
        * is still viewing the conversation from
@@ -7045,6 +7130,165 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   /* -------------------------------------------------
+   ADD TEMPORARY CHAT TO SIDEBAR
+------------------------------------------------- */
+
+  function addTemporaryChatToSidebar(user) {
+    if (!chatConversationList || !user || !user.sys_id) {
+      return;
+    }
+
+    const userSysId = String(user.sys_id).trim();
+
+    if (!userSysId) {
+      return;
+    }
+
+    /*
+     * Only one temporary direct chat should exist.
+     * Remove an older unsent temporary row first.
+     */
+    chatConversationList
+      .querySelectorAll('button[data-temporary-chat="true"]')
+      .forEach((row) => {
+        if (String(row.dataset.userSysId || "") !== userSysId) {
+          row.remove();
+        }
+      });
+
+    /*
+     * If this exact temporary user is already
+     * in the sidebar, don't add them twice.
+     */
+    const existingTemporaryRow = Array.from(
+      chatConversationList.querySelectorAll(
+        'button[data-temporary-chat="true"]',
+      ),
+    ).find((row) => String(row.dataset.userSysId || "") === userSysId);
+
+    if (existingTemporaryRow) {
+      return;
+    }
+
+    const displayName = user.name || user.user_name || "Unknown User";
+
+    const nameParts = displayName.trim().split(/\s+/).filter(Boolean);
+
+    let initials = "?";
+
+    if (nameParts.length >= 2) {
+      initials = (
+        nameParts[0][0] + nameParts[nameParts.length - 1][0]
+      ).toUpperCase();
+    } else if (nameParts.length === 1) {
+      initials = nameParts[0][0].toUpperCase();
+    }
+
+    const row = document.createElement("button");
+
+    row.type = "button";
+
+    /*
+     * This row does NOT have a ServiceNow
+     * conversation sys_id yet.
+     */
+    row.dataset.temporaryChat = "true";
+    row.dataset.userSysId = userSysId;
+
+    row.style.cssText = `
+    width:100%;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:12px 14px;
+    border:0;
+    border-bottom:1px solid #edf1ef;
+    background:white;
+    text-align:left;
+    cursor:pointer;
+  `;
+
+    const avatar = document.createElement("div");
+
+    avatar.textContent = initials;
+
+    avatar.style.cssText = `
+    width:38px;
+    height:38px;
+    min-width:38px;
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#dff3ec;
+    color:#17634f;
+    font-size:12px;
+    font-weight:700;
+  `;
+
+    const information = document.createElement("div");
+
+    information.style.cssText = `
+    min-width:0;
+    flex:1;
+  `;
+
+    const name = document.createElement("div");
+
+    name.textContent = displayName;
+
+    name.style.cssText = `
+    font-size:13px;
+    font-weight:600;
+    color:#1f2927;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  `;
+
+    const preview = document.createElement("div");
+
+    preview.textContent = "No messages yet.";
+
+    preview.style.cssText = `
+    margin-top:3px;
+    font-size:11px;
+    color:#78827f;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  `;
+
+    information.appendChild(name);
+    information.appendChild(preview);
+
+    row.appendChild(avatar);
+    row.appendChild(information);
+
+    /*
+     * Clicking the temporary sidebar row
+     * simply reopens the same local chat.
+     */
+    row.addEventListener("click", () => {
+      openTemporaryChat(user);
+    });
+
+    row.addEventListener("mouseenter", () => {
+      row.style.background = "#f5faf8";
+    });
+
+    row.addEventListener("mouseleave", () => {
+      row.style.background = "white";
+    });
+
+    /*
+     * Temporary/new chat should appear at
+     * the top of the conversation sidebar.
+     */
+    chatConversationList.prepend(row);
+  }
+
+  /* -------------------------------------------------
    OPEN TEMPORARY CHAT
 ------------------------------------------------- */
 
@@ -7063,15 +7307,35 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     /*
-     * This is a NEW / TEMPORARY chat.
+     * This is a NEW / TEMPORARY direct chat.
      *
-     * No ServiceNow conversation exists
-     * merely because the user opened it.
+     * It exists only in the renderer for now.
+     * No ServiceNow conversation is created
+     * until the first message is successfully sent.
      */
-    activeChatConversation = null;
+    activeChatConversation = {
+      sys_id: "",
+      type: "direct",
+
+      temporary: true,
+
+      other_user_sys_id: String(user.sys_id || "").trim(),
+
+      display_name: user.name || user.user_name || "Unknown User",
+
+      title: "",
+
+      last_message_preview: "",
+      last_message_at: "",
+
+      unread_count: 0,
+
+      membership_active: true,
+    };
 
     activeChatUser = user;
 
+    addTemporaryChatToSidebar(user);
     /*
      * Clear synchronization checkpoints
      * from the previously-open conversation.
