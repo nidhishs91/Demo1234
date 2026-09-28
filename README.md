@@ -6225,8 +6225,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         let badge = row.querySelector(".chat-unread-badge");
 
         /*
-         * SHOW / UPDATE BADGE
+         * Visually distinguish conversations
+         * containing unread messages.
          */
+        if (unreadCount > 0) {
+          row.classList.add("chat-conversation-unread");
+        } else {
+          row.classList.remove("chat-conversation-unread");
+        }
+
         if (unreadCount > 0) {
           if (!badge) {
             badge = document.createElement("div");
@@ -6271,6 +6278,32 @@ document.addEventListener("DOMContentLoaded", async () => {
           activeChatConversation.unread_count = 0;
         }
       });
+
+      /*
+       * Keep sidebar order synchronized with
+       * ServiceNow's authoritative conversation order.
+       *
+       * The /conversations response is ordered by
+       * latest activity, so newer conversations
+       * naturally rise to the top.
+       */
+      if (chatConversationList) {
+        conversations.forEach((conversation) => {
+          const conversationSysId = String(conversation.sys_id || "").trim();
+
+          if (!conversationSysId) {
+            return;
+          }
+
+          const row = chatConversationList.querySelector(
+            `button[data-conversation-sys-id="${conversationSysId}"]`,
+          );
+
+          if (row) {
+            chatConversationList.appendChild(row);
+          }
+        });
+      }
     } catch (error) {
       console.error("Silent conversation list synchronization error:", error);
     }
@@ -6620,6 +6653,31 @@ document.addEventListener("DOMContentLoaded", async () => {
 
           if (preview) {
             preview.textContent = message;
+          }
+
+          /*
+           * This conversation now has the newest activity.
+           * Move its existing sidebar row to the top.
+           */
+          if (
+            chatConversationList &&
+            row.parentElement === chatConversationList &&
+            chatConversationList.firstElementChild !== row
+          ) {
+            /*
+             * Move the active conversation
+             * to the top of the sidebar.
+             */
+            chatConversationList.prepend(row);
+
+            /*
+             * Bring the refreshed top of the
+             * conversation list into view.
+             */
+            chatConversationList.scrollTo({
+              top: 0,
+              behavior: "smooth",
+            });
           }
         });
       }
@@ -7747,6 +7805,25 @@ document.addEventListener("DOMContentLoaded", async () => {
                     const searchedUserSysId = String(user.sys_id || "").trim();
 
                     /*
+                     * Close the actual people-search dropdown
+                     * immediately when a result is selected.
+                     */
+                    if (chatPeopleSearchTimer) {
+                      clearTimeout(chatPeopleSearchTimer);
+                      chatPeopleSearchTimer = null;
+                    }
+
+                    if (chatPeopleSearchInput) {
+                      chatPeopleSearchInput.value = "";
+                      chatPeopleSearchInput.blur();
+                    }
+
+                    if (chatPeopleSearchResults) {
+                      chatPeopleSearchResults.innerHTML = "";
+                      chatPeopleSearchResults.style.display = "none";
+                    }
+
+                    /*
                      * Check whether a real direct conversation
                      * already exists with this exact user.
                      */
@@ -7758,10 +7835,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                     );
 
                     /*
-                     * Existing conversation found:
-                     * open that exact chat.
-                     *
-                     * Do NOT create a temporary conversation.
+                     * Existing conversation:
+                     * open the real chat.
                      */
                     if (existingConversation) {
                       await openChatConversation(existingConversation);
@@ -7770,8 +7845,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                     }
 
                     /*
-                     * No existing conversation:
-                     * this is genuinely a new chat.
+                     * New person:
+                     * open the local temporary chat.
                      */
                     openTemporaryChat(user);
                   },
