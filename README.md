@@ -58,6 +58,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   const chatSendButton = document.getElementById("chatSendButton");
   let activeChatConversation = null;
   let lastChatMessageSysId = "";
+  /*
+   * Older-message pagination state.
+   *
+   * These belong only to the currently
+   * open conversation.
+   */
+  let oldestChatMessageSysId = "";
+
+  let chatMessageHistoryHasMore = false;
+
+  let chatMessageHistoryLoading = false;
   let lastChatReactionCheckpoint = "";
 
   /* -------------------------------------------------
@@ -4707,6 +4718,17 @@ document.addEventListener("DOMContentLoaded", async () => {
      * after this conversation's messages load.
      */
     lastChatMessageSysId = "";
+    /*
+     * Reset older-history pagination whenever
+     * a different conversation is opened.
+     */
+    oldestChatMessageSysId = "";
+
+    chatMessageHistoryHasMore = false;
+
+    chatMessageHistoryLoading = false;
+
+    const chatMessageCache = new Map();
 
     /*
      * Reaction checkpoints are also scoped
@@ -4835,21 +4857,86 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     /*
-     * Remove the previous conversation
-     * immediately.
-     *
-     * No "Loading messages..." flash.
+     * =========================================
+     * INSTANT CACHED MESSAGE RENDER
+     * =========================================
      */
-    if (chatMessages) {
-      chatMessages.innerHTML = "";
+
+    const cachedConversation = chatMessageCache.get(openingConversationSysId);
+
+    if (cachedConversation && Array.isArray(cachedConversation.messages)) {
+      const cachedMessages = cachedConversation.messages;
+
+      /*
+       * Restore pagination state belonging
+       * to this conversation.
+       */
+      oldestChatMessageSysId = String(
+        cachedConversation.pagination && cachedConversation.pagination.before
+          ? cachedConversation.pagination.before
+          : cachedMessages.length > 0
+            ? cachedMessages[0].sys_id || ""
+            : "",
+      ).trim();
+
+      chatMessageHistoryHasMore = !!(
+        cachedConversation.pagination &&
+        cachedConversation.pagination.has_more === true
+      );
+
+      /*
+       * Establish the live-sync checkpoint
+       * immediately from the cached newest
+       * message.
+       */
+      if (cachedMessages.length > 0) {
+        const cachedNewestMessage = cachedMessages[cachedMessages.length - 1];
+
+        lastChatMessageSysId = String(cachedNewestMessage.sys_id || "").trim();
+      } else {
+        lastChatMessageSysId = "";
+      }
+
+      /*
+       * Render immediately.
+       *
+       * No ServiceNow wait.
+       */
+      if (chatMessages) {
+        chatMessages.innerHTML = "";
+
+        if (cachedMessages.length === 0) {
+          chatMessages.innerHTML = `
+        <div class="chat-message-placeholder">
+          <div>
+            This is the beginning of your conversation.
+          </div>
+        </div>
+      `;
+        } else {
+          cachedMessages.forEach((message) => {
+            appendChatMessage(message);
+          });
+
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+      }
+    } else {
+      /*
+       * First-ever open during this renderer
+       * session has no cache yet.
+       *
+       * Clear the previous conversation while
+       * ServiceNow retrieves the initial page.
+       */
+      if (chatMessages) {
+        chatMessages.innerHTML = "";
+      }
     }
 
     /*
-     * Disable composer while the actual
-     * conversation is being established.
-     *
-     * This prevents sending into the wrong
-     * conversation during a very fast switch.
+     * Disable composer while the authoritative
+     * request is running.
      */
     if (chatMessageInput) {
       chatMessageInput.disabled = true;
@@ -4893,8 +4980,44 @@ document.addEventListener("DOMContentLoaded", async () => {
       const messages = Array.isArray(result.messages) ? result.messages : [];
 
       /* =========================================
-           MESSAGE SYNC CHECKPOINT
-        ========================================= */
+   HISTORY PAGINATION CHECKPOINT
+========================================= */
+
+      oldestChatMessageSysId =
+        messages.length > 0 ? String(messages[0].sys_id || "").trim() : "";
+
+      chatMessageHistoryHasMore = !!(
+        result.pagination && result.pagination.has_more === true
+      );
+
+      chatMessageHistoryLoading = false;
+
+      /* =========================================
+   CACHE RECENT MESSAGE PAGE
+========================================= */
+
+      chatMessageCache.set(
+        String(conversation.sys_id || "").trim(),
+
+        {
+          /*
+           * Keep our own array so later changes to
+           * the current response array do not
+           * accidentally change the cache.
+           */
+          messages: messages.slice(),
+
+          pagination: {
+            has_more: chatMessageHistoryHasMore,
+
+            before: oldestChatMessageSysId,
+          },
+        },
+      );
+
+      /* =========================================
+     MESSAGE SYNC CHECKPOINT
+  ========================================= */
 
       if (messages.length > 0) {
         const newestMessage = messages[messages.length - 1];
@@ -5876,6 +5999,229 @@ document.addEventListener("DOMContentLoaded", async () => {
     );
   }
 
+  async function loadOlderChatMessages() {
+    /*
+     * Nothing to load unless a persisted
+     * conversation is currently open.
+     */
+    if (
+      !activeChatConversation ||
+      !activeChatConversation.sys_id ||
+      !chatMessages
+    ) {
+      return;
+    }
+
+    /*
+     * ServiceNow already told us that
+     * there is no older history.
+     */
+    if (!chatMessageHistoryHasMore) {
+      return;
+    }
+
+    /*
+     * Prevent multiple requests when several
+     * scroll events fire near the top.
+     */
+    if (chatMessageHistoryLoading) {
+      return;
+    }
+
+    if (!oldestChatMessageSysId) {
+      return;
+    }
+
+    const conversationSysId = String(activeChatConversation.sys_id).trim();
+
+    const beforeMessageSysId = String(oldestChatMessageSysId).trim();
+
+    chatMessageHistoryLoading = true;
+
+    /*
+     * Remember the current document height.
+     *
+     * After older messages are inserted above,
+     * we'll compensate for the added height so
+     * the user's viewport stays on the same
+     * message.
+     */
+    const previousScrollHeight = chatMessages.scrollHeight;
+
+    const previousScrollTop = chatMessages.scrollTop;
+
+    try {
+      const result = await window.serviceCall.getMessages(
+        conversationSysId,
+        "",
+        beforeMessageSysId,
+        50,
+      );
+
+      /*
+       * User may have switched conversations
+       * while ServiceNow was responding.
+       */
+      if (
+        !activeChatConversation ||
+        String(activeChatConversation.sys_id) !== conversationSysId
+      ) {
+        return;
+      }
+
+      if (!result || result.success !== true) {
+        console.warn("Unable to load older chat messages:", result);
+
+        return;
+      }
+
+      const olderMessages = Array.isArray(result.messages)
+        ? result.messages
+        : [];
+
+      /*
+       * No older records returned.
+       */
+      if (olderMessages.length === 0) {
+        chatMessageHistoryHasMore = false;
+
+        return;
+      }
+
+      /*
+       * appendChatMessage() currently appends
+       * messages to the bottom and also scrolls
+       * downward.
+       *
+       * Therefore we render the older page into
+       * a temporary container first, then move
+       * those generated rows above the existing
+       * conversation.
+       */
+      const existingFirstChild = chatMessages.firstChild;
+
+      olderMessages.forEach((message) => {
+        appendChatMessage(message);
+      });
+
+      /*
+       * appendChatMessage() placed the newly
+       * generated rows at the bottom.
+       *
+       * Collect those rows by their authoritative
+       * message sys_ids.
+       */
+      const olderRows = [];
+
+      olderMessages.forEach((message) => {
+        const messageSysId = String(message.sys_id || "").trim();
+
+        if (!messageSysId) {
+          return;
+        }
+
+        const row = Array.from(
+          chatMessages.querySelectorAll(".chat-message-row"),
+        ).find(
+          (candidateRow) =>
+            String(candidateRow.dataset.messageSysId || "") === messageSysId,
+        );
+
+        if (row) {
+          olderRows.push(row);
+        }
+      });
+
+      /*
+       * Move the page above the messages that
+       * were already visible.
+       *
+       * olderMessages already arrives from the
+       * backend in oldest -> newest order.
+       */
+      olderRows.forEach((row) => {
+        chatMessages.insertBefore(row, existingFirstChild);
+      });
+
+      /*
+       * The first message returned is now the
+       * oldest loaded message and therefore
+       * becomes our next "before" checkpoint.
+       */
+      oldestChatMessageSysId = String(olderMessages[0].sys_id || "").trim();
+
+      chatMessageHistoryHasMore = !!(
+        result.pagination && result.pagination.has_more === true
+      );
+
+      /*
+       * Restore the exact visual position.
+       *
+       * The content above the user became taller,
+       * so move scrollTop by exactly that increase.
+       */
+      const newScrollHeight = chatMessages.scrollHeight;
+
+      const addedHeight = newScrollHeight - previousScrollHeight;
+
+      chatMessages.scrollTop = previousScrollTop + addedHeight;
+
+      console.log(
+        "Loaded older chat messages:",
+        olderMessages.length,
+        "hasMore:",
+        chatMessageHistoryHasMore,
+      );
+    } catch (error) {
+      console.error("Unable to load older chat history:", error);
+    } finally {
+      /*
+       * Only unlock if we're still looking
+       * at the same conversation.
+       */
+      if (
+        activeChatConversation &&
+        String(activeChatConversation.sys_id) === conversationSysId
+      ) {
+        chatMessageHistoryLoading = false;
+      }
+    }
+  }
+
+  /*
+   * Load older history when the user
+   * reaches the top of the conversation.
+   */
+  if (chatMessages) {
+    chatMessages.addEventListener(
+      "scroll",
+
+      async () => {
+        /*
+         * A small threshold feels better than
+         * requiring exactly scrollTop === 0.
+         */
+        if (chatMessages.scrollTop > 40) {
+          return;
+        }
+
+        if (!chatMessageHistoryHasMore) {
+          return;
+        }
+
+        if (chatMessageHistoryLoading) {
+          return;
+        }
+
+        if (!oldestChatMessageSysId) {
+          return;
+        }
+
+        await loadOlderChatMessages();
+      },
+    );
+  }
+
   async function checkForNewChatMessages() {
     /*
      * Nothing to synchronize unless
@@ -6230,8 +6576,50 @@ document.addEventListener("DOMContentLoaded", async () => {
          */
         if (unreadCount > 0) {
           row.classList.add("chat-conversation-unread");
+
+          /*
+           * Unread visual state.
+           */
+          row.style.background = "#eef8f4";
+
+          const unreadInformation = row.children[1];
+
+          if (unreadInformation) {
+            const unreadName = unreadInformation.children[0];
+            const unreadPreview = unreadInformation.children[1];
+
+            if (unreadName) {
+              unreadName.style.fontWeight = "700";
+            }
+
+            if (unreadPreview) {
+              unreadPreview.style.fontWeight = "600";
+              unreadPreview.style.color = "#46524f";
+            }
+          }
         } else {
           row.classList.remove("chat-conversation-unread");
+
+          /*
+           * Restore normal visual state.
+           */
+          row.style.background = "white";
+
+          const normalInformation = row.children[1];
+
+          if (normalInformation) {
+            const normalName = normalInformation.children[0];
+            const normalPreview = normalInformation.children[1];
+
+            if (normalName) {
+              normalName.style.fontWeight = "600";
+            }
+
+            if (normalPreview) {
+              normalPreview.style.fontWeight = "400";
+              normalPreview.style.color = "#78827f";
+            }
+          }
         }
 
         if (unreadCount > 0) {
@@ -7116,7 +7504,15 @@ document.addEventListener("DOMContentLoaded", async () => {
           "mouseenter",
 
           () => {
-            row.style.background = "#f5faf8";
+            /*
+             * Slightly stronger hover for unread chats.
+             * Normal chats keep the existing hover.
+             */
+            row.style.background = row.classList.contains(
+              "chat-conversation-unread",
+            )
+              ? "#e4f3ed"
+              : "#f5faf8";
           },
         );
 
@@ -7124,7 +7520,15 @@ document.addEventListener("DOMContentLoaded", async () => {
           "mouseleave",
 
           () => {
-            row.style.background = "white";
+            /*
+             * Preserve unread highlight after
+             * the mouse leaves the row.
+             */
+            row.style.background = row.classList.contains(
+              "chat-conversation-unread",
+            )
+              ? "#eef8f4"
+              : "white";
           },
         );
 
