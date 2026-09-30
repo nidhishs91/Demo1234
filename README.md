@@ -161,6 +161,709 @@ document.addEventListener("DOMContentLoaded", async () => {
     updateChatMessageSelectionUI();
   }
 
+  function openChatForwardModal() {
+    /*
+     * Never allow two Forward modals.
+     */
+    const existingModal = document.getElementById("chatForwardModal");
+
+    if (existingModal) {
+      existingModal.remove();
+    }
+
+    /*
+     * Only:
+     *
+     * - Direct conversations
+     * - Groups where I am still an active member
+     *
+     * Historical groups are intentionally excluded.
+     */
+    const destinations = loadedChatConversations.filter((conversation) => {
+      if (!conversation || !conversation.sys_id) {
+        return false;
+      }
+
+      const type = String(conversation.type || "")
+        .trim()
+        .toLowerCase();
+
+      if (type === "direct") {
+        return true;
+      }
+
+      if (type === "group" && conversation.membership_active === true) {
+        return true;
+      }
+
+      return false;
+    });
+
+    /*
+     * MULTIPLE destinations are supported.
+     *
+     * conversation sys_id -> conversation
+     */
+    const selectedDestinations = new Map();
+
+    /* =========================================
+     OVERLAY
+  ========================================= */
+
+    const overlay = document.createElement("div");
+
+    overlay.id = "chatForwardModal";
+
+    overlay.style.cssText = `
+    position:fixed;
+    inset:0;
+
+    z-index:5000;
+
+    display:flex;
+    align-items:center;
+    justify-content:center;
+
+    padding:24px;
+    box-sizing:border-box;
+
+    background:rgba(17, 29, 25, 0.38);
+  `;
+
+    /* =========================================
+     MODAL
+  ========================================= */
+
+    const modal = document.createElement("div");
+
+    modal.style.cssText = `
+    width:min(460px, 92vw);
+    max-height:72vh;
+
+    display:flex;
+    flex-direction:column;
+
+    overflow:hidden;
+
+    background:#ffffff;
+
+    border:
+      1px solid #dfe6e4;
+
+    border-radius:16px;
+
+    box-shadow:
+      0 20px 60px
+      rgba(0,0,0,0.22);
+  `;
+
+    /* =========================================
+     HEADER
+  ========================================= */
+
+    const header = document.createElement("div");
+
+    header.style.cssText = `
+    display:flex;
+    align-items:center;
+    gap:12px;
+
+    padding:16px 18px;
+
+    border-bottom:
+      1px solid #edf1ef;
+  `;
+
+    const title = document.createElement("div");
+
+    title.textContent = "Forward message";
+
+    title.style.cssText = `
+    flex:1;
+
+    font-size:16px;
+    font-weight:700;
+
+    color:#263632;
+  `;
+
+    const closeButton = document.createElement("button");
+
+    closeButton.type = "button";
+    closeButton.textContent = "✕";
+    closeButton.title = "Close";
+
+    closeButton.style.cssText = `
+    width:34px;
+    height:34px;
+
+    border:none;
+    border-radius:50%;
+
+    background:transparent;
+
+    color:#52615d;
+
+    font-size:17px;
+
+    cursor:pointer;
+  `;
+
+    header.appendChild(title);
+    header.appendChild(closeButton);
+
+    modal.appendChild(header);
+
+    /* =========================================
+     SEARCH
+  ========================================= */
+
+    const searchWrapper = document.createElement("div");
+
+    searchWrapper.style.cssText = `
+    padding:12px 14px;
+  `;
+
+    const searchInput = document.createElement("input");
+
+    searchInput.type = "text";
+
+    searchInput.placeholder = "Search chats or groups...";
+
+    searchInput.style.cssText = `
+    width:100%;
+
+    padding:10px 12px;
+
+    box-sizing:border-box;
+
+    border:
+      1px solid #d7e0dd;
+
+    border-radius:10px;
+
+    outline:none;
+
+    font-size:13px;
+
+    color:#263632;
+    background:#ffffff;
+  `;
+
+    searchWrapper.appendChild(searchInput);
+
+    modal.appendChild(searchWrapper);
+
+    /* =========================================
+     DESTINATION LIST
+  ========================================= */
+
+    const destinationList = document.createElement("div");
+
+    destinationList.style.cssText = `
+    flex:1;
+
+    min-height:180px;
+    max-height:330px;
+
+    overflow-y:auto;
+
+    border-top:
+      1px solid #f1f3f2;
+
+    border-bottom:
+      1px solid #edf1ef;
+  `;
+
+    modal.appendChild(destinationList);
+
+    /* =========================================
+     FOOTER
+  ========================================= */
+
+    const footer = document.createElement("div");
+
+    footer.style.cssText = `
+    display:flex;
+    align-items:center;
+    gap:10px;
+
+    padding:13px 16px;
+  `;
+
+    const selectedText = document.createElement("div");
+
+    selectedText.style.cssText = `
+    flex:1;
+
+    font-size:12px;
+    font-weight:600;
+
+    color:#65736f;
+  `;
+
+    const cancelButton = document.createElement("button");
+
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel";
+
+    cancelButton.style.cssText = `
+    padding:9px 15px;
+
+    border:
+      1px solid #d6dfdc;
+
+    border-radius:9px;
+
+    background:#ffffff;
+
+    color:#344641;
+
+    font-size:13px;
+    font-weight:600;
+
+    cursor:pointer;
+  `;
+
+    const forwardButton = document.createElement("button");
+
+    forwardButton.type = "button";
+    forwardButton.textContent = "Forward";
+
+    forwardButton.style.cssText = `
+    padding:9px 17px;
+
+    border:none;
+    border-radius:9px;
+
+    background:#32c7a0;
+
+    color:#ffffff;
+
+    font-size:13px;
+    font-weight:700;
+
+    cursor:pointer;
+  `;
+
+    footer.appendChild(selectedText);
+    footer.appendChild(cancelButton);
+    footer.appendChild(forwardButton);
+
+    modal.appendChild(footer);
+
+    overlay.appendChild(modal);
+
+    document.body.appendChild(overlay);
+
+    /* =========================================
+     UPDATE FOOTER
+  ========================================= */
+
+    function updateForwardDestinationState() {
+      const count = selectedDestinations.size;
+
+      selectedText.textContent =
+        count === 0
+          ? "No chats selected"
+          : count === 1
+            ? "1 chat selected"
+            : `${count} chats selected`;
+
+      forwardButton.disabled = count === 0;
+
+      forwardButton.style.opacity = count === 0 ? "0.45" : "1";
+
+      forwardButton.style.cursor = count === 0 ? "default" : "pointer";
+    }
+
+    /* =========================================
+     RENDER DESTINATIONS
+  ========================================= */
+
+    function renderDestinations(filterText = "") {
+      destinationList.innerHTML = "";
+
+      const normalizedFilter = String(filterText || "")
+        .trim()
+        .toLowerCase();
+
+      const filteredDestinations = destinations.filter((conversation) => {
+        const name = String(
+          conversation.display_name || conversation.title || "",
+        ).toLowerCase();
+
+        return !normalizedFilter || name.includes(normalizedFilter);
+      });
+
+      if (filteredDestinations.length === 0) {
+        const empty = document.createElement("div");
+
+        empty.textContent = normalizedFilter
+          ? "No matching chats."
+          : "No chats available.";
+
+        empty.style.cssText = `
+        padding:28px 16px;
+
+        text-align:center;
+
+        font-size:12px;
+        color:#71827d;
+      `;
+
+        destinationList.appendChild(empty);
+
+        return;
+      }
+
+      filteredDestinations.forEach((conversation) => {
+        const conversationSysId = String(conversation.sys_id);
+
+        const type = String(conversation.type || "").toLowerCase();
+
+        const displayName = String(
+          conversation.display_name ||
+            conversation.title ||
+            (type === "group" ? "Group" : "Unknown User"),
+        );
+
+        const row = document.createElement("button");
+
+        row.type = "button";
+
+        row.style.cssText = `
+          width:100%;
+
+          display:flex;
+          align-items:center;
+          gap:12px;
+
+          padding:11px 15px;
+
+          box-sizing:border-box;
+
+          border:none;
+          border-bottom:
+            1px solid #f0f3f2;
+
+          background:#ffffff;
+
+          text-align:left;
+
+          cursor:pointer;
+        `;
+
+        /* -------------------------
+           SELECTION CIRCLE
+        ------------------------- */
+
+        const selector = document.createElement("div");
+
+        selector.style.cssText = `
+          width:20px;
+          height:20px;
+          min-width:20px;
+
+          display:flex;
+          align-items:center;
+          justify-content:center;
+
+          border:
+            1.5px solid #aab8b4;
+
+          border-radius:50%;
+
+          font-size:12px;
+          font-weight:800;
+        `;
+
+        /* -------------------------
+           AVATAR
+        ------------------------- */
+
+        const avatar = document.createElement("div");
+
+        avatar.style.cssText = `
+          width:38px;
+          height:38px;
+          min-width:38px;
+
+          display:flex;
+          align-items:center;
+          justify-content:center;
+
+          border-radius:50%;
+
+          background:#dff3ec;
+          color:#17634f;
+
+          font-size:12px;
+          font-weight:800;
+        `;
+
+        if (type === "group") {
+          avatar.textContent = "G";
+        } else {
+          const parts = displayName.trim().split(/\s+/).filter(Boolean);
+
+          avatar.textContent =
+            parts.length >= 2
+              ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+              : displayName.charAt(0).toUpperCase() || "?";
+        }
+
+        /* -------------------------
+           INFORMATION
+        ------------------------- */
+
+        const information = document.createElement("div");
+
+        information.style.cssText = `
+          flex:1;
+          min-width:0;
+        `;
+
+        const name = document.createElement("div");
+
+        name.textContent = displayName;
+
+        name.style.cssText = `
+          font-size:13px;
+          font-weight:650;
+
+          color:#263632;
+
+          white-space:nowrap;
+          overflow:hidden;
+          text-overflow:ellipsis;
+        `;
+
+        const subtype = document.createElement("div");
+
+        subtype.textContent = type === "group" ? "Group" : "Direct chat";
+
+        subtype.style.cssText = `
+          margin-top:2px;
+
+          font-size:11px;
+          color:#7a8783;
+        `;
+
+        information.appendChild(name);
+        information.appendChild(subtype);
+
+        row.appendChild(selector);
+        row.appendChild(avatar);
+        row.appendChild(information);
+
+        function refreshRowSelection() {
+          const selected = selectedDestinations.has(conversationSysId);
+
+          selector.textContent = selected ? "✓" : "";
+
+          selector.style.background = selected ? "#32c7a0" : "#ffffff";
+
+          selector.style.borderColor = selected ? "#32c7a0" : "#aab8b4";
+
+          selector.style.color = selected ? "#ffffff" : "transparent";
+
+          row.style.background = selected ? "#eef9f5" : "#ffffff";
+        }
+
+        row.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+
+          if (selectedDestinations.has(conversationSysId)) {
+            selectedDestinations.delete(conversationSysId);
+          } else {
+            selectedDestinations.set(conversationSysId, conversation);
+          }
+
+          refreshRowSelection();
+
+          updateForwardDestinationState();
+        });
+
+        refreshRowSelection();
+
+        destinationList.appendChild(row);
+      });
+    }
+
+    /* =========================================
+     SEARCH EXISTING DESTINATIONS
+  ========================================= */
+
+    searchInput.addEventListener("input", () => {
+      renderDestinations(searchInput.value);
+    });
+
+    /* =========================================
+     CLOSE
+  ========================================= */
+
+    function closeForwardModal() {
+      overlay.remove();
+    }
+
+    closeButton.addEventListener("click", closeForwardModal);
+
+    cancelButton.addEventListener("click", closeForwardModal);
+
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        closeForwardModal();
+      }
+    });
+
+    /* =========================================
+     FORWARD BUTTON
+
+     Backend comes NEXT.
+  ========================================= */
+
+    forwardButton.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (selectedDestinations.size === 0) {
+        return;
+      }
+
+      if (selectedChatMessages.size === 0) {
+        return;
+      }
+
+      /*
+       * Prevent duplicate forwarding if the
+       * user clicks Forward repeatedly.
+       */
+      if (forwardButton.disabled) {
+        return;
+      }
+
+      /*
+       * Extract only the source message sys_ids.
+       */
+      const messageSysIds = Array.from(selectedChatMessages.values())
+        .map((message) =>
+          String(
+            message && (message.sys_id || message.message_sys_id || ""),
+          ).trim(),
+        )
+        .filter(Boolean);
+
+      /*
+       * Extract destination conversation sys_ids.
+       */
+      const destinationConversationIds = Array.from(selectedDestinations.keys())
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+
+      if (messageSysIds.length === 0) {
+        console.error("No valid messages selected for forwarding.");
+
+        return;
+      }
+
+      if (destinationConversationIds.length === 0) {
+        console.error("No valid destinations selected for forwarding.");
+
+        return;
+      }
+
+      /*
+       * Lock the action immediately.
+       */
+      forwardButton.disabled = true;
+      forwardButton.textContent = "Forwarding...";
+      forwardButton.style.opacity = "0.65";
+      forwardButton.style.cursor = "default";
+
+      cancelButton.disabled = true;
+      closeButton.disabled = true;
+      searchInput.disabled = true;
+
+      try {
+        const result = await window.serviceCall.forwardMessages(
+          messageSysIds,
+          destinationConversationIds,
+        );
+
+        if (!result || result.success !== true) {
+          throw new Error(
+            result && result.message
+              ? result.message
+              : "Unable to forward the selected messages.",
+          );
+        }
+
+        console.log("Messages forwarded successfully:", result);
+
+        /*
+         * Forward succeeded.
+         *
+         * Remove the modal first.
+         */
+        closeForwardModal();
+
+        /*
+         * Exit shared message-selection mode.
+         */
+        clearChatMessageSelection();
+
+        /*
+         * Immediately refresh the rendered
+         * selection state.
+         *
+         * This hides the selection circles on the
+         * currently-open conversation without
+         * requiring the user to change chats.
+         */
+        updateChatMessageSelectionUI();
+
+        /*
+         * Silently refresh the sidebar so all
+         * destination previews/order can update
+         * without showing the normal loading state.
+         */
+        try {
+          await syncChatConversationList();
+        } catch (refreshError) {
+          console.error(
+            "Unable to silently refresh conversations after forwarding:",
+            refreshError,
+          );
+        }
+      } catch (error) {
+        console.error("Unable to forward messages:", error);
+
+        /*
+         * Keep modal + selections intact so the
+         * user can retry.
+         */
+        forwardButton.disabled = false;
+        forwardButton.textContent = "Forward";
+        forwardButton.style.opacity = "1";
+        forwardButton.style.cursor = "pointer";
+
+        cancelButton.disabled = false;
+        closeButton.disabled = false;
+        searchInput.disabled = false;
+      }
+    });
+
+    renderDestinations();
+
+    updateForwardDestinationState();
+
+    setTimeout(() => {
+      searchInput.focus();
+    }, 50);
+  }
+
   function updateChatMessageSelectionUI() {
     const selectedCount = selectedChatMessages.size;
 
@@ -370,12 +1073,8 @@ document.addEventListener("DOMContentLoaded", async () => {
          * Forward will use this same
          * action button later.
          */
-        if (chatMessageSelectionMode !== "delete") {
-          console.log(
-            "Forward selected messages:",
-            Array.from(selectedChatMessages.values()),
-          );
-
+        if (chatMessageSelectionMode === "forward") {
+          openChatForwardModal();
           return;
         }
 
@@ -562,6 +1261,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                   );
 
                   if (!row) {
+                    loadChatConversations();
                     return;
                   }
 
@@ -654,10 +1354,10 @@ document.addEventListener("DOMContentLoaded", async () => {
                  * immediately reflects the deletion.
                  */
                 try {
-                  await loadChatConversations();
+                  await syncChatConversationList();
                 } catch (refreshError) {
                   console.error(
-                    "Unable to refresh conversations after multi-delete:",
+                    "Unable to silently refresh conversations after multi-delete:",
                     refreshError,
                   );
                 }
@@ -686,18 +1386,109 @@ document.addEventListener("DOMContentLoaded", async () => {
           true,
         );
 
-        deleteForMeButton.addEventListener("click", (deleteEvent) => {
+        deleteForMeButton.addEventListener("click", async (deleteEvent) => {
           deleteEvent.preventDefault();
           deleteEvent.stopPropagation();
 
-          /*
-           * Backend execution comes
-           * in the NEXT step.
-           */
-          console.log(
-            "MULTI DELETE FOR ME:",
-            selectedMessages.map((selectedMessage) => selectedMessage.sys_id),
-          );
+          const selectedMessageSysIds = selectedMessages
+            .map((selectedMessage) =>
+              String(selectedMessage.sys_id || "").trim(),
+            )
+            .filter(Boolean);
+
+          if (selectedMessageSysIds.length === 0) {
+            return;
+          }
+
+          const conversationSysId = String(
+            activeChatConversation?.sys_id || "",
+          ).trim();
+
+          if (!conversationSysId) {
+            return;
+          }
+
+          deleteForMeButton.disabled = true;
+          deleteForMeButton.textContent = "Deleting...";
+
+          try {
+            /*
+             * Use the same existing backend used by
+             * single-message Delete for me.
+             *
+             * The backend already accepts an array
+             * of message sys_ids.
+             */
+            const result = await window.serviceCall.deleteMessages(
+              conversationSysId,
+              selectedMessageSysIds,
+              "me",
+            );
+
+            if (!result || result.success !== true) {
+              console.warn("Multi Delete for me failed:", result);
+
+              deleteForMeButton.disabled = false;
+              deleteForMeButton.textContent = "Delete for me";
+
+              return;
+            }
+
+            /*
+             * Remove ONLY the selected messages
+             * from this user's rendered chat.
+             *
+             * Unlike Delete for everyone,
+             * there is NO tombstone.
+             */
+            selectedMessageSysIds.forEach((deletedMessageSysId) => {
+              const row = Array.from(
+                chatMessages.querySelectorAll(".chat-message-row"),
+              ).find(
+                (candidateRow) =>
+                  String(candidateRow.dataset.messageSysId || "") ===
+                  deletedMessageSysId,
+              );
+
+              if (row) {
+                row.remove();
+              }
+            });
+
+            /*
+             * Remove cached history so reopening
+             * the conversation cannot restore
+             * messages hidden for this user.
+             */
+            chatMessageCache.delete(conversationSysId);
+
+            /*
+             * Close popup and exit selection mode.
+             */
+            deleteMenu.remove();
+
+            clearChatMessageSelection();
+
+            updateChatMessageSelectionUI();
+
+            /*
+             * Refresh the sidebar because its
+             * user-specific preview may have changed.
+             */
+            try {
+              await syncChatConversationList();
+            } catch (refreshError) {
+              console.error(
+                "Unable to silently refresh conversations after multi Delete for me:",
+                refreshError,
+              );
+            }
+          } catch (error) {
+            console.error("Unable to delete selected messages for me:", error);
+
+            deleteForMeButton.disabled = false;
+            deleteForMeButton.textContent = "Delete for me";
+          }
         });
 
         deleteMenu.appendChild(deleteForMeButton);
@@ -6216,6 +7007,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   let chatReplyTarget = null;
 
+  let chatEditTarget = null;
+
   /* =======================================================
    SERVICECALL CHAT - APPEND MESSAGE
 ======================================================= */
@@ -6551,6 +7344,30 @@ document.addEventListener("DOMContentLoaded", async () => {
     bubbleWrapper.style.flexDirection = message.is_mine ? "row-reverse" : "row";
 
     const bubble = document.createElement("div");
+
+    /* =====================================================
+ FORWARDED MESSAGE LABEL
+===================================================== */
+
+    if (message.forwarded === true && message.deleted !== true) {
+      const forwardedLabel = document.createElement("div");
+
+      forwardedLabel.className = "chat-message-forwarded-label";
+
+      forwardedLabel.textContent = "↪ Forwarded";
+
+      forwardedLabel.style.cssText = `
+    margin-bottom:4px;
+    color:#66736f;
+    font-size:10.5px;
+    font-weight:600;
+    line-height:1.2;
+    white-space:nowrap;
+    opacity:0.9;
+  `;
+
+      bubble.appendChild(forwardedLabel);
+    }
 
     /* =====================================================
      REPLIED MESSAGE PREVIEW
@@ -7447,6 +8264,125 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       /* -------------------------
+   EDIT MESSAGE
+
+   Available only for:
+   - my own message
+   - non-deleted message
+   - normal text message
+   - writable conversation
+------------------------- */
+
+      if (
+        message.is_mine === true &&
+        message.deleted !== true &&
+        String(message.type || "text") === "text" &&
+        !isActiveChatReadOnly()
+      ) {
+        const editButton = document.createElement("button");
+
+        editButton.type = "button";
+
+        editButton.textContent = "Edit message";
+
+        editButton.style.cssText = `
+    border:none;
+    border-radius:7px;
+    background:transparent;
+    padding:8px 10px;
+    text-align:left;
+    font-size:12px;
+    color:#31433e;
+    cursor:pointer;
+  `;
+
+        editButton.addEventListener("mouseenter", () => {
+          editButton.style.background = "#eef4f2";
+        });
+
+        editButton.addEventListener("mouseleave", () => {
+          editButton.style.background = "transparent";
+        });
+
+        editButton.addEventListener("click", (editEvent) => {
+          editEvent.stopPropagation();
+
+          menu.remove();
+
+          if (
+            !messageSysId ||
+            message.deleted === true ||
+            message.is_mine !== true ||
+            isActiveChatReadOnly()
+          ) {
+            return;
+          }
+
+          /*
+           * Editing and replying are mutually
+           * exclusive composer modes.
+           */
+          chatReplyTarget = null;
+
+          renderChatReplyPreview();
+
+          /*
+           * Remember exactly which persisted
+           * message is being edited.
+           */
+          chatEditTarget = {
+            sys_id: messageSysId,
+
+            original_text: String(message.text || ""),
+          };
+
+          /*
+           * Put the existing message text
+           * into the normal composer.
+           */
+          if (chatMessageInput) {
+            chatMessageInput.value = chatEditTarget.original_text;
+
+            chatMessageInput.disabled = false;
+
+            /*
+             * Reuse normal composer resizing
+             * and Send-button state handling.
+             */
+            chatMessageInput.dispatchEvent(
+              new Event("input", {
+                bubbles: true,
+              }),
+            );
+
+            chatMessageInput.focus();
+
+            /*
+             * Put cursor at the end.
+             */
+            const endPosition = chatMessageInput.value.length;
+
+            chatMessageInput.setSelectionRange(endPosition, endPosition);
+          }
+
+          /*
+           * For now the existing Send button
+           * becomes the Save button.
+           *
+           * We are NOT sending/updating yet.
+           */
+          if (chatSendButton) {
+            chatSendButton.textContent = "Save";
+
+            chatSendButton.disabled = !String(
+              chatMessageInput ? chatMessageInput.value : "",
+            ).trim();
+          }
+        });
+        menu.appendChild(editButton);
+      }
+
+      /* -------------------------
          FORWARD
       ------------------------- */
 
@@ -7476,15 +8412,46 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
 
       forwardButton.addEventListener("click", (forwardEvent) => {
+        forwardEvent.preventDefault();
         forwardEvent.stopPropagation();
 
-        menu.remove();
+        /*
+         * Do not allow system messages,
+         * deleted tombstones, or messages
+         * without a valid sys_id.
+         */
+        if (
+          !messageSysId ||
+          message.deleted === true ||
+          String(message.type || "").toLowerCase() === "system"
+        ) {
+          menu.remove();
+          hideMessageActions();
+          return;
+        }
 
         /*
-         * Forward backend/selection
-         * will be wired after Delete.
+         * Start Forward multi-selection mode.
          */
-        console.log("Forward message selected:", messageSysId);
+        chatMessageSelectionMode = "forward";
+
+        /*
+         * Start with a clean selection.
+         */
+        selectedChatMessages.clear();
+
+        /*
+         * Automatically select the message
+         * where Forward was clicked.
+         */
+        selectChatMessage(messageRow, message);
+
+        /*
+         * Close the normal More menu.
+         */
+        menu.remove();
+
+        hideMessageActions();
       });
 
       /* -------------------------
@@ -7661,11 +8628,15 @@ document.addEventListener("DOMContentLoaded", async () => {
                  * Refresh sidebar immediately after
                  * Delete for everyone.
                  */
+                /*
+                 * Silently refresh sidebar after
+                 * Delete for everyone.
+                 */
                 try {
-                  await loadChatConversations();
+                  await syncChatConversationList();
                 } catch (refreshError) {
                   console.error(
-                    "Unable to refresh conversations after delete:",
+                    "Unable to silently refresh conversations after delete:",
                     refreshError,
                   );
                 }
@@ -7766,11 +8737,15 @@ document.addEventListener("DOMContentLoaded", async () => {
              * Refresh sidebar immediately after
              * Delete for me.
              */
+            /*
+             * Silently refresh sidebar after
+             * Delete for me.
+             */
             try {
-              await loadChatConversations();
+              await syncChatConversationList();
             } catch (refreshError) {
               console.error(
-                "Unable to refresh conversations after delete for me:",
+                "Unable to silently refresh conversations after delete for me:",
                 refreshError,
               );
             }
@@ -9785,6 +10760,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 ===================================================== */
 
         row.addEventListener("contextmenu", (event) => {
+          return;
           /*
            * DELETE CHAT AVAILABILITY
            *
