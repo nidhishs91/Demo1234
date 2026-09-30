@@ -6521,17 +6521,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
 
     /*
- * Deleted-for-everyone tombstones are
- * not selectable.
- *
- * Do not add a selection control to the
- * DOM at all for deleted messages.
- */
-if (message.deleted !== true) {
-  messageRow.appendChild(selectionIndicator);
-}
- 
-const bubbleWrapper = document.createElement("div");
+     * Deleted-for-everyone tombstones are
+     * not selectable.
+     *
+     * Do not add a selection control to the
+     * DOM at all for deleted messages.
+     */
+    if (message.deleted !== true) {
+      messageRow.appendChild(selectionIndicator);
+    }
+
+    const bubbleWrapper = document.createElement("div");
 
     bubbleWrapper.style.cssText = `
     display:flex;
@@ -8757,8 +8757,6 @@ const bubbleWrapper = document.createElement("div");
          * appear.
          */
         if (!row) {
-          loadChatConversations();
-
           return;
         }
 
@@ -9310,59 +9308,46 @@ const bubbleWrapper = document.createElement("div");
             : null;
 
           if (temporaryRow) {
- 
-  /*
-   * Before promoting the temporary row,
-   * remove any OTHER sidebar row that
-   * already represents the same real
-   * conversation.
-   *
-   * This protects against the authoritative
-   * sidebar sync racing with temporary-chat
-   * promotion.
-   */
-  if (chatConversationList) {
- 
-    Array.from(
-      chatConversationList.querySelectorAll(
-        "button[data-conversation-sys-id]"
-      )
-    ).forEach((row) => {
- 
-      if (row === temporaryRow) {
-        return;
-      }
- 
- 
-      const rowConversationSysId =
-        String(
-          row.dataset.conversationSysId || ""
-        ).trim();
- 
- 
-      if (
-        rowConversationSysId ===
-        realConversationSysId
-      ) {
- 
-        row.remove();
-      }
-    });
-  }
- 
- 
-  /*
-   * Promote this existing temporary row
-   * into the authoritative conversation row.
-   */
-  temporaryRow.dataset.temporaryChat =
-    "false";
- 
-  temporaryRow.dataset.conversationSysId =
-    realConversationSysId;
- 
-  delete temporaryRow.dataset.userSysId;
-}
+            /*
+             * Before promoting the temporary row,
+             * remove any OTHER sidebar row that
+             * already represents the same real
+             * conversation.
+             *
+             * This protects against the authoritative
+             * sidebar sync racing with temporary-chat
+             * promotion.
+             */
+            if (chatConversationList) {
+              Array.from(
+                chatConversationList.querySelectorAll(
+                  "button[data-conversation-sys-id]",
+                ),
+              ).forEach((row) => {
+                if (row === temporaryRow) {
+                  return;
+                }
+
+                const rowConversationSysId = String(
+                  row.dataset.conversationSysId || "",
+                ).trim();
+
+                if (rowConversationSysId === realConversationSysId) {
+                  row.remove();
+                }
+              });
+            }
+
+            /*
+             * Promote this existing temporary row
+             * into the authoritative conversation row.
+             */
+            temporaryRow.dataset.temporaryChat = "false";
+
+            temporaryRow.dataset.conversationSysId = realConversationSysId;
+
+            delete temporaryRow.dataset.userSysId;
+          }
         }
       }
 
@@ -9543,58 +9528,41 @@ const bubbleWrapper = document.createElement("div");
       if (chatSendButton) {
         chatSendButton.textContent = "Send";
       }
-/*
- * Only restore/focus the composer when
- * the user is still in the conversation
- * where this send began.
- *
- * Existing conversation:
- * compare conversation sys_id.
- *
- * Temporary direct conversation:
- * the first successful send promotes it
- * from an empty sys_id to the real sys_id,
- * so identify it using the recipient.
- */
-const stillInSendingConversation =
-  !!activeChatConversation &&
-  (
-    (
-      sendingConversationSysId &&
-      String(
-        activeChatConversation.sys_id || ""
-      ).trim() === sendingConversationSysId
-    ) ||
-    (
-      !sendingConversationSysId &&
-      sendingTemporaryRecipientSysId &&
-      activeChatConversation.type === "direct" &&
-      String(
-        activeChatConversation.other_user_sys_id || ""
-      ).trim() === sendingTemporaryRecipientSysId
-    )
-  );
- 
- 
-if (
-  chatMessageInput &&
-  stillInSendingConversation
-) {
- 
-  chatMessageInput.disabled = false;
- 
- 
-  if (chatSendButton) {
- 
-    chatSendButton.disabled =
-      !String(
-        chatMessageInput.value || ""
-      ).trim();
-  }
- 
- 
-  chatMessageInput.focus();
-}
+      /*
+       * Only restore/focus the composer when
+       * the user is still in the conversation
+       * where this send began.
+       *
+       * Existing conversation:
+       * compare conversation sys_id.
+       *
+       * Temporary direct conversation:
+       * the first successful send promotes it
+       * from an empty sys_id to the real sys_id,
+       * so identify it using the recipient.
+       */
+      const stillInSendingConversation =
+        !!activeChatConversation &&
+        ((sendingConversationSysId &&
+          String(activeChatConversation.sys_id || "").trim() ===
+            sendingConversationSysId) ||
+          (!sendingConversationSysId &&
+            sendingTemporaryRecipientSysId &&
+            activeChatConversation.type === "direct" &&
+            String(activeChatConversation.other_user_sys_id || "").trim() ===
+              sendingTemporaryRecipientSysId));
+
+      if (chatMessageInput && stillInSendingConversation) {
+        chatMessageInput.disabled = false;
+
+        if (chatSendButton) {
+          chatSendButton.disabled = !String(
+            chatMessageInput.value || "",
+          ).trim();
+        }
+
+        chatMessageInput.focus();
+      }
     }
   }
 
@@ -9811,79 +9779,68 @@ if (
         row.dataset.conversationSysId = String(conversation.sys_id || "");
 
         row.dataset.conversationSysId = String(conversation.sys_id || "");
- 
-/* =====================================================
+
+        /* =====================================================
    DIRECT CHAT - RIGHT CLICK MENU
 ===================================================== */
- 
-row.addEventListener("contextmenu", (event) => {
-  /*
-* DELETE CHAT AVAILABILITY
-*
-* Direct chat:
-*   Delete Chat is allowed.
-*
-* Active group:
-*   Delete Chat is NOT allowed.
-*   The user must Leave Group first.
-*
-* Historical group:
-*   After leaving / being removed,
-*   Delete Chat is allowed.
-*/
- 
-const conversationType = String(
-  conversation.type || "",
-)
-  .trim()
-  .toLowerCase();
- 
-const membershipActive =
-  conversation.membership_active === true;
- 
- 
-/*
-* Only direct and group conversations
-* support Delete Chat.
-*/
-if (
-  conversationType !== "direct" &&
-  conversationType !== "group"
-) {
-  return;
-}
- 
- 
-/*
-* An active group cannot be deleted.
-*
-* The user must Leave Group first.
-*/
-if (
-  conversationType === "group" &&
-  membershipActive
-) {
-  return;
-}
- 
-  event.preventDefault();
-  event.stopPropagation();
- 
-  /*
-   * Only one conversation context menu
-   * may exist at a time.
-   */
-  document
-    .querySelectorAll(".chat-conversation-context-menu")
-    .forEach((existingMenu) => {
-      existingMenu.remove();
-    });
- 
-  const menu = document.createElement("div");
- 
-  menu.className = "chat-conversation-context-menu";
- 
-  menu.style.cssText = `
+
+        row.addEventListener("contextmenu", (event) => {
+          /*
+           * DELETE CHAT AVAILABILITY
+           *
+           * Direct chat:
+           *   Delete Chat is allowed.
+           *
+           * Active group:
+           *   Delete Chat is NOT allowed.
+           *   The user must Leave Group first.
+           *
+           * Historical group:
+           *   After leaving / being removed,
+           *   Delete Chat is allowed.
+           */
+
+          const conversationType = String(conversation.type || "")
+            .trim()
+            .toLowerCase();
+
+          const membershipActive = conversation.membership_active === true;
+
+          /*
+           * Only direct and group conversations
+           * support Delete Chat.
+           */
+          if (conversationType !== "direct" && conversationType !== "group") {
+            return;
+          }
+
+          /*
+           * An active group cannot be deleted.
+           *
+           * The user must Leave Group first.
+           */
+          if (conversationType === "group" && membershipActive) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+
+          /*
+           * Only one conversation context menu
+           * may exist at a time.
+           */
+          document
+            .querySelectorAll(".chat-conversation-context-menu")
+            .forEach((existingMenu) => {
+              existingMenu.remove();
+            });
+
+          const menu = document.createElement("div");
+
+          menu.className = "chat-conversation-context-menu";
+
+          menu.style.cssText = `
     position:fixed;
     left:${event.clientX}px;
     top:${event.clientY}px;
@@ -9902,14 +9859,14 @@ if (
  
     z-index:10000;
   `;
- 
-  const deleteChatButton = document.createElement("button");
- 
-  deleteChatButton.type = "button";
- 
-  deleteChatButton.textContent = "Delete chat";
- 
-  deleteChatButton.style.cssText = `
+
+          const deleteChatButton = document.createElement("button");
+
+          deleteChatButton.type = "button";
+
+          deleteChatButton.textContent = "Delete chat";
+
+          deleteChatButton.style.cssText = `
     width:100%;
  
     border:none;
@@ -9926,178 +9883,215 @@ if (
  
     cursor:pointer;
   `;
- 
-  deleteChatButton.addEventListener("mouseenter", () => {
-    deleteChatButton.style.background = "#fff1f0";
-  });
- 
-  deleteChatButton.addEventListener("mouseleave", () => {
-    deleteChatButton.style.background = "transparent";
-  });
- 
-  /*
-   * Execution comes in the next step.
-   *
-   * For now we only verify that the
-   * right-click interaction works.
-   */
-  deleteChatButton.addEventListener("click", async (deleteEvent) => {
-  deleteEvent.preventDefault();
-  deleteEvent.stopPropagation();
- 
-  const conversationSysId = String(
-    conversation.sys_id || "",
-  ).trim();
- 
-  const conversationName = String(
-    conversation.display_name ||
-      conversation.title ||
-      "this chat",
-  ).trim();
- 
-  /*
-   * Close the context menu first.
-   */
-  menu.remove();
- 
-  if (!conversationSysId) {
-    return;
-  }
- 
-  /* =====================================================
+
+          deleteChatButton.addEventListener("mouseenter", () => {
+            deleteChatButton.style.background = "#fff1f0";
+          });
+
+          deleteChatButton.addEventListener("mouseleave", () => {
+            deleteChatButton.style.background = "transparent";
+          });
+
+          /*
+           * Execution comes in the next step.
+           *
+           * For now we only verify that the
+           * right-click interaction works.
+           */
+          deleteChatButton.addEventListener("click", async (deleteEvent) => {
+            deleteEvent.preventDefault();
+            deleteEvent.stopPropagation();
+
+            const conversationSysId = String(conversation.sys_id || "").trim();
+
+            const conversationName = String(
+              conversation.display_name || conversation.title || "this chat",
+            ).trim();
+
+            /*
+             * Close the context menu first.
+             */
+            menu.remove();
+
+            if (!conversationSysId) {
+              return;
+            }
+
+            /* =====================================================
      CONFIRM DELETE CHAT
   ===================================================== */
- 
-  const confirmed = window.confirm(
-    `Delete chat with ${conversationName}?\n\n` +
-      `This chat will be removed only from your chat list.`,
-  );
- 
-  /*
-   * Cancel / X:
-   * absolutely nothing changes.
-   */
-  if (!confirmed) {
-    return;
-  }
- 
-  /* =====================================================
+
+            const confirmed = window.confirm(
+              `Delete chat with ${conversationName}?\n\n` +
+                `This chat will be removed only from your chat list.`,
+            );
+
+            /*
+             * Cancel / X:
+             * absolutely nothing changes.
+             */
+            if (!confirmed) {
+              return;
+            }
+
+            /* =====================================================
      DELETE CHAT
   ===================================================== */
- 
-  deleteChatButton.disabled = true;
- 
-  try {
-    const result = await window.serviceCall.deleteChat(
-      conversationSysId,
-    );
- 
-    console.log("ServiceCall delete chat:", result);
- 
-    if (!result || result.success !== true) {
-      throw new Error(
-        result && result.message
-          ? result.message
-          : "Unable to delete chat.",
-      );
-    }
- 
-    /*
-     * Remove cached messages for this
-     * conversation.
-     */
-    chatMessageCache.delete(conversationSysId);
- 
-    /*
-     * If the deleted conversation is currently
-     * open, clear the active conversation.
-     */
-    if (
-      activeChatConversation &&
-      String(activeChatConversation.sys_id || "") ===
-        conversationSysId
-    ) {
-      activeChatConversation = null;
- 
-      /*
-       * We are deliberately NOT guessing the
-       * right-side empty-state DOM here.
-       *
-       * loadChatConversations() below handles
-       * the authoritative sidebar first.
-       */
-    }
- 
-    /*
-     * Reload from ServiceNow.
-     *
-     * Because /conversations now excludes
-     * u_hidden=true direct memberships,
-     * this chat should disappear.
-     */
-    await loadChatConversations();
-  } catch (error) {
-    console.error(
-      "Unable to delete ServiceCall chat:",
-      error,
-    );
- 
-    window.alert(
-      error && error.message
-        ? error.message
-        : "Unable to delete chat.",
-    );
-  } finally {
-    deleteChatButton.disabled = false;
-  }
-});
- 
-  menu.appendChild(deleteChatButton);
- 
-  document.body.appendChild(menu);
- 
-  /*
-   * Prevent menu from overflowing beyond
-   * the visible Electron window.
-   */
-  const menuRect = menu.getBoundingClientRect();
- 
-  if (menuRect.right > window.innerWidth) {
-    menu.style.left =
-      Math.max(8, window.innerWidth - menuRect.width - 8) + "px";
-  }
- 
-  if (menuRect.bottom > window.innerHeight) {
-    menu.style.top =
-      Math.max(8, window.innerHeight - menuRect.height - 8) + "px";
-  }
- 
-  /*
-   * Clicking anywhere outside closes it.
-   */
-  setTimeout(() => {
-    function closeConversationMenu(outsideEvent) {
-      if (menu.contains(outsideEvent.target)) {
-        return;
-      }
- 
-      menu.remove();
- 
-      document.removeEventListener(
-        "mousedown",
-        closeConversationMenu,
-        true,
-      );
-    }
- 
-    document.addEventListener(
-      "mousedown",
-      closeConversationMenu,
-      true,
-    );
-  }, 0);
-});
- 
+
+            deleteChatButton.disabled = true;
+
+            try {
+              const result =
+                await window.serviceCall.deleteChat(conversationSysId);
+
+              console.log("ServiceCall delete chat:", result);
+
+              if (!result || result.success !== true) {
+                throw new Error(
+                  result && result.message
+                    ? result.message
+                    : "Unable to delete chat.",
+                );
+              }
+
+              /*
+               * Remove cached messages for this
+               * conversation.
+               */
+              chatMessageCache.delete(conversationSysId);
+
+              /*
+               * If the deleted conversation is currently
+               * open, clear the active conversation.
+               */
+              if (
+                activeChatConversation &&
+                String(activeChatConversation.sys_id || "") ===
+                  conversationSysId
+              ) {
+                /*
+                 * The currently-open conversation has
+                 * just been deleted for this user.
+                 *
+                 * Clear ALL renderer state belonging
+                 * to that conversation immediately.
+                 */
+                activeChatConversation = null;
+                activeChatUser = null;
+
+                lastChatMessageSysId = "";
+                lastChatReactionCheckpoint = "";
+
+                oldestChatMessageSysId = "";
+                chatMessageHistoryHasMore = false;
+                chatMessageHistoryLoading = false;
+
+                chatNewMessageCount = 0;
+                chatUserWasNearBottom = true;
+
+                clearChatMessageSelection();
+                updateChatNewMessagesButton();
+
+                /*
+                 * Remove the deleted conversation from
+                 * the visible conversation area immediately.
+                 */
+                if (chatMessages) {
+                  chatMessages.innerHTML = "";
+                }
+
+                /*
+                 * No conversation is currently active,
+                 * therefore the composer must not remain
+                 * attached to the deleted conversation.
+                 */
+                if (chatMessageInput) {
+                  chatMessageInput.value = "";
+                  chatMessageInput.disabled = true;
+                  chatMessageInput.placeholder =
+                    "Select a conversation to start messaging.";
+                }
+
+                if (chatSendButton) {
+                  chatSendButton.disabled = true;
+                }
+
+                /*
+                 * Return the right side to the normal
+                 * no-conversation-selected state.
+                 */
+                if (chatConversationPanel) {
+                  chatConversationPanel.style.display = "none";
+                }
+
+                if (chatEmptyState) {
+                  chatEmptyState.style.display = "";
+                }
+              }
+
+              /*
+               * Reload from ServiceNow.
+               *
+               * Because /conversations now excludes
+               * u_hidden=true direct memberships,
+               * this chat should disappear.
+               */
+              await loadChatConversations();
+            } catch (error) {
+              console.error("Unable to delete ServiceCall chat:", error);
+
+              window.alert(
+                error && error.message
+                  ? error.message
+                  : "Unable to delete chat.",
+              );
+            } finally {
+              deleteChatButton.disabled = false;
+            }
+          });
+
+          menu.appendChild(deleteChatButton);
+
+          document.body.appendChild(menu);
+
+          /*
+           * Prevent menu from overflowing beyond
+           * the visible Electron window.
+           */
+          const menuRect = menu.getBoundingClientRect();
+
+          if (menuRect.right > window.innerWidth) {
+            menu.style.left =
+              Math.max(8, window.innerWidth - menuRect.width - 8) + "px";
+          }
+
+          if (menuRect.bottom > window.innerHeight) {
+            menu.style.top =
+              Math.max(8, window.innerHeight - menuRect.height - 8) + "px";
+          }
+
+          /*
+           * Clicking anywhere outside closes it.
+           */
+          setTimeout(() => {
+            function closeConversationMenu(outsideEvent) {
+              if (menu.contains(outsideEvent.target)) {
+                return;
+              }
+
+              menu.remove();
+
+              document.removeEventListener(
+                "mousedown",
+                closeConversationMenu,
+                true,
+              );
+            }
+
+            document.addEventListener("mousedown", closeConversationMenu, true);
+          }, 0);
+        });
+
         row.style.cssText = `
                     width:100%;
                     display:flex;
@@ -10110,7 +10104,6 @@ if (
                     text-align:left;
                     cursor:pointer;
                 `;
-                
 
         /* -------------------------
                    DISPLAY NAME
@@ -10821,6 +10814,8 @@ if (
 
       () => {
         const searchText = chatPeopleSearchInput.value.trim();
+
+        console.log("CHAT SEARCH INPUT FIRED:", searchText);
 
         /* -------------------------
                CANCEL PREVIOUS SEARCH
