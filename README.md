@@ -10550,6 +10550,25 @@ document.addEventListener("DOMContentLoaded", async () => {
       "click",
 
       async () => {
+        /*
+         * EDIT MODE
+         *
+         * Do NOT allow the normal send flow
+         * to create a new message while an
+         * existing message is being edited.
+         *
+         * Actual save-to-ServiceNow comes next.
+         */
+        if (chatEditTarget) {
+          console.log("Edit save requested:", {
+            sys_id: String(chatEditTarget.sys_id || ""),
+
+            text: String(chatMessageInput ? chatMessageInput.value : "").trim(),
+          });
+
+          return;
+        }
+
         await sendActiveChatMessage();
       },
     );
@@ -10654,6 +10673,25 @@ document.addEventListener("DOMContentLoaded", async () => {
         const message = String(chatMessageInput.value || "").trim();
 
         if (!message) {
+          return;
+        }
+
+        /*
+         * EDIT MODE
+         *
+         * Enter means Save while editing.
+         * Do not let it enter the normal
+         * new-message send flow.
+         *
+         * Actual persistence comes next.
+         */
+        if (chatEditTarget) {
+          console.log("Edit save requested from Enter:", {
+            sys_id: String(chatEditTarget.sys_id || ""),
+
+            text: message,
+          });
+
           return;
         }
 
