@@ -3046,6 +3046,85 @@
             background: white;
         }
 
+        .chat-attachment-preview[hidden] {
+            display: none;
+        }
+
+        .chat-attachment-preview {
+            width: 100%;
+            min-width: 0;
+            margin-bottom: 6px;
+        }
+
+        .chat-attachment-preview-card {
+            width: 100%;
+            min-width: 0;
+
+            display: flex;
+            align-items: center;
+            gap: 9px;
+
+            padding: 8px 10px;
+
+            border: 1px solid #dfe7e4;
+            border-radius: 8px;
+
+            background: #f7faf9;
+        }
+
+        .chat-attachment-preview-icon {
+            flex-shrink: 0;
+            font-size: 18px;
+        }
+
+        .chat-attachment-preview-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .chat-attachment-preview-name {
+            overflow: hidden;
+
+            color: #29463f;
+
+            font-size: 12px;
+            font-weight: 650;
+
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .chat-attachment-preview-size {
+            margin-top: 2px;
+
+            color: #7a8985;
+
+            font-size: 10px;
+        }
+
+        .chat-attachment-preview-remove {
+            flex-shrink: 0;
+
+            width: 26px;
+            height: 26px;
+
+            padding: 0;
+
+            border: 0;
+            border-radius: 6px;
+
+            background: transparent;
+            color: #71807d;
+
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        .chat-attachment-preview-remove:hover {
+            background: #e8efed;
+            color: #29463f;
+        }
+
 
         .chat-composer-actions {
             display: flex;
@@ -3083,6 +3162,32 @@
             cursor: default;
         }
 
+        .chat-composer-input-box {
+            flex: 1 1 auto;
+            min-width: 0;
+
+            display: flex;
+            flex-direction: column;
+
+            border: 1px solid #d6e0dd;
+            border-radius: 10px;
+
+            background: white;
+
+            overflow: hidden;
+
+            transition:
+                border-color 0.18s ease,
+                box-shadow 0.18s ease;
+        }
+
+        .chat-composer-input-box:focus-within {
+            border-color: #3d917c;
+
+            box-shadow:
+                0 0 0 3px rgba(61, 145, 124, 0.09);
+        }
+
 
         .chat-message-input {
             flex: 1;
@@ -3095,10 +3200,9 @@
             padding:
                 10px 12px;
 
-            border:
-                1px solid #d6e0dd;
+            border: 0;
 
-            border-radius: 10px;
+            border-radius: 0px;
 
             outline: none;
 
@@ -3114,10 +3218,10 @@
 
 
         .chat-message-input:focus {
-            border-color: #3d917c;
+            outline: none;
 
-            box-shadow:
-                0 0 0 3px rgba(61, 145, 124, 0.09);
+            box-shadow: none;
+
         }
 
 
@@ -3129,6 +3233,8 @@
 
 
         .chat-send-button {
+            flex: 0 0 auto;
+
             min-width: 65px;
             height: 40px;
 
@@ -4876,9 +4982,6 @@
 
                                 <div class="chat-composer">
 
-                                    <div id="chatAttachmentPreview" class="chat-attachment-preview" hidden>
-                                    </div>
-
                                     <div class="chat-composer-actions">
 
                                         <button id="chatAttachButton" class="chat-composer-action" type="button"
@@ -4894,407 +4997,402 @@
 
                                     </div>
 
-                                    <div style="
-    flex: 1 1 auto;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-">
+                                    <div class="chat-composer-input-box"></div>
 
-                                        <div id="chatMembershipMessage" style="
+                                    <div id="chatAttachmentPreview" class="chat-attachment-preview" hidden>
+                                    </div>
+
+                                    <div id="chatMembershipMessage" style="
             display: none;
             margin: 0 0 6px 2px;
             font-size: 12px;
             color: #b42318;
         ">
-                                        </div>
-
-                                        <textarea id="chatMessageInput" class="chat-message-input"
-                                            style="width:100%; box-sizing:border-box;" rows="1"
-                                            placeholder="Type a message..." disabled></textarea>
                                     </div>
 
-                                    <button id="chatSendButton" class="chat-send-button" type="button" disabled>
-                                        Send
-                                    </button>
-
+                                    <textarea id="chatMessageInput" class="chat-message-input"
+                                        style="width:100%; box-sizing:border-box;" rows="1"
+                                        placeholder="Type a message..." disabled></textarea>
                                 </div>
+
+                                <button id="chatSendButton" class="chat-send-button" type="button" disabled>
+                                    Send
+                                </button>
 
                             </div>
 
-                        </section>
-
                     </div>
 
-                </div>
+            </section>
 
-                <!-- =====================================
+    </div>
+
+    </div>
+
+    <!-- =====================================
      CREATE GROUP MODAL
 ====================================== -->
 
-                <div id="chatCreateGroupModal" class="chat-create-group-modal" aria-hidden="true">
+    <div id="chatCreateGroupModal" class="chat-create-group-modal" aria-hidden="true">
 
-                    <div id="chatCreateGroupBackdrop" class="chat-create-group-backdrop"></div>
-
-
-                    <div class="chat-create-group-dialog" role="dialog" aria-modal="true"
-                        aria-labelledby="chatCreateGroupTitle">
-
-                        <!-- HEADER -->
-
-                        <div class="chat-create-group-header">
-
-                            <div>
-
-                                <div id="chatCreateGroupTitle" class="chat-create-group-heading">
-                                    Create new group
-                                </div>
-
-                                <div class="chat-create-group-subtitle">
-                                    Add ServiceCall users to a group conversation.
-                                </div>
-
-                            </div>
+        <div id="chatCreateGroupBackdrop" class="chat-create-group-backdrop"></div>
 
 
-                            <button id="chatCreateGroupCloseButton" class="chat-create-group-close" type="button"
-                                aria-label="Close">
-                                ×
-                            </button>
+        <div class="chat-create-group-dialog" role="dialog" aria-modal="true" aria-labelledby="chatCreateGroupTitle">
 
+            <!-- HEADER -->
+
+            <div class="chat-create-group-header">
+
+                <div>
+
+                    <div id="chatCreateGroupTitle" class="chat-create-group-heading">
+                        Create new group
+                    </div>
+
+                    <div class="chat-create-group-subtitle">
+                        Add ServiceCall users to a group conversation.
+                    </div>
+
+                </div>
+
+
+                <button id="chatCreateGroupCloseButton" class="chat-create-group-close" type="button"
+                    aria-label="Close">
+                    ×
+                </button>
+
+            </div>
+
+
+            <!-- CONTENT -->
+
+            <div class="chat-create-group-content">
+
+                <!-- GROUP NAME -->
+
+                <div class="chat-create-group-field">
+
+                    <label class="chat-create-group-label" for="chatCreateGroupNameInput">
+                        Group name
+                    </label>
+
+
+                    <input id="chatCreateGroupNameInput" class="chat-create-group-input" type="text" maxlength="200"
+                        placeholder="For example: ServiceCall Team" autocomplete="off">
+
+                </div>
+
+
+                <!-- PEOPLE -->
+
+                <div class="chat-create-group-field">
+
+                    <label class="chat-create-group-label" for="chatCreateGroupPeopleSearch">
+                        Add people
+                    </label>
+
+
+                    <div class="chat-create-group-search-wrapper">
+
+                        <input id="chatCreateGroupPeopleSearch" class="chat-create-group-input" type="search"
+                            placeholder="Search ServiceCall users..." autocomplete="off" spellcheck="false">
+
+
+                        <div id="chatCreateGroupPeopleResults" class="chat-create-group-results" style="display: none;">
                         </div>
 
-
-                        <!-- CONTENT -->
-
-                        <div class="chat-create-group-content">
-
-                            <!-- GROUP NAME -->
-
-                            <div class="chat-create-group-field">
-
-                                <label class="chat-create-group-label" for="chatCreateGroupNameInput">
-                                    Group name
-                                </label>
+                    </div>
 
 
-                                <input id="chatCreateGroupNameInput" class="chat-create-group-input" type="text"
-                                    maxlength="200" placeholder="For example: ServiceCall Team" autocomplete="off">
+                    <!-- MULTI-SELECTED USERS -->
 
-                            </div>
+                    <div id="chatCreateGroupSelectedPeople" class="chat-create-group-selected-people">
 
-
-                            <!-- PEOPLE -->
-
-                            <div class="chat-create-group-field">
-
-                                <label class="chat-create-group-label" for="chatCreateGroupPeopleSearch">
-                                    Add people
-                                </label>
-
-
-                                <div class="chat-create-group-search-wrapper">
-
-                                    <input id="chatCreateGroupPeopleSearch" class="chat-create-group-input"
-                                        type="search" placeholder="Search ServiceCall users..." autocomplete="off"
-                                        spellcheck="false">
-
-
-                                    <div id="chatCreateGroupPeopleResults" class="chat-create-group-results"
-                                        style="display: none;"></div>
-
-                                </div>
-
-
-                                <!-- MULTI-SELECTED USERS -->
-
-                                <div id="chatCreateGroupSelectedPeople" class="chat-create-group-selected-people">
-
-                                    <div id="chatCreateGroupNoPeople" class="chat-create-group-no-people">
-                                        No people selected yet.
-                                    </div>
-
-                                </div>
-
-                            </div>
-
-
-                            <!-- ERROR / STATUS -->
-
-                            <div id="chatCreateGroupMessage" class="chat-create-group-message"></div>
-
-                        </div>
-
-
-                        <!-- FOOTER -->
-
-                        <div class="chat-create-group-footer">
-
-                            <button id="chatCreateGroupCancelButton" class="secondary-button" type="button">
-                                Cancel
-                            </button>
-
-
-                            <button id="chatCreateGroupSubmitButton" class="primary-button" type="button" disabled>
-                                Create Group
-                            </button>
-
+                        <div id="chatCreateGroupNoPeople" class="chat-create-group-no-people">
+                            No people selected yet.
                         </div>
 
                     </div>
 
                 </div>
 
-                <!-- =====================================
+
+                <!-- ERROR / STATUS -->
+
+                <div id="chatCreateGroupMessage" class="chat-create-group-message"></div>
+
+            </div>
+
+
+            <!-- FOOTER -->
+
+            <div class="chat-create-group-footer">
+
+                <button id="chatCreateGroupCancelButton" class="secondary-button" type="button">
+                    Cancel
+                </button>
+
+
+                <button id="chatCreateGroupSubmitButton" class="primary-button" type="button" disabled>
+                    Create Group
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- =====================================
                      HISTORY
                 ====================================== -->
 
-                <div id="historyView" class="view">
+    <div id="historyView" class="view">
 
 
-                    <div class="page-heading">
+        <div class="page-heading">
 
 
-                        <div>
+            <div>
 
 
-                            <h1>
-                                History
-                            </h1>
+                <h1>
+                    History
+                </h1>
 
 
-                            <p>
-                                Your previous ServiceCall activity.
-                            </p>
+                <p>
+                    Your previous ServiceCall activity.
+                </p>
 
 
-                        </div>
+            </div>
 
 
-                    </div>
+        </div>
 
 
-                    <div class="card placeholder">
-                        Call history will appear here.
-                    </div>
+        <div class="card placeholder">
+            Call history will appear here.
+        </div>
 
 
-                </div>
+    </div>
 
 
-                <!-- =====================================
+    <!-- =====================================
                      RECORDINGS
                 ====================================== -->
 
-                <div id="recordingsView" class="view">
+    <div id="recordingsView" class="view">
 
 
-                    <div class="page-heading">
+        <div class="page-heading">
 
 
-                        <div>
+            <div>
 
 
-                            <h1>
-                                Recordings
-                            </h1>
+                <h1>
+                    Recordings
+                </h1>
 
 
-                            <p>
-                                Your ServiceCall recording history.
-                            </p>
+                <p>
+                    Your ServiceCall recording history.
+                </p>
 
 
-                        </div>
+            </div>
 
 
-                        <button class="secondary-button" id="refreshRecordingsButton" type="button">
-                            Refresh
-                        </button>
+            <button class="secondary-button" id="refreshRecordingsButton" type="button">
+                Refresh
+            </button>
 
 
-                    </div>
+        </div>
 
 
-                    <div id="recordingsMessage" style="
+        <div id="recordingsMessage" style="
                             margin-bottom:14px;
                             color:#40514d;
                         "></div>
 
 
-                    <div id="recordingsList"></div>
+        <div id="recordingsList"></div>
+
+
+    </div>
+
+
+
+    <!-- =====================================
+                     SETTINGS
+                ====================================== -->
+
+    <div id="settingsView" class="view">
+
+
+        <div class="page-heading">
+
+
+            <div>
+
+
+                <h1>
+                    Settings
+                </h1>
+
+
+                <p>
+                    Manage your ServiceNow connection.
+                </p>
+
+
+            </div>
+
+
+        </div>
+
+
+        <div class="card settings-card">
+
+
+            <form id="instanceForm">
+
+
+                <label class="field-label" for="instanceUrl">
+                    ServiceNow instance
+                </label>
+
+
+                <input id="instanceUrl" class="text-input" type="text" placeholder="https://dev12345.service-now.com">
+
+
+                <div class="settings-actions">
+
+
+                    <button class="secondary-button" type="submit">
+                        Save Instance
+                    </button>
+
+
+                    <button class="primary-button" id="loginButton" type="button">
+                        Sign in to ServiceNow
+                    </button>
 
 
                 </div>
 
 
-
-                <!-- =====================================
-                     SETTINGS
-                ====================================== -->
-
-                <div id="settingsView" class="view">
+            </form>
 
 
-                    <div class="page-heading">
+            <div id="instanceMessage"></div>
 
-
-                        <div>
-
-
-                            <h1>
-                                Settings
-                            </h1>
-
-
-                            <p>
-                                Manage your ServiceNow connection.
-                            </p>
-
-
-                        </div>
-
-
-                    </div>
-
-
-                    <div class="card settings-card">
-
-
-                        <form id="instanceForm">
-
-
-                            <label class="field-label" for="instanceUrl">
-                                ServiceNow instance
-                            </label>
-
-
-                            <input id="instanceUrl" class="text-input" type="text"
-                                placeholder="https://dev12345.service-now.com">
-
-
-                            <div class="settings-actions">
-
-
-                                <button class="secondary-button" type="submit">
-                                    Save Instance
-                                </button>
-
-
-                                <button class="primary-button" id="loginButton" type="button">
-                                    Sign in to ServiceNow
-                                </button>
-
-
-                            </div>
-
-
-                        </form>
-
-
-                        <div id="instanceMessage"></div>
-
-                        <!-- =========================================
+            <!-- =========================================
      ACCOUNT SETTINGS
 ========================================== -->
 
-                        <div id="accountSettingsSection" style="
+            <div id="accountSettingsSection" style="
         margin-top: 24px;
         padding-top: 20px;
         border-top: 1px solid #e1e7e5;
     ">
 
-                            <div style="
+                <div style="
             margin-bottom: 6px;
             font-size: 14px;
             font-weight: 700;
         ">
-                                Account
-                            </div>
+                    Account
+                </div>
 
-                            <div style="
+                <div style="
             margin-bottom: 16px;
             color: #687a76;
             font-size: 12px;
             line-height: 1.5;
         ">
-                                Manage the ServiceNow account connected
-                                to ServiceCall Desktop.
-                            </div>
+                    Manage the ServiceNow account connected
+                    to ServiceCall Desktop.
+                </div>
 
 
-                            <!-- Current Account -->
+                <!-- Current Account -->
 
-                            <div id="currentAccountCard" style="
+                <div id="currentAccountCard" style="
             padding: 14px;
             border: 1px solid #e1e7e5;
             border-radius: 10px;
             background: #fafcfb;
         ">
 
-                                <div style="
+                    <div style="
                 margin-bottom: 7px;
                 color: #71827d;
                 font-size: 11px;
                 font-weight: 700;
                 text-transform: uppercase;
             ">
-                                    Current account
-                                </div>
+                        Current account
+                    </div>
 
 
-                                <div id="currentAccountName" style="
+                    <div id="currentAccountName" style="
                 color: #29463f;
                 font-size: 14px;
                 font-weight: 700;
             ">
-                                    Connected ServiceNow user
-                                </div>
+                        Connected ServiceNow user
+                    </div>
 
 
-                                <div id="currentAccountUsername" style="
+                    <div id="currentAccountUsername" style="
                 margin-top: 3px;
                 color: #71827d;
                 font-size: 12px;
             "></div>
 
 
-                                <div id="currentAccountServiceCallId" style="
+                    <div id="currentAccountServiceCallId" style="
                 margin-top: 3px;
                 color: #71827d;
                 font-size: 12px;
             "></div>
 
 
-                                <div style="margin-top: 14px;">
+                    <div style="margin-top: 14px;">
 
-                                    <button id="signOutButton" class="secondary-button" type="button">
-                                        Sign Out
-                                    </button>
+                        <button id="signOutButton" class="secondary-button" type="button">
+                            Sign Out
+                        </button>
 
-                                </div>
+                    </div>
 
-                            </div>
+                </div>
 
 
-                            <div id="accountMessage" style="
+                <div id="accountMessage" style="
             margin-top: 10px;
             color: #526762;
             font-size: 12px;
         "></div>
 
-                        </div>
+            </div>
 
-                    </div>
-
-
-                </div>
+        </div>
 
 
-            </section>
+    </div>
 
 
-        </main>
+    </section>
+
+
+    </main>
 
 
     </div>
