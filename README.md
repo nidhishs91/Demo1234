@@ -11182,7 +11182,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (
         message.is_mine === true &&
         message.deleted !== true &&
-        String(message.type || "text") === "text" &&
+        (String(message.type || "text") === "text" ||
+          String(message.type || "") === "attachment") &&
         !isActiveChatReadOnly()
       ) {
         const editButton = document.createElement("button");
@@ -11240,8 +11241,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             sys_id: messageSysId,
 
             original_text: String(message.text || ""),
-          };
 
+            type: String(message.type || "text").toLowerCase(),
+          };
           /*
            * Put the existing message text
            * into the normal composer.
@@ -11280,9 +11282,23 @@ document.addEventListener("DOMContentLoaded", async () => {
           if (chatSendButton) {
             chatSendButton.textContent = "Save";
 
-            chatSendButton.disabled = !String(
+            const editingMessageType = String(
+              chatEditTarget.type || "text",
+            ).toLowerCase();
+
+            const hasEditText = !!String(
               chatMessageInput ? chatMessageInput.value : "",
             ).trim();
+
+            /*
+             * Text message:
+             *   Save requires text.
+             *
+             * Attachment message:
+             *   Empty caption is valid.
+             */
+            chatSendButton.disabled =
+              editingMessageType === "text" && !hasEditText;
           }
         });
         menu.appendChild(editButton);
@@ -13283,8 +13299,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           throw new Error(result?.message || "Unable to send message.");
         }
       }
-
-      await checkForNewChatMessages();
       /*
        * =========================================
        * PROMOTE TEMPORARY DIRECT CHAT
@@ -13701,7 +13715,32 @@ document.addEventListener("DOMContentLoaded", async () => {
     const bubble = row.querySelector(".chat-message-bubble");
 
     if (bubble) {
-      bubble.textContent = String(newText || "");
+      const messageType = String(
+        cachedMessage ? cachedMessage.type || "text" : "text",
+      ).toLowerCase();
+
+      /*
+       * Normal text message:
+       * replacing the bubble text is safe.
+       */
+      if (messageType === "text") {
+        bubble.textContent = String(newText || "");
+      } else if (messageType === "attachment") {
+
+      /*
+       * Attachment message:
+       *
+       * Do NOT replace bubble.textContent because
+       * the bubble also contains the file cards.
+       *
+       * We will update only its caption element.
+       */
+        const caption = bubble.querySelector(".chat-attachment-caption");
+
+        if (caption) {
+          caption.textContent = String(newText || "");
+        }
+      }
     }
 
     /*
@@ -13742,7 +13781,21 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const message = String(chatMessageInput.value || "").trim();
 
-    if (!conversationSysId || !messageSysId || !message) {
+    const editingMessageType = String(
+      chatEditTarget.type || "text",
+    ).toLowerCase();
+
+    if (!conversationSysId || !messageSysId) {
+      return;
+    }
+
+    /*
+     * Normal text messages cannot be saved empty.
+     *
+     * Attachment messages may have an empty caption
+     * because the attached files remain in the message.
+     */
+    if (editingMessageType === "text" && !message) {
       return;
     }
 
@@ -13845,9 +13898,24 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (chatEditTarget) {
           chatSendButton.textContent = "Save";
 
-          chatSendButton.disabled = !String(
+          const editingMessageType = String(
+            chatEditTarget.type || "text",
+          ).toLowerCase();
+
+          const hasEditText = !!String(
             chatMessageInput ? chatMessageInput.value : "",
           ).trim();
+
+          /*
+           * Text message:
+           *   empty text cannot be saved.
+           *
+           * Attachment message:
+           *   empty caption is valid because
+           *   the files remain attached.
+           */
+          chatSendButton.disabled =
+            editingMessageType === "text" && !hasEditText;
         } else {
           chatSendButton.textContent = "Send";
 
@@ -13919,6 +13987,22 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
 
         const hasText = !!String(chatMessageInput.value || "").trim();
+
+        /*
+         * EDIT MODE
+         *
+         * Text messages require text.
+         * Attachment messages may have an empty caption.
+         */
+        if (chatEditTarget) {
+          const editingMessageType = String(
+            chatEditTarget.type || "text",
+          ).toLowerCase();
+
+          chatSendButton.disabled = editingMessageType === "text" && !hasText;
+
+          return;
+        }
 
         const hasAttachments = pendingChatAttachments.length > 0;
 
@@ -13997,27 +14081,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         const message = String(chatMessageInput.value || "").trim();
 
+        /*
+         * EDIT MODE
+         *
+         * Handle this BEFORE normal new-message validation.
+         *
+         * saveEditedChatMessage() already decides whether
+         * an empty value is valid:
+         *
+         * - text message       -> empty NOT allowed
+         * - attachment message -> empty caption allowed
+         */
+        if (chatEditTarget) {
+          await saveEditedChatMessage();
+
+          return;
+        }
+
         const hasAttachments = pendingChatAttachments.length > 0;
 
         if (
           chatAttachmentUploadsInProgress > 0 ||
           (!message && !hasAttachments)
         ) {
-          return;
-        }
-
-        /*
-         * EDIT MODE
-         *
-         * Enter means Save while editing.
-         * Do not let it enter the normal
-         * new-message send flow.
-         *
-         * Actual persistence comes next.
-         */
-        if (chatEditTarget) {
-          await saveEditedChatMessage();
-
           return;
         }
 
