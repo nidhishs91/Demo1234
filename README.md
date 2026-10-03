@@ -11828,6 +11828,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const metadata = document.createElement("div");
 
+    metadata.className = "chat-message-metadata";
+
     const sentAt = String(message.sent_at || "").trim();
 
     const editedAt = String(message.edited_at || "").trim();
@@ -13766,9 +13768,27 @@ document.addEventListener("DOMContentLoaded", async () => {
      */
     const bubble = row.querySelector(".chat-message-bubble");
 
+    console.log("EDIT ATTACHMENT DOM DEBUG:", {
+      messageSysId: targetSysId,
+      messageType: cachedMessage?.type,
+      bubbleFound: !!bubble,
+      captionFound: !!bubble?.querySelector(".chat-attachment-caption"),
+      attachmentsFound: !!bubble?.querySelector(".chat-message-attachments"),
+      bubbleChildren: bubble
+        ? Array.from(bubble.children).map(
+            (child) => child.className || child.tagName,
+          )
+        : [],
+    });
+
     if (bubble) {
       const messageType = String(
-        cachedMessage ? cachedMessage.type || "text" : "text",
+        cachedMessage?.type ||
+          (chatEditTarget &&
+          String(chatEditTarget.sys_id || "").trim() === targetSysId
+            ? chatEditTarget.type
+            : "") ||
+          "text",
       ).toLowerCase();
 
       /*
@@ -13831,7 +13851,7 @@ document.addEventListener("DOMContentLoaded", async () => {
      * Metadata is the final element of
      * the message row in the current renderer.
      */
-    const metadata = row.lastElementChild;
+    const metadata = row.querySelector(".chat-message-metadata");
     if (metadata) {
       const sentAt = cachedMessage
         ? String(cachedMessage.sent_at || "").trim()
