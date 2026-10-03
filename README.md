@@ -13283,6 +13283,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           throw new Error(result?.message || "Unable to send message.");
         }
       }
+
+      await checkForNewChatMessages();
       /*
        * =========================================
        * PROMOTE TEMPORARY DIRECT CHAT
@@ -13470,7 +13472,13 @@ document.addEventListener("DOMContentLoaded", async () => {
        * Attachment rendering will come through
        * our attachment-aware message flow later.
        */
-      if (hasText && result && result.message && stillViewingSentConversation) {
+      if (
+        hasText &&
+        !hasAttachments &&
+        result &&
+        result.message &&
+        stillViewingSentConversation
+      ) {
         const savedMessage = result.message || {};
 
         const savedReplyTo = savedMessage.reply_to || null;
@@ -13912,11 +13920,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         const hasText = !!String(chatMessageInput.value || "").trim();
 
-        const hasAttachment = !!(
-          pendingChatAttachment && pendingChatAttachment.sysId
-        );
+        const hasAttachments = pendingChatAttachments.length > 0;
 
-        chatSendButton.disabled = !hasText && !hasAttachment;
+        const uploadsStillRunning = chatAttachmentUploadsInProgress > 0;
+
+        chatSendButton.disabled =
+          uploadsStillRunning || (!hasText && !hasAttachments);
       },
     );
   }
@@ -13988,11 +13997,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         const message = String(chatMessageInput.value || "").trim();
 
-        const hasAttachment = !!(
-          pendingChatAttachment && pendingChatAttachment.sysId
-        );
+        const hasAttachments = pendingChatAttachments.length > 0;
 
-        if (!message && !hasAttachment) {
+        if (
+          chatAttachmentUploadsInProgress > 0 ||
+          (!message && !hasAttachments)
+        ) {
           return;
         }
 
