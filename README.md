@@ -9826,12 +9826,17 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const isVideo = safeMimeType.startsWith("video/");
 
+    const isCsv =
+      safeMimeType === "text/csv" ||
+      safeMimeType === "application/csv" ||
+      /\.csv$/i.test(safeFileName);
+
     const isText =
       safeMimeType.startsWith("text/") ||
       safeMimeType === "application/json" ||
       safeMimeType === "application/xml" ||
       safeMimeType === "application/javascript" ||
-      /\.(txt|log|md|js|json|html|css|xml|py|java)$/i.test(safeFileName);
+      /\.(txt|log|md|js|json|html|css|xml|py|java|csv)$/i.test(safeFileName);
 
     if (!isImage && !isPdf && !isAudio && !isVideo && !isText) {
       return;
@@ -10172,14 +10177,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     async function handleViewerKeyDown(event) {
       /*
-       * Escape closes the viewer.
-       */
-      if (event.key === "Escape") {
-        closeViewer();
-        return;
-      }
-
-      /*
        * Ctrl+C / Cmd+C copies the actual image
        * while the image viewer is open.
        *
@@ -10228,26 +10225,30 @@ document.addEventListener("DOMContentLoaded", async () => {
     closeButton.addEventListener("click", closeViewer);
 
     document.addEventListener("keydown", handleViewerKeyDown);
-
-    /*
-     * Clicking the dark area outside the
-     * viewer also closes it.
-     */
-    backdrop.addEventListener(
-      "click",
-
-      (event) => {
-        if (event.target === backdrop) {
-          closeViewer();
-        }
-      },
-    );
-
     /* =========================================
      SECURE IMAGE DOWNLOAD
   ========================================= */
 
     try {
+      const loadingPreview = document.createElement("div");
+
+      loadingPreview.textContent = isImage
+        ? "Loading image..."
+        : "Loading preview...";
+
+      loadingPreview.style.cssText = `
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    width:100%;
+    height:100%;
+    color:#c8cfcd;
+    font-size:14px;
+    font-weight:500;
+  `;
+
+      content.replaceChildren(loadingPreview);
+
       const result = await getCachedChatAttachmentImage(safeAttachmentSysId);
 
       if (!result || result.success !== true || !result.fileBytes) {
@@ -10416,6 +10417,106 @@ document.addEventListener("DOMContentLoaded", async () => {
         videoViewer.appendChild(video);
 
         content.replaceChildren(videoViewer);
+      } else if (isCsv) {
+        const csvText = new TextDecoder("utf-8").decode(result.fileBytes);
+
+        const parseCsvRow = (row) => {
+          const cells = [];
+
+          let currentCell = "";
+          let insideQuotes = false;
+
+          for (let index = 0; index < row.length; index++) {
+            const character = row[index];
+
+            if (character === '"') {
+              if (insideQuotes && row[index + 1] === '"') {
+                currentCell += '"';
+                index++;
+              } else {
+                insideQuotes = !insideQuotes;
+              }
+
+              continue;
+            }
+
+            if (character === "," && !insideQuotes) {
+              cells.push(currentCell);
+
+              currentCell = "";
+              continue;
+            }
+
+            currentCell += character;
+          }
+
+          cells.push(currentCell);
+
+          return cells;
+        };
+
+        const rows = csvText
+          .split(/\r?\n/)
+          .filter((row) => row.trim() !== "")
+          .map(parseCsvRow);
+
+        const tableWrapper = document.createElement("div");
+
+        tableWrapper.style.cssText = `
+    width:100%;
+    height:100%;
+    overflow:auto;
+    padding:20px;
+    box-sizing:border-box;
+    background:#111318;
+  `;
+
+        const table = document.createElement("table");
+
+        table.style.cssText = `
+    width:max-content;
+    min-width:100%;
+    border-collapse:collapse;
+    color:#e8e8e8;
+    font-size:13px;
+  `;
+
+        rows.forEach((row, rowIndex) => {
+          const tableRow = document.createElement("tr");
+
+          row.forEach((cell) => {
+            const cellElement = document.createElement(
+              rowIndex === 0 ? "th" : "td",
+            );
+
+            cellElement.textContent = cell.trim();
+
+            cellElement.style.cssText = `
+          padding:10px 14px;
+          border:1px solid rgba(255,255,255,0.12);
+          text-align:left;
+          white-space:nowrap;
+        `;
+
+            if (rowIndex === 0) {
+              cellElement.style.fontWeight = "600";
+
+              cellElement.style.background = "rgba(255,255,255,0.08)";
+            }
+
+            tableRow.appendChild(cellElement);
+          });
+
+          table.appendChild(tableRow);
+        });
+
+        tableWrapper.appendChild(table);
+
+        content.style.padding = "0";
+        content.style.alignItems = "stretch";
+        content.style.justifyContent = "stretch";
+
+        content.replaceChildren(tableWrapper);
       } else if (isText) {
         const textViewer = document.createElement("pre");
 
@@ -11115,18 +11216,28 @@ gap:8px;
 
         const mimeType = String(attachment.mime_type || "");
 
+        const isImageAttachment = mimeType.toLowerCase().startsWith("image/");
+
         const isPdfAttachment = mimeType.toLowerCase() === "application/pdf";
 
         const isAudioAttachment = mimeType.toLowerCase().startsWith("audio/");
 
         const isVideoAttachment = mimeType.toLowerCase().startsWith("video/");
 
-        const isText =
-          safeMimeType.startsWith("text/") ||
-          safeMimeType === "application/json" ||
-          safeMimeType === "application/xml" ||
-          safeMimeType === "application/javascript" ||
-          /\.(txt|log|md|js|json|html|css|xml|py|java)$/i.test(safeFileName);
+        const attachmentFileName = String(
+          attachment.file_name || attachment.u_file_name || "",
+        );
+
+        const lowerMimeType = mimeType.toLowerCase();
+
+        const isTextAttachment =
+          lowerMimeType.startsWith("text/") ||
+          lowerMimeType === "application/json" ||
+          lowerMimeType === "application/xml" ||
+          lowerMimeType === "application/javascript" ||
+          /\.(txt|log|md|js|json|html|css|xml|py|java|csv)$/i.test(
+            attachmentFileName,
+          );
 
         /* =========================================
    SECURE IMAGE PREVIEW
@@ -11449,16 +11560,26 @@ gap:8px;
    PDF PREVIEW ACTION
 ========================================= */
 
-        if (isPdfAttachment || isAudioAttachment || isVideoAttachment) {
+        if (
+          isImageAttachment ||
+          isPdfAttachment ||
+          isAudioAttachment ||
+          isVideoAttachment ||
+          isTextAttachment
+        ) {
           const previewButton = document.createElement("button");
 
           previewButton.type = "button";
           previewButton.textContent = "Preview";
-          previewButton.title = isPdfAttachment
-            ? "Preview PDF"
-            : isAudioAttachment
-              ? "Preview Audio"
-              : "Preview Video";
+          previewButton.title = isImageAttachment
+            ? "Preview Image"
+            : isPdfAttachment
+              ? "Preview PDF"
+              : isAudioAttachment
+                ? "Preview Audio"
+                : isVideoAttachment
+                  ? "Preview Video"
+                  : "Preview Text";
 
           previewButton.style.cssText = `
     border:none;
