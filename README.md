@@ -1,4 +1,129 @@
+Operation(Contract Core: Electronic Signature AdobeSign.2ceabaedff802210af3cffffffffff00.eceabaedff802210af3cffffffffff04.707db6de43702110f588ead67bb8f219): for input variable documents was found an error on convertion		2026-10-28 15:20:32
+
+Contract Core: Electronic Signature Adob...	Error	Root cause of JavaScriptException: org.mozilla.javascript.NativeError
 JavaScript evaluation error on:
+(function execute(inputs, outputs) {
+inputs = new AdobeSignUtils().trimStringInputs(inputs);
+var mandatoryInputs = {
+'name': inputs.name,
+'group_record': inputs.group_record,
+'participant_info': inputs.participant_info,
+'documents': inputs.documents
+}
+new AdobeSignUtils().checkMandatoryInputs(mandatoryInputs);
+
+outputs.name = inputs.name;
+var inputDocs = inputs.documents;
+var documents = [];
+for (var i = 0; i < inputDocs.length; i++) {
+var docObj = {};
+var tempObj = inputDocs[i];
+var document_type = "libraryDocumentId";
+var id = tempObj.document_id;
+switch (tempObj.document_source) {
+case "library_document":
+document_type = "libraryDocumentId";
+break;
+case "transient_document":
+document_type = "transientDocumentId";
+break;
+}
+docObj[document_type] = id;
+documents.push(docObj);
+}
+
+var json_body = {};
+var memberinfo = {};
+var emailadd1 = {};
+var memberinfo_array = [];
+var memberinfo = {};
+json_body["fileInfos"] = documents;
+json_body["name"] = inputs.name;
+if (inputs.participant_info.length > 0) {
+var participants = [];
+inputs.participant_info.forEach(function(property) {
+var participant = {};
+if (property.order) {
+var order_syntex = /^[-+]?[0-9]+$/;
+try {
+var order = property.order.toString().trim();
+if (order.match(order_syntex)) {
+participant.order = order;
+} else
+throw new Error("Provided Signing Order is invalid.");
+} catch (err) {
+throw new Error("Provided Signing Order is invalid.");
+}
+}
+
+if (property.role)
+participant.role = property.role;
+if (!gs.nil(property.private_message))
+participant.privateMessage = property.private_message.trim();
+if (property.email) {
+var email_syntex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+try {
+var emailAdd = property.email.toString().trim();
+if (emailAdd.match(email_syntex)) {
+var memberInfos = [];
+var memberInfo = {};
+memberInfo.email = emailAdd;
+if(!gs.nil(property.name)) memberInfo.name = property.name.trim();
+memberInfos.push(memberInfo);
+participant.memberInfos = memberInfos;
+} else {
+throw new Error("Provided Participant Email is invalid.");
+}
+} catch (err) {
+throw new Error("Provided Participant Email is invalid.");
+}
+}
+participants.push(participant);
+});
+if (participants.length > 0) {
+json_body["participantSetsInfo"] = participants;
+var participants_obj = {};
+participants_obj['participantSetsInfo'] = participants;
+outputs.participants_info = JSON.stringify(participants_obj);
+}
+}
+if (!inputs.agreement_record) {} else if (inputs.agreement_record && (inputs.agreement_record.status == "") || (inputs.agreement_record.status == "DRAFT")) {
+
+} else {
+throw new Error("Provided agreement status should be DRAFT or null.");
+}
+json_body["message"] = inputs.message;
+json_body["signatureType"] = "ESIGN";
+json_body["state"] = inputs.state;
+json_body["externalId"] = "API_SERVICENOW_SPOKE";
+
+if (inputs.suppress_notification == true) {
+json_body["emailOption"] = {};
+json_body["emailOption"]["sendOptions"] = {};
+json_body["emailOption"]["sendOptions"]["completionEmails"] = "NONE";
+json_body["emailOption"]["sendOptions"]["inFlightEmails"] = "NONE";
+json_body["emailOption"]["sendOptions"]["initEmails"] = "NONE";
+}
+
+outputs.group_record = new AdobeSignUtils().validateGroupRecord(inputs.group_record);
+outputs.json_body = JSON.stringify(json_body);
+var connection_sys_id = inputs.connection_sys_id;
+outputs.adobe_version = new AdobeSignUtils().validateAdobeVersion(connection_sys_id);
+}(inputs, outputs));
+Stack trace:
+at sys_script_include.e3b33778db4227003e146583ca961970.script:117
+at Process Automation.707db6de43702110f588ead67bb8f219:9 (execute)
+at Process Automation.707db6de43702110f588ead67bb8f219:108
+at sys_script_include.35cb33ee476a21105da8ff58936d4390.script:94
+at sys_script_include.64e874a243f52110ff9fead67bb8f2b4.script:191 (sendForSignature)
+at sys_script_include.53b5af02849a2110fa9bfd0f8bd07b03.script:51
+at sys_script_include.cd6e5e7d84922110fa9bfd0f8bd07bdb.script:105 (implementation)
+at sp_widget.1ebf13f7e0a63010fa9b460b5b232860.script:66
+at sp_widget.1ebf13f7e0a63010fa9b460b5b232860.script:3
+at sp_widget.1ebf13f7e0a63010fa9b460b5b232860.script:1
+2026-10-28 15:20:32
+
+Contract Core: Electronic Signature Adob...	Error	JavaScript evaluation error on:
 (function execute(inputs, outputs) {
 inputs = new AdobeSignUtils().trimStringInputs(inputs);
 var mandatoryInputs = {
