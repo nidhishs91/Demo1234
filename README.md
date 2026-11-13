@@ -341,6 +341,14 @@ function saveActiveNotificationCheckpoint(notification) {
 
     const activeAccountKey = String(config.activeAccountKey || "").trim();
 
+    console.log("ServiceCall checkpoint account diagnostic:", {
+      hasActiveAccountKey: Boolean(activeAccountKey),
+      activeAccountExists: Boolean(
+        activeAccountKey && config.savedAccounts[activeAccountKey],
+      ),
+      savedAccountCount: Object.keys(config.savedAccounts || {}).length,
+    });
+
     if (!activeAccountKey || !config.savedAccounts[activeAccountKey]) {
       console.warn(
         "ServiceCall notification checkpoint not saved because no active saved account exists.",
@@ -2545,6 +2553,27 @@ async function createWindow() {
 }
 
 /* =====================================================
+   SERVICECALL CHAT DESKTOP NOTIFICATION
+===================================================== */
+
+ipcMain.on("servicecall-show-chat-notification", (event, payload = {}) => {
+  const conversationSysId = String(payload.conversationSysId || "").trim();
+
+  if (!conversationSysId) {
+    return;
+  }
+
+  showNotificationPopup({
+    sys_id: String(payload.messageSysId || "").trim(),
+    type: "chat",
+    type_display: "Chat",
+    title: String(payload.senderName || "New message"),
+    message: String(payload.messagePreview || "New chat message"),
+    conversation_sys_id: conversationSysId,
+  });
+});
+
+/* =====================================================
    SERVICECALL DESKTOP NOTIFICATION POPUP
 ===================================================== */
 
@@ -2667,6 +2696,8 @@ function createNotificationPopupWindow(notification) {
       meetingSysId: String(notification.meeting_sys_id || ""),
 
       callSysId: String(notification.call_sys_id || ""),
+
+      conversationSysId: String(notification.conversation_sys_id || ""),
     },
   });
 
@@ -6177,6 +6208,35 @@ ipcMain.on("servicecall-open-notification", (event, notificationData) => {
       type: String(
         notificationData && notificationData.type ? notificationData.type : "",
       ),
+    });
+  }
+
+  /*
+   * -----------------------------------------
+   * CHAT NOTIFICATION
+   * -----------------------------------------
+   *
+   * Forward the selected conversation to
+   * the main ServiceCall renderer.
+   */
+
+  const conversationSysId = String(
+    notificationData?.conversationSysId ||
+      notificationData?.conversation_sys_id ||
+      "",
+  ).trim();
+
+  if (
+    String(notificationData?.type || "").toLowerCase() === "chat" &&
+    /^[0-9a-f]{32}$/i.test(conversationSysId)
+  ) {
+    console.log(
+      "Opening chat from ServiceCall notification:",
+      conversationSysId,
+    );
+
+    mainWindow.webContents.send("servicecall-open-notification-chat", {
+      conversationSysId: conversationSysId,
     });
   }
 });
