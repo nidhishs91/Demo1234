@@ -1,8778 +1,4549 @@
-const {
-  app,
-  BrowserWindow,
-  ipcMain,
-  shell,
-  Tray,
-  Menu,
-  desktopCapturer,
-  dialog,
-  powerMonitor,
-  clipboard,
-  nativeImage,
-} = require("electron");
+const params = new URLSearchParams(window.location.search);
 
-const path = require("path");
-const fs = require("fs");
-const crypto = require("crypto");
-const http = require("http");
-const os = require("os");
+const mode = params.get("mode") || "incoming";
 
-const { convertWebmToMp3, convertWebmToMp4 } = require("./media-converter");
+const callSysId = params.get("callSysId") || "";
 
-let mainWindow = null;
-let callbackServer = null;
-let heartbeatTimer = null;
-let tray = null;
-let isQuitting = false;
-let incomingCallTimer = null;
-let activeIncomingCallId = null;
-let isDeviceSuspended = false;
-let outgoingCallTimer = null;
-let activeOutgoingCallId = null;
-let activeCallWindowId = null;
-let callWindowClosing = false;
-let currentServiceCallUser = null;
-let notificationTimer = null;
-const surfacedNotificationIds = new Set();
-let currentServiceCallAuthorization = null;
-let authorizationMonitorTimer = null;
-let serviceCallAccessUnavailable = false;
-const intentionallyLeftCallIds = new Set();
-const CALLBACK_HOST = "127.0.0.1";
-const CALLBACK_PORT = 42813;
-const SERVICECALL_PROTOCOL = "servicecall";
+const personName = params.get("name") || "Unknown User";
+
+const department = params.get("department") || "";
+
+const callNumber = params.get("callNumber") || "";
+
+const isConference = params.get("isConference") === "true";
+
+/* -------------------------
+   MEETING CONTEXT
+------------------------- */
+
+const isMeeting = params.get("isMeeting") === "true";
+
+const meetingSysId = params.get("meetingSysId") || "";
+
+const meetingNumber = params.get("meetingNumber") || "";
+
+const meetingTitle = params.get("meetingTitle") || "";
+
+console.log("SERVICECALL MEETING CONTEXT:", {
+  isMeeting,
+  meetingSysId,
+  meetingNumber,
+  meetingTitle,
+});
+
+let currentMode = mode;
+
+let callStatusTimer = null;
+
+let callStartedAt = null;
 
 /*
- * -----------------------------------------
- * DESKTOP NOTIFICATION STACK
- * -----------------------------------------
+ * Authoritative start time returned
+ * by ServiceNow.
  *
- * Maximum 3 notification popups are shown
- * on screen at the same time.
- *
- * Additional notifications wait in the
- * queue until a visible slot becomes free.
+ * For meetings this prevents the timer
+ * from restarting after Leave -> Join.
  */
+let serverCallStartedAt = null;
 
-const notificationPopupWindows = [];
+let durationTimer = null;
 
-const notificationPopupQueue = [];
+let closeTimer = null;
 
-const MAX_VISIBLE_NOTIFICATION_POPUPS = 3;
+let ringtoneInterval = null;
+let audioContext = null;
 
-const NOTIFICATION_POPUP_WIDTH = 380;
+let currentUserIsOwner = false;
 
-const NOTIFICATION_POPUP_HEIGHT = 150;
+let participantRole = "participant";
 
-const NOTIFICATION_POPUP_MARGIN = 18;
+/* -------------------------
+   ELEMENTS
+------------------------- */
 
-const NOTIFICATION_POPUP_GAP = 10;
+const participantsButtonCount = document.getElementById(
+  "participantsButtonCount",
+);
 
-/* -------------------------------------------------------
-   CONFIG
-------------------------------------------------------- */
+const avatar = document.getElementById("avatar");
 
-function getConfigPath() {
-  return path.join(app.getPath("userData"), "servicecall-config.json");
-}
+const personNameElement = document.getElementById("personName");
 
-function saveConfig(config) {
-  fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf8");
-}
+const departmentElement = document.getElementById("department");
 
-function loadConfig() {
-  const configPath = getConfigPath();
+const statusText = document.getElementById("statusText");
 
-  if (!fs.existsSync(configPath)) {
-    return {};
-  }
+const callNumberElement = document.getElementById("callNumber");
 
-  return JSON.parse(fs.readFileSync(configPath, "utf8"));
-}
+const timerElement = document.getElementById("timer");
 
-function ensureAccountStore(config) {
-  if (!config || typeof config !== "object") {
-    config = {};
+const incomingActions = document.getElementById("incomingActions");
+
+const callingActions = document.getElementById("callingActions");
+
+const connectedActions = document.getElementById("connectedActions");
+
+/* -------------------------
+   PARTICIPANTS PANEL
+------------------------- */
+
+const participantsButton = document.getElementById("participantsButton");
+
+const participantsPanel = document.getElementById("participantsPanel");
+
+const participantsPanelBody = document.getElementById("participantsPanelBody");
+
+const participantsPanelCount = document.getElementById(
+  "participantsPanelCount",
+);
+
+const closeParticipantsPanelButton = document.getElementById(
+  "closeParticipantsPanel",
+);
+
+let latestCallParticipants = [];
+
+/* -------------------------
+   INITIAL DISPLAY
+------------------------- */
+
+personNameElement.textContent = personName;
+
+departmentElement.textContent = department;
+
+callNumberElement.textContent = callNumber;
+
+const initials = personName
+  .split(" ")
+  .filter(Boolean)
+  .slice(0, 2)
+  .map((part) => part[0].toUpperCase())
+  .join("");
+
+avatar.textContent = initials || "?";
+
+/* -------------------------
+   MEETING DISPLAY
+------------------------- */
+
+if (isMeeting) {
+  /*
+   * Use the meeting title as the
+   * primary name in the existing
+   * ServiceCall window.
+   */
+  personNameElement.textContent =
+    meetingTitle || personName || "ServiceCall Meeting";
+
+  /*
+   * Show that this is a meeting
+   * instead of a person's department.
+   */
+  departmentElement.textContent = "Meeting";
+
+  /*
+   * Show meeting number when available.
+   */
+  if (meetingNumber) {
+    callNumberElement.textContent = meetingNumber;
   }
 
   /*
-   * Saved ServiceCall accounts.
+   * Meeting-specific action labels.
    */
-  if (!Array.isArray(config.accounts)) {
-    config.accounts = [];
+  const addUserButton = document.getElementById("addUserButton");
+
+  const recordButton = document.getElementById("recordButton");
+
+  if (addUserButton) {
+    addUserButton.textContent = "Add People";
   }
 
-  /*
-   * Currently selected saved account.
-   */
-  if (typeof config.activeAccountId !== "string") {
-    config.activeAccountId = "";
+  if (recordButton) {
+    recordButton.textContent = "Record Meeting";
   }
-
-  return config;
 }
 
-/* =========================================================
-   SAVED ACCOUNT HELPERS
-========================================================= */
+/* =====================================================
+   MEETING END / LEAVE SOUND
+===================================================== */
 
-function getSavedAccountKey(instanceUrl, userSysId) {
-  const normalizedInstance = String(instanceUrl || "")
-    .trim()
-    .replace(/\/+$/, "")
-    .toLowerCase();
-
-  const normalizedUser = String(userSysId || "")
-    .trim()
-    .toLowerCase();
-
-  if (!normalizedInstance || !normalizedUser) {
-    return "";
-  }
-
-  return normalizedInstance + "::" + normalizedUser;
-}
-
-function ensureSavedAccountStructure(config) {
-  if (!config || typeof config !== "object") {
-    config = {};
-  }
-
-  if (
-    !config.savedAccounts ||
-    typeof config.savedAccounts !== "object" ||
-    Array.isArray(config.savedAccounts)
-  ) {
-    config.savedAccounts = {};
-  }
-
-  if (typeof config.activeAccountKey !== "string") {
-    config.activeAccountKey = "";
-  }
-
-  return config;
-}
-
-/* =========================================================
-   SAVE AUTHENTICATED ACCOUNT
-========================================================= */
-
-function saveAuthenticatedAccount(config, user, authorization) {
-  config = ensureSavedAccountStructure(config);
-
-  if (!user || !user.sys_id) {
-    throw new Error("Authenticated ServiceCall user is missing.");
-  }
-
-  const accountKey = getSavedAccountKey(config.instanceUrl, user.sys_id);
-
-  if (!accountKey) {
-    throw new Error("Unable to create the ServiceCall account key.");
-  }
-
-  /*
-   * Preserve anything already stored
-   * for this account.
-   */
-
-  const existingAccount = config.savedAccounts[accountKey] || {};
-
-  const now = new Date().toISOString();
-
-  config.savedAccounts[accountKey] = {
-    /*
-     * -----------------------------------------
-     * STABLE ACCOUNT IDENTITY
-     * -----------------------------------------
-     */
-
-    accountKey: accountKey,
-
-    instanceUrl: config.instanceUrl || "",
-
-    userSysId: user.sys_id,
-
-    name: user.name || "",
-
-    userName: user.user_name || "",
-
-    email: user.email || "",
-
-    serviceCallId: user.servicecall_id || "",
-
-    /*
-     * -----------------------------------------
-     * AUTHORIZATION SNAPSHOT
-     * -----------------------------------------
-     *
-     * This is only stored for UI/account
-     * information.
-     *
-     * /me remains the authority whenever
-     * the account is activated.
-     */
-
-    isServiceCallUser: authorization?.is_servicecall_user === true,
-
-    isServiceCallAdmin: authorization?.is_servicecall_admin === true,
-
-    /*
-     * -----------------------------------------
-     * OAUTH CREDENTIALS
-     * -----------------------------------------
-     *
-     * Each saved account owns its own
-     * OAuth credentials.
-     */
-
-    accessToken: config.accessToken || existingAccount.accessToken || "",
-
-    refreshToken: config.refreshToken || existingAccount.refreshToken || "",
-
-    tokenType: config.tokenType || existingAccount.tokenType || "Bearer",
-
-    expiresIn: config.expiresIn || existingAccount.expiresIn || 0,
-
-    tokenObtainedAt:
-      config.tokenObtainedAt || existingAccount.tokenObtainedAt || 0,
-
-    /*
-     * -----------------------------------------
-     * ACCOUNT TIMESTAMPS
-     * -----------------------------------------
-     */
-
-    addedAt: existingAccount.addedAt || now,
-
-    lastUsedAt: now,
-
-    /*
-     * -----------------------------------------
-     * DESKTOP NOTIFICATION CHECKPOINT
-     * -----------------------------------------
-     *
-     * This is separate from the notification's
-     * read/unread state.
-     *
-     * It remembers the newest notification
-     * already known by the desktop for THIS
-     * ServiceCall account.
-     *
-     * IMPORTANT:
-     * Preserve the existing checkpoint when
-     * this account authenticates again.
-     */
-
-    notificationCheckpoint: existingAccount.notificationCheckpoint || {
-      createdAt: "",
-      sysId: "",
-    },
-  };
-
-  /*
-   * This account becomes the currently
-   * selected ServiceCall account.
-   */
-
-  config.activeAccountKey = accountKey;
-
-  return {
-    config: config,
-
-    accountKey: accountKey,
-
-    account: config.savedAccounts[accountKey],
-  };
-}
-
-function getActiveNotificationCheckpoint() {
+function playMeetingLeaveEndSound() {
   try {
-    const config = ensureSavedAccountStructure(loadConfig());
+    const audio = new Audio("assets/sounds/end-meet.mp3");
 
-    const activeAccountKey = String(config.activeAccountKey || "").trim();
+    audio.volume = 0.7;
 
-    if (!activeAccountKey || !config.savedAccounts[activeAccountKey]) {
-      return {
-        createdAt: "",
-        sysId: "",
-      };
-    }
-
-    const account = config.savedAccounts[activeAccountKey];
-
-    const checkpoint = account.notificationCheckpoint || {};
-
-    return {
-      createdAt: String(checkpoint.createdAt || "").trim(),
-
-      sysId: String(checkpoint.sysId || "").trim(),
-    };
-  } catch (error) {
-    console.error("Unable to read ServiceCall notification checkpoint:", error);
-
-    return {
-      createdAt: "",
-      sysId: "",
-    };
-  }
-}
-
-function saveActiveNotificationCheckpoint(notification) {
-  try {
-    if (!notification) {
-      return false;
-    }
-
-    const notificationSysId = String(notification.sys_id || "").trim();
-
-    const createdAt = String(notification.created_at || "").trim();
-
-    if (!notificationSysId || !createdAt) {
-      console.warn(
-        "ServiceCall notification checkpoint not saved because notification identity is incomplete:",
-        notification,
-      );
-
-      return false;
-    }
-
-    const config = ensureSavedAccountStructure(loadConfig());
-
-    const activeAccountKey = String(config.activeAccountKey || "").trim();
-
-    if (!activeAccountKey || !config.savedAccounts[activeAccountKey]) {
-      console.warn(
-        "ServiceCall notification checkpoint not saved because no active saved account exists.",
-      );
-
-      return false;
-    }
-
-    config.savedAccounts[activeAccountKey].notificationCheckpoint = {
-      createdAt: createdAt,
-
-      sysId: notificationSysId,
-    };
-
-    saveConfig(config);
-
-    console.log("ServiceCall notification checkpoint saved:", {
-      accountKey: activeAccountKey,
-
-      createdAt: createdAt,
-
-      sysId: notificationSysId,
+    audio.play().catch((error) => {
+      console.error("Unable to play meeting leave/end sound:", error);
     });
-
-    return true;
   } catch (error) {
-    console.error("Unable to save ServiceCall notification checkpoint:", error);
-
-    return false;
+    console.error("Meeting leave/end sound failed:", error);
   }
 }
 
-/* =========================================================
-   SYNC ACTIVE ACCOUNT OAUTH TOKENS
-========================================================= */
-
-function syncActiveAccountTokens(config) {
-  config = ensureSavedAccountStructure(config);
-
-  const accountKey = String(config.activeAccountKey || "").trim();
-
-  /*
-   * No active saved account yet.
-   *
-   * This is expected during our migration
-   * from the old single-account config.
-   */
-  if (!accountKey) {
-    return config;
-  }
-
-  const account = config.savedAccounts[accountKey];
-
-  /*
-   * Never create an account here.
-   *
-   * Account creation happens only after
-   * /me tells us who authenticated.
-   */
-  if (!account) {
-    console.warn("ServiceCall active saved account was not found:", accountKey);
-
-    return config;
-  }
-
-  /* -----------------------------------------
-       COPY CURRENT OAUTH SESSION
-       INTO THE ACTIVE ACCOUNT
-    ----------------------------------------- */
-
-  account.accessToken = config.accessToken || "";
-
-  account.refreshToken = config.refreshToken || "";
-
-  account.tokenType = config.tokenType || "Bearer";
-
-  account.expiresIn = config.expiresIn || 0;
-
-  account.tokenObtainedAt = config.tokenObtainedAt || 0;
-
-  /*
-   * Keep instance information synchronized.
-   */
-  account.instanceUrl = config.instanceUrl || account.instanceUrl || "";
-
-  /*
-   * Token refresh counts as account activity.
-   */
-  account.lastUsedAt = new Date().toISOString();
-
-  config.savedAccounts[accountKey] = account;
-
-  return config;
-}
-
-/* =========================================================
-   GET SAVED ACCOUNTS
-========================================================= */
-
-function getSavedAccounts() {
-  let config = loadConfig();
-
-  config = ensureSavedAccountStructure(config);
-
-  const accounts = Object.values(config.savedAccounts);
-
-  /*
-   * Most recently used accounts first.
-   */
-  accounts.sort((a, b) => {
-    const aTime = new Date(a.lastUsedAt || a.addedAt || 0).getTime();
-
-    const bTime = new Date(b.lastUsedAt || b.addedAt || 0).getTime();
-
-    return bTime - aTime;
-  });
-
-  /*
-   * SECURITY:
-   *
-   * Never send OAuth tokens to the renderer.
-   */
-  return accounts.map((account) => ({
-    accountKey: account.accountKey || "",
-
-    instanceUrl: account.instanceUrl || "",
-
-    userSysId: account.userSysId || "",
-
-    name: account.name || "",
-
-    userName: account.userName || "",
-
-    email: account.email || "",
-
-    serviceCallId: account.serviceCallId || "",
-
-    isServiceCallUser: account.isServiceCallUser === true,
-
-    isServiceCallAdmin: account.isServiceCallAdmin === true,
-
-    addedAt: account.addedAt || "",
-
-    lastUsedAt: account.lastUsedAt || "",
-
-    isActive: account.accountKey === config.activeAccountKey,
-  }));
-}
-
-function updateActiveSavedAccountAuthorization(authorization) {
-  let config = loadConfig();
-
-  config = ensureSavedAccountStructure(config);
-
-  const accountKey = config.activeAccountKey;
-
-  if (!accountKey || !config.savedAccounts[accountKey]) {
-    return;
-  }
-
-  const account = config.savedAccounts[accountKey];
-
-  /*
-   * DISPLAY METADATA ONLY.
-   *
-   * These cached values must never be
-   * used to authorize ServiceCall.
-   */
-
-  account.isServiceCallUser = authorization?.is_servicecall_user === true;
-
-  account.isServiceCallAdmin = authorization?.is_servicecall_admin === true;
-
-  config.savedAccounts[accountKey] = account;
-
-  saveConfig(config);
-}
-
-function getOrCreateDeviceId() {
-  const config = loadConfig();
-
-  if (config.deviceId) {
-    return config.deviceId;
-  }
-
-  const deviceId = crypto.randomUUID();
-
-  config.deviceId = deviceId;
-
-  saveConfig(config);
-
-  return deviceId;
-}
-
-async function sendHeartbeatOnce() {
-  if (isDeviceSuspended) {
-    console.log("ServiceCall heartbeat skipped because device is suspended.");
-
-    return {
-      success: true,
-      skipped: true,
-      reason: "device_suspended",
-    };
-  }
-
-  const config = loadConfig();
-
-  if (!config.instanceUrl) {
-    throw new Error("ServiceNow instance is not configured.");
-  }
-
-  if (!config.accessToken) {
-    throw new Error("ServiceNow access token was not found.");
-  }
-
-  const validAccessToken = await ensureValidAccessToken();
-
-  const heartbeatUrl = config.instanceUrl + config.heartbeatPath;
-
-  const payload = {
-    device_id: getOrCreateDeviceId(),
-
-    device_name: os.hostname(),
-
-    platform: process.platform === "win32" ? "Windows" : process.platform,
-
-    app_version: app.getVersion(),
-  };
-
-  let response = await fetch(heartbeatUrl, {
-    method: "POST",
-
-    headers: {
-      Authorization: "Bearer " + validAccessToken,
-
-      "Content-Type": "application/json",
-
-      Accept: "application/json",
-    },
-
-    body: JSON.stringify(payload),
-  });
-
-  /*
-   * If the short-lived access token expired,
-   * automatically renew it and retry heartbeat once.
-   */
-  if (response.status === 401 || response.status === 403) {
-    console.log(
-      "Heartbeat authorization expired. Attempting automatic renewal...",
-    );
-
-    try {
-      const newAccessToken = await refreshAccessToken();
-
-      response = await fetch(heartbeatUrl, {
-        method: "POST",
-
-        headers: {
-          Authorization: "Bearer " + newAccessToken,
-
-          "Content-Type": "application/json",
-
-          Accept: "application/json",
-        },
-
-        body: JSON.stringify(payload),
-      });
-    } catch (refreshError) {
-      const authError = new Error(
-        "Your ServiceCall authorization has expired. Please sign in again.",
-      );
-
-      authError.code = "AUTHENTICATION_REQUIRED";
-
-      throw authError;
-    }
-  }
-
-  const responseText = await response.text();
-
-  let data;
-
+/* -------------------------
+   RINGTONE
+------------------------- */
+
+function playRingTone(frequency = 440) {
   try {
-    data = JSON.parse(responseText);
-  } catch (error) {
-    throw new Error("Heartbeat API returned an invalid response.");
-  }
-
-  if (!response.ok) {
-    console.error("Heartbeat HTTP status:", response.status);
-
-    console.error("Heartbeat response:", JSON.stringify(data, null, 2));
-
-    if (response.status === 401 || response.status === 403) {
-      const authError = new Error(
-        "Your ServiceNow session has expired. Please sign in again.",
-      );
-
-      authError.code = "AUTHENTICATION_REQUIRED";
-
-      throw authError;
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
 
-    var errorMessage = "Heartbeat failed with HTTP " + response.status;
+    const oscillator = audioContext.createOscillator();
 
-    if (data && typeof data.error === "object" && data.error) {
-      errorMessage = data.error.message || data.error.detail || errorMessage;
-    } else if (data && typeof data.error === "string") {
-      errorMessage = data.error;
-    } else if (data && typeof data.message === "string") {
-      errorMessage = data.message;
-    }
+    const gain = audioContext.createGain();
 
-    throw new Error(errorMessage);
-  }
+    oscillator.type = "sine";
 
-  return data;
-}
+    oscillator.frequency.value = frequency;
 
-async function updateDesktopState(state) {
-  try {
-    const config = loadConfig();
+    gain.gain.value = 0.08;
 
-    if (!config.instanceUrl || !config.accessToken) {
-      return {
-        success: false,
-        code: "NOT_CONNECTED",
-      };
-    }
+    oscillator.connect(gain);
 
-    const result = await serviceCallApiRequest("/desktop-state", "POST", {
-      device_id: getOrCreateDeviceId(),
+    gain.connect(audioContext.destination);
 
-      state: state,
-    });
+    oscillator.start();
 
-    console.log("ServiceCall desktop state:", result);
-
-    return result;
-  } catch (error) {
-    console.error("Unable to update ServiceCall desktop state:", error.message);
-
-    return {
-      success: false,
-      code: error.code || "DESKTOP_STATE_FAILED",
-      message: error.message,
-    };
-  }
-}
-
-async function checkIncomingCallOnce() {
-  try {
-    const result = await serviceCallApiRequest("/incoming-call", "GET");
-
-    if (result && result.success && result.incoming_call) {
-      const incomingCallId = result.call_sys_id;
-
-      if (
-        incomingCallId &&
-        !intentionallyLeftCallIds.has(incomingCallId) &&
-        incomingCallId !== activeIncomingCallId
-      ) {
-        activeIncomingCallId = incomingCallId;
-
-        console.log("Incoming ServiceCall:", result);
-
-        const isConference =
-          result.is_conference === true || result.call_type === "conference";
-
-        const displayName = isConference
-          ? result.conference_display || "Conference Call"
-          : result.caller_name || "Unknown User";
-
-        const displayDepartment = isConference
-          ? "Conference Call"
-          : result.caller_department || "";
-
-        showCallWindow("incoming", {
-          callSysId: result.call_sys_id,
-
-          callNumber: result.call_number,
-
-          name: displayName,
-
-          department: displayDepartment,
-
-          isConference: isConference,
-        });
-      }
-
-      return;
-    }
-
-    /*
-     * No incoming ringing invitation.
-     */
-    activeIncomingCallId = null;
-  } catch (error) {
-    console.error("Incoming call check failed:", error);
-
-    if (error.code === "AUTHENTICATION_REQUIRED") {
-      stopIncomingCallLoop();
-
-      sendAuthStatus(
-        "authentication_required",
-        "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-      );
-    }
-  }
-}
-
-function stopIncomingCallLoop() {
-  if (incomingCallTimer) {
-    clearInterval(incomingCallTimer);
-
-    incomingCallTimer = null;
-  }
-}
-
-/* =========================================================
-   SERVICECALL NOTIFICATION MONITOR
-========================================================= */
-
-async function checkNotificationsOnce() {
-  try {
-    const result = await serviceCallApiRequest(
-      "/notifications?page=1&page_size=20&filter=unread",
-      "GET",
-    );
-
-    if (!result || result.success !== true) {
-      console.warn(
-        "ServiceCall notification check returned no valid result:",
-        result,
-      );
-
-      return;
-    }
-
-    const notifications = Array.isArray(result.notifications)
-      ? result.notifications
-      : [];
-
-    /*
-     * -----------------------------------------
-     * NO UNREAD NOTIFICATIONS
-     * -----------------------------------------
-     */
-
-    if (notifications.length === 0) {
-      console.log("ServiceCall notification check: no unread notifications.");
-
-      return;
-    }
-
-    /*
-     * -----------------------------------------
-     * CURRENT ACCOUNT CHECKPOINT
-     * -----------------------------------------
-     */
-
-    const checkpoint = getActiveNotificationCheckpoint();
-
-    console.log("ServiceCall notification checkpoint:", checkpoint);
-
-    /*
-     * -----------------------------------------
-     * FIRST-TIME CHECKPOINT
-     * -----------------------------------------
-     *
-     * If this account has never had a desktop
-     * notification checkpoint before, treat
-     * the newest currently existing
-     * notification as the starting point.
-     *
-     * Existing unread notifications remain
-     * unread, but are NOT replayed as desktop
-     * popups.
-     */
-
-    if (!checkpoint.createdAt || !checkpoint.sysId) {
-      const newestNotification = notifications[0];
-
-      if (
-        newestNotification &&
-        newestNotification.sys_id &&
-        newestNotification.created_at
-      ) {
-        saveActiveNotificationCheckpoint(newestNotification);
-
-        /*
-         * Also remember all notifications
-         * returned by this poll for the
-         * current Electron session.
-         */
-
-        notifications.forEach((notification) => {
-          const sysId = String(notification.sys_id || "").trim();
-
-          if (sysId) {
-            surfacedNotificationIds.add(sysId);
-          }
-        });
-
-        console.log(
-          "ServiceCall initial notification checkpoint established:",
-          {
-            createdAt: newestNotification.created_at,
-
-            sysId: newestNotification.sys_id,
-          },
-        );
-      }
-
-      return;
-    }
-
-    /*
-     * -----------------------------------------
-     * FIND NOTIFICATIONS NEWER THAN CHECKPOINT
-     * -----------------------------------------
-     *
-     * ServiceNow sys_created_on uses:
-     *
-     * YYYY-MM-DD HH:mm:ss
-     *
-     * Because the components are ordered from
-     * largest to smallest, normalized values
-     * can be compared lexically.
-     *
-     * sys_id acts as the secondary identity
-     * when timestamps are equal.
-     */
-
-    const newNotifications = [];
-
-    for (const notification of notifications) {
-      const notificationSysId = String(notification.sys_id || "").trim();
-
-      const createdAt = String(notification.created_at || "").trim();
-
-      if (!notificationSysId || !createdAt) {
-        continue;
-      }
-
-      /*
-       * Once we reach the exact checkpoint,
-       * everything after it is older because
-       * the API is newest-first.
-       */
-
-      if (notificationSysId === checkpoint.sysId) {
-        break;
-      }
-
-      /*
-       * Anything created after the saved
-       * checkpoint is new.
-       */
-
-      if (createdAt > checkpoint.createdAt) {
-        newNotifications.push(notification);
-
-        continue;
-      }
-
-      /*
-       * Same timestamp but different sys_id.
-       *
-       * This can happen when multiple
-       * notifications are inserted within
-       * the same second.
-       *
-       * Since we have not yet reached the
-       * exact checkpoint record and the API
-       * is newest-first, treat it as new.
-       */
-
-      if (
-        createdAt === checkpoint.createdAt &&
-        notificationSysId !== checkpoint.sysId
-      ) {
-        newNotifications.push(notification);
-      }
-    }
-
-    if (newNotifications.length === 0) {
-      return;
-    }
-
-    console.log(
-      "ServiceCall genuinely new notifications detected:",
-      newNotifications.length,
-    );
-
-    /*
-     * -----------------------------------------
-     * SURFACE OLDEST → NEWEST
-     * -----------------------------------------
-     *
-     * API gives newest-first.
-     *
-     * Reverse the newly discovered set so
-     * desktop notifications appear in natural
-     * chronological order.
-     */
-
-    const notificationsToSurface = newNotifications.reverse();
-
-    notificationsToSurface.forEach((notification) => {
-      const notificationSysId = String(notification.sys_id || "").trim();
-
-      if (!notificationSysId) {
-        return;
-      }
-
-      /*
-       * Same-session duplicate protection.
-       */
-
-      if (surfacedNotificationIds.has(notificationSysId)) {
-        return;
-      }
-
-      surfacedNotificationIds.add(notificationSysId);
-
-      console.log("ServiceCall NEW notification detected:", {
-        sys_id: notificationSysId,
-
-        type: notification.type || "",
-
-        title: notification.title || "",
-
-        message: notification.message || "",
-
-        meeting_sys_id: notification.meeting_sys_id || "",
-
-        created_at: notification.created_at || "",
-      });
-
-      showNotificationPopup(notification);
-    });
-
-    /*
-     * -----------------------------------------
-     * ADVANCE CHECKPOINT
-     * -----------------------------------------
-     *
-     * newNotifications was reversed above,
-     * therefore its last item is now the
-     * newest notification we processed.
-     */
-
-    const newestProcessedNotification =
-      notificationsToSurface[notificationsToSurface.length - 1];
-
-    if (newestProcessedNotification) {
-      saveActiveNotificationCheckpoint(newestProcessedNotification);
-    }
-  } catch (error) {
-    console.error("ServiceCall notification check failed:", error);
-
-    if (error.code === "AUTHENTICATION_REQUIRED") {
-      stopNotificationLoop();
-
-      sendAuthStatus(
-        "authentication_required",
-        "Your ServiceCall authorization has expired. Please sign in again.",
-      );
-    }
-  }
-}
-
-function stopNotificationLoop() {
-  if (notificationTimer) {
-    clearInterval(notificationTimer);
-
-    notificationTimer = null;
-  }
-}
-
-// function startNotificationLoop() {
-
-//     /*
-//      * Prevent duplicate notification timers.
-//      */
-
-//     stopNotificationLoop();
-
-//     /*
-//      * Check immediately.
-//      */
-
-//     checkNotificationsOnce();
-
-//     /*
-//      * Then check every 5 seconds.
-//      *
-//      * This gives meeting-started notifications
-//      * reasonably fast desktop delivery.
-//      */
-
-//     notificationTimer =
-//         setInterval(
-//             checkNotificationsOnce,
-//             5000
-//         );
-// }
-
-function startNotificationLoop() {
-  console.log(">>> SERVICECALL NOTIFICATION LOOP STARTED <<<");
-
-  stopNotificationLoop();
-
-  checkNotificationsOnce();
-
-  notificationTimer = setInterval(checkNotificationsOnce, 5000);
-}
-
-function stopHeartbeatLoop() {
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-
-    heartbeatTimer = null;
-  }
-}
-
-async function startHeartbeatLoop() {
-  stopHeartbeatLoop();
-
-  try {
-    const result = await sendHeartbeatOnce();
-
-    console.log("ServiceCall heartbeat:", result);
-
-    sendAuthStatus("connected", "ServiceCall Desktop is connected.");
-  } catch (error) {
-    console.error("Initial heartbeat failed:", error);
-
-    if (error.code === "AUTHENTICATION_REQUIRED") {
-      stopHeartbeatLoop();
-
-      sendAuthStatus(
-        "authentication_required",
-        "Your ServiceNow session has expired. Please sign in again.",
-      );
-
-      return;
-    }
-
-    sendAuthStatus(
-      "warning",
-      "ServiceCall Desktop heartbeat failed: " + error.message,
-    );
-
-    return;
-  }
-
-  heartbeatTimer = setInterval(async () => {
-    try {
-      const result = await sendHeartbeatOnce();
-
-      console.log("ServiceCall heartbeat:", result);
-    } catch (error) {
-      console.error("Heartbeat failed:", error);
-
-      if (error.code === "AUTHENTICATION_REQUIRED") {
-        stopHeartbeatLoop();
-
-        sendAuthStatus(
-          "authentication_required",
-          "Your ServiceNow session has expired. Please sign in again.",
-        );
-
-        return;
-      }
-
-      sendAuthStatus(
-        "warning",
-        "ServiceCall Desktop heartbeat failed: " + error.message,
-      );
-    }
-  }, 30000);
-}
-
-function startIncomingCallLoop() {
-  stopIncomingCallLoop();
-
-  checkIncomingCallOnce();
-
-  incomingCallTimer = setInterval(checkIncomingCallOnce, 3000);
-}
-
-async function restoreSavedConnection() {
-  const config = loadConfig();
-
-  if (!config.instanceUrl || !config.accessToken) {
-    console.log("No saved ServiceCall connection found.");
-
-    return;
-  }
-
-  console.log("Saved ServiceCall connection found. Restoring...");
-
-  try {
-    await startHeartbeatLoop();
-
-    startIncomingCallLoop();
-
-    startOutgoingCallLoop();
-
-    console.log("ServiceCall connection restored.");
-  } catch (error) {
-    console.error("Unable to restore ServiceCall connection:", error);
-
-    sendAuthStatus(
-      "warning",
-      "Saved ServiceNow connection could not be restored: " + error.message,
-    );
-  }
-}
-
-/* -------------------------------------------------------
-   INSTANCE URL
-------------------------------------------------------- */
-
-function normalizeInstanceUrl(value) {
-  if (!value) {
-    return "";
-  }
-
-  value = value.trim();
-
-  if (!value.startsWith("https://")) {
-    value = "https://" + value;
-  }
-
-  value = value.replace(/\/+$/, "");
-
-  return value;
-}
-
-function isValidServiceNowUrl(value) {
-  try {
-    const parsed = new URL(value);
-
-    return (
-      parsed.protocol === "https:" &&
-      parsed.hostname.endsWith(".service-now.com")
-    );
-  } catch (error) {
-    return false;
-  }
-}
-
-/* -------------------------------------------------------
-   PKCE
-------------------------------------------------------- */
-
-function base64UrlEncode(buffer) {
-  return buffer
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function generateCodeVerifier() {
-  return base64UrlEncode(crypto.randomBytes(64));
-}
-
-function generateCodeChallenge(verifier) {
-  const hash = crypto.createHash("sha256").update(verifier).digest();
-
-  return base64UrlEncode(hash);
-}
-
-function generateState() {
-  return base64UrlEncode(crypto.randomBytes(32));
-}
-
-/* -------------------------------------------------------
-   SEND STATUS TO DESKTOP WINDOW
-------------------------------------------------------- */
-
-function sendAuthStatus(status, message) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("servicecall-auth-status", {
-      status: status,
-      message: message,
-    });
-  }
-}
-
-/* =========================================================
-   RUNTIME SERVICECALL AUTHORIZATION MONITOR
-========================================================= */
-
-function stopAuthorizationMonitor() {
-  if (authorizationMonitorTimer) {
-    clearInterval(authorizationMonitorTimer);
-
-    authorizationMonitorTimer = null;
-  }
-}
-
-/* =========================================================
-   SUSPEND / RESUME SERVICECALL RUNTIME
-========================================================= */
-
-function suspendServiceCallRuntime() {
-  console.warn("Suspending ServiceCall runtime...");
-
-  /*
-   * STOP HEARTBEAT
-   */
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-
-    heartbeatTimer = null;
-  }
-
-  /*
-   * STOP INCOMING CALL MONITOR
-   */
-  if (incomingCallTimer) {
-    clearInterval(incomingCallTimer);
-
-    incomingCallTimer = null;
-  }
-
-  /*
-   * STOP OUTGOING CALL MONITOR
-   */
-  if (outgoingCallTimer) {
-    clearInterval(outgoingCallTimer);
-
-    outgoingCallTimer = null;
-  }
-
-  stopNotificationLoop();
-
-  /*
-   * IMPORTANT:
-   *
-   * DO NOT stop authorizationMonitorTimer.
-   *
-   * DO NOT clear OAuth tokens.
-   *
-   * DO NOT clear the active account.
-   *
-   * DO NOT call desktop-sign-out.
-   *
-   * The user is still authenticated.
-   * Only ServiceCall authorization is unavailable.
-   */
-
-  console.log("ServiceCall runtime suspended.");
-}
-
-async function terminateActiveSessionForAccessLoss() {
-  console.warn(
-    "Terminating active ServiceCall desktop session because access was removed...",
-  );
-
-  /*
-   * Remember the active call before clearing
-   * the desktop state.
-   */
-
-  const callSysId =
-    activeCallWindowId || activeOutgoingCallId || activeIncomingCallId || null;
-
-  /*
-   * Prevent polling from reopening this call
-   * if ServiceCall access is restored later.
-   */
-
-  if (callSysId) {
-    intentionallyLeftCallIds.add(callSysId);
-
-    console.log("ServiceCall call blocked from automatic reopen:", callSysId);
-  }
-
-  /*
-   * Force the call window to close.
-   *
-   * IMPORTANT:
-   * callWindowClosing = true bypasses the
-   * normal close handler.
-   *
-   * Normally X on a connected call only hides
-   * the window. Authorization loss must close it.
-   */
-
-  if (callWindow && !callWindow.isDestroyed()) {
-    callWindowClosing = true;
-
-    try {
-      callWindow.close();
-    } catch (error) {
-      console.error(
-        "Unable to close ServiceCall call window during access loss:",
-        error,
-      );
-    }
-  }
-
-  /*
-   * Clear desktop call tracking.
-   *
-   * Restoring ServiceCall authorization must
-   * NOT restore the previous call automatically.
-   */
-
-  activeCallWindowId = null;
-
-  activeIncomingCallId = null;
-
-  activeOutgoingCallId = null;
-
-  console.log("Active ServiceCall desktop session cleared.");
-}
-
-async function showServiceCallUnavailablePage() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return;
-  }
-
-  try {
-    await mainWindow.loadFile("access-unavailable.html");
-
-    mainWindow.show();
-
-    mainWindow.focus();
-
-    console.log("ServiceCall unavailable page displayed.");
-  } catch (error) {
-    console.error("Unable to display ServiceCall unavailable page:", error);
-  }
-}
-
-async function restoreServiceCallApplication() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return;
-  }
-
-  try {
-    await mainWindow.loadFile("index.html");
-
-    mainWindow.show();
-
-    mainWindow.focus();
-
-    console.log("ServiceCall application restored.");
-  } catch (error) {
-    console.error("Unable to restore ServiceCall application:", error);
-  }
-}
-
-async function resumeServiceCallRuntime() {
-  console.log("Resuming ServiceCall runtime...");
-
-  /*
-   * Restart operational background services.
-   */
-
-  await startHeartbeatLoop();
-
-  startIncomingCallLoop();
-
-  startOutgoingCallLoop();
-
-  startNotificationLoop();
-
-  console.log("ServiceCall runtime resumed.");
-}
-
-async function checkRuntimeAuthorizationOnce() {
-  try {
-    /*
-     * No active authenticated ServiceCall identity
-     * means there is nothing to monitor.
-     */
-
-    if (!currentServiceCallUser) {
-      return;
-    }
-
-    /*
-     * Ensure the OAuth session itself
-     * is still valid.
-     */
-
-    await ensureValidAccessToken();
-
-    /*
-     * Re-check the CURRENT ServiceNow roles.
-     *
-     * Do not trust the role snapshot stored
-     * when the user originally signed in.
-     */
-
-    const currentUser = await getCurrentServiceCallUser();
-
-    const authorization = currentUser?.authorization || {};
-
-    /*
-     * Keep current identity and authorization
-     * information synchronized.
-     */
-
-    currentServiceCallUser = currentUser?.user || null;
-
-    currentServiceCallAuthorization = authorization;
-
-    updateActiveSavedAccountAuthorization(authorization);
-
-    /*
-     * -----------------------------------------
-     * SERVICECALL ACCESS REMOVED
-     * -----------------------------------------
-     */
-
-    if (authorization.allowed !== true) {
-      /*
-       * Only perform the suspension/page
-       * transition once.
-       */
-
-      if (!serviceCallAccessUnavailable) {
-        serviceCallAccessUnavailable = true;
-
-        console.warn("ServiceCall runtime access removed.", {
-          user: currentServiceCallUser,
-
-          authorization: authorization,
-        });
-
-        /*
-         * Stop ServiceCall operational
-         * background activity.
-         *
-         * The authorization monitor itself
-         * must remain running.
-         */
-
-        suspendServiceCallRuntime();
-
-        await terminateActiveSessionForAccessLoss();
-
-        await showServiceCallUnavailablePage();
-
-        sendAuthStatus(
-          "access_removed",
-          "ServiceCall access is currently unavailable for this account.",
-        );
-      }
-
-      return;
-    }
-
-    /*
-     * -----------------------------------------
-     * SERVICECALL ACCESS RESTORED
-     * -----------------------------------------
-     */
-
-    if (serviceCallAccessUnavailable) {
-      console.log("ServiceCall runtime access restored.", {
-        user: currentServiceCallUser,
-
-        authorization: authorization,
-      });
-
+    setTimeout(() => {
       try {
-        /*
-         * Tell the CURRENT unavailable page
-         * that access has been restored
-         * BEFORE replacing that page.
-         */
-
-        mainWindow?.webContents.send("servicecall-authorization-status", {
-          status: "access_restored",
-
-          message: "ServiceCall access has been restored.",
-        });
-
-        /*
-         * Keep the success/reconnecting
-         * message visible for 3.5 seconds.
-         */
-
-        await new Promise((resolve) => {
-          setTimeout(resolve, 3500);
-        });
-
-        /*
-         * Restart operational ServiceCall
-         * background services.
-         */
-
-        await resumeServiceCallRuntime();
-
-        /*
-         * Return from the unavailable page
-         * to the normal ServiceCall UI.
-         */
-
-        await restoreServiceCallApplication();
-
-        /*
-         * Restoration completed successfully.
-         */
-
-        serviceCallAccessUnavailable = false;
-
-        console.log("ServiceCall runtime restored successfully.");
-      } catch (restoreError) {
-        /*
-         * Keep ServiceCall unavailable so
-         * the authorization monitor can
-         * retry restoration later.
-         */
-
-        serviceCallAccessUnavailable = true;
-
-        console.error("Unable to restore ServiceCall runtime:", restoreError);
-      }
-    }
-  } catch (error) {
-    console.error("ServiceCall runtime authorization check failed:", error);
-  }
-}
-
-function startAuthorizationMonitor() {
-  stopAuthorizationMonitor();
-
-  /*
-   * Check immediately.
-   */
-  checkRuntimeAuthorizationOnce();
-
-  /*
-   * Then re-check every 30 seconds.
-   */
-  authorizationMonitorTimer = setInterval(checkRuntimeAuthorizationOnce, 30000);
-}
-
-/* -------------------------------------------------------
-   TOKEN EXCHANGE
-------------------------------------------------------- */
-
-async function exchangeAuthorizationCode(code, returnedState) {
-  const config = loadConfig();
-
-  if (!config.oauthState || returnedState !== config.oauthState) {
-    throw new Error("OAuth state validation failed.");
-  }
-
-  if (!config.pkceCodeVerifier) {
-    throw new Error("PKCE code verifier was not found.");
-  }
-
-  const tokenUrl = config.instanceUrl + "/oauth_token.do";
-
-  const body = new URLSearchParams();
-
-  body.set("grant_type", "authorization_code");
-
-  body.set("code", code);
-
-  body.set("redirect_uri", config.redirectUri);
-
-  body.set("client_id", config.oauthClientId);
-
-  body.set("code_verifier", config.pkceCodeVerifier);
-
-  body.set("state", returnedState);
-
-  const response = await fetch(tokenUrl, {
-    method: "POST",
-
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-
-    body: body.toString(),
-  });
-
-  const responseText = await response.text();
-
-  let tokenData;
-
-  try {
-    tokenData = JSON.parse(responseText);
-  } catch (error) {
-    throw new Error("ServiceNow returned an invalid token response.");
-  }
-
-  if (!response.ok || !tokenData.access_token) {
-    throw new Error(
-      tokenData.error_description ||
-        tokenData.error ||
-        "Unable to obtain OAuth access token.",
-    );
-  }
-
-  config.accessToken = tokenData.access_token;
-
-  config.tokenType = tokenData.token_type || "Bearer";
-
-  config.expiresIn = tokenData.expires_in || 0;
-
-  config.tokenObtainedAt = Date.now();
-
-  if (tokenData.refresh_token) {
-    config.refreshToken = tokenData.refresh_token;
-
-    console.log("ServiceCall refresh token received successfully.");
-  } else {
-    console.log("ServiceCall refresh token was NOT returned.");
-  }
-
-  /*
-       We no longer need these after
-       successful authentication.
-    */
-
-  delete config.pkceCodeVerifier;
-  delete config.oauthState;
-
-  saveConfig(config);
-
-  /*
-   * -----------------------------------------
-   * VERIFY SERVICECALL AUTHORIZATION
-   * -----------------------------------------
-   */
-
-  const currentUser = await getCurrentServiceCallUser();
-
-  const authorization = currentUser?.authorization || {};
-
-  /*
-   * -----------------------------------------
-   * ESTABLISH ACTIVE RUNTIME IDENTITY
-   * -----------------------------------------
-   *
-   * OAuth authentication has completed and
-   * ServiceNow has resolved the current user.
-   *
-   * Keep the active Electron runtime identity
-   * synchronized with the authenticated
-   * ServiceNow identity.
-   */
-
-  currentServiceCallUser = currentUser?.user || null;
-
-  currentServiceCallAuthorization = authorization;
-
-  /*
-   * -----------------------------------------
-   * SAVE AUTHENTICATED ACCOUNT
-   * -----------------------------------------
-   */
-
-  const savedAccountResult = saveAuthenticatedAccount(
-    config,
-    currentUser?.user || null,
-    authorization,
-  );
-
-  saveConfig(savedAccountResult.config);
-
-  console.log("ServiceCall authenticated account saved:", {
-    accountKey: savedAccountResult.accountKey,
-
-    name: savedAccountResult.account?.name,
-
-    userName: savedAccountResult.account?.userName,
-  });
-
-  /*
-   * -----------------------------------------
-   * ACCESS DENIED
-   * -----------------------------------------
-   */
-
-  if (authorization.allowed !== true) {
-    console.warn("ServiceCall access denied:", currentUser);
-
-    /*
-     * OAuth succeeded, so the person is
-     * authenticated.
-     *
-     * But we DO NOT start heartbeat,
-     * calls, meetings, etc.
-     */
-
-    return {
-      success: true,
-      authenticated: true,
-      authorized: false,
-      state: "access_denied",
-      user: currentUser?.user || null,
-      authorization: authorization,
-    };
-  }
-
-  /*
-   * -----------------------------------------
-   * AUTHORIZED
-   * -----------------------------------------
-   */
-
-  console.log("ServiceCall authorization successful:", {
-    user: currentUser?.user,
-
-    authorization: authorization,
-  });
-
-  /*
-   * Background services may start only
-   * after ServiceCall authorization succeeds.
-   */
-
-  await startHeartbeatLoop();
-
-  startIncomingCallLoop();
-
-  startOutgoingCallLoop();
-
-  startNotificationLoop();
-
-  startAuthorizationMonitor();
-
-  return {
-    success: true,
-    authenticated: true,
-    authorized: true,
-    state: "ready",
-    user: currentUser?.user || null,
-    authorization: authorization,
-    tokenData: tokenData,
-  };
-}
-
-async function ensureValidAccessToken() {
-  const config = loadConfig();
-
-  if (!config.accessToken) {
-    const error = new Error("ServiceCall is not authenticated.");
-
-    error.code = "AUTHENTICATION_REQUIRED";
-
-    throw error;
-  }
-
-  /*
-   * If expiry information is unavailable,
-   * keep using the current token.
-   *
-   * The normal 401/403 refresh mechanism
-   * remains our fallback.
-   */
-  if (!config.expiresIn || !config.tokenObtainedAt) {
-    return config.accessToken;
-  }
-
-  const expiresAt = config.tokenObtainedAt + Number(config.expiresIn) * 1000;
-
-  /*
-   * Refresh 60 seconds before actual expiry.
-   */
-  const refreshAt = expiresAt - 60000;
-
-  if (Date.now() >= refreshAt) {
-    console.log(
-      "ServiceCall access token is close to expiry. Renewing automatically...",
-    );
-
-    return await refreshAccessToken();
-  }
-
-  return config.accessToken;
-}
-
-async function refreshAccessToken() {
-  const config = loadConfig();
-
-  if (!config.instanceUrl || !config.oauthClientId || !config.refreshToken) {
-    const error = new Error("A ServiceCall refresh token is not available.");
-
-    error.code = "REAUTHENTICATION_REQUIRED";
-
-    throw error;
-  }
-
-  console.log(
-    "ServiceCall access token expired. Attempting automatic renewal...",
-  );
-
-  const tokenUrl = config.instanceUrl.replace(/\/$/, "") + "/oauth_token.do";
-
-  const body = new URLSearchParams();
-
-  body.set("grant_type", "refresh_token");
-
-  body.set("refresh_token", config.refreshToken);
-
-  body.set("client_id", config.oauthClientId);
-
-  const response = await fetch(tokenUrl, {
-    method: "POST",
-
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-
-      Accept: "application/json",
-    },
-
-    body: body.toString(),
-  });
-
-  const responseText = await response.text();
-
-  let tokenData;
-
-  try {
-    tokenData = JSON.parse(responseText);
-  } catch (error) {
-    const refreshError = new Error(
-      "ServiceNow returned an invalid token renewal response.",
-    );
-
-    refreshError.code = "TOKEN_REFRESH_FAILED";
-
-    throw refreshError;
-  }
-
-  if (!response.ok || !tokenData.access_token) {
-    console.error("ServiceCall automatic token renewal failed.");
-
-    const refreshError = new Error(
-      tokenData.error_description ||
-        tokenData.error ||
-        "ServiceNow authorization must be renewed.",
-    );
-
-    refreshError.code = "REAUTHENTICATION_REQUIRED";
-
-    throw refreshError;
-  }
-
-  /*
-   * Store the NEW short-lived access token.
-   */
-  config.accessToken = tokenData.access_token;
-
-  config.tokenType = tokenData.token_type || "Bearer";
-
-  config.expiresIn = tokenData.expires_in || 0;
-
-  config.tokenObtainedAt = Date.now();
-
-  /*
-   * Some OAuth servers rotate refresh tokens.
-   * If ServiceNow gives us a new one,
-   * replace the previous refresh token.
-   */
-  if (tokenData.refresh_token) {
-    config.refreshToken = tokenData.refresh_token;
-  }
-
-  saveConfig(config);
-
-  console.log("ServiceCall access token renewed automatically.");
-
-  return config.accessToken;
-}
-
-/* -------------------------------------------------------
-   LOCAL OAUTH CALLBACK SERVER
-------------------------------------------------------- */
-
-function stopCallbackServer() {
-  if (callbackServer) {
-    try {
-      callbackServer.close();
-    } catch (error) {
-      // Ignore shutdown errors.
-    }
-
-    callbackServer = null;
-  }
-}
-
-function startCallbackServer() {
-  return new Promise((resolve, reject) => {
-    stopCallbackServer();
-
-    callbackServer = http.createServer(async (request, response) => {
-      try {
-        const callbackUrl = new URL(
-          request.url,
-          `http://${CALLBACK_HOST}:${CALLBACK_PORT}`,
-        );
-
-        /*
-         * -----------------------------------------
-         * VALIDATE CALLBACK PATH
-         * -----------------------------------------
-         */
-
-        if (callbackUrl.pathname !== "/callback") {
-          response.writeHead(404, {
-            "Content-Type": "text/plain",
-          });
-
-          response.end("Not found.");
-
-          return;
-        }
-
-        /*
-         * -----------------------------------------
-         * OAUTH ERROR
-         * -----------------------------------------
-         */
-
-        const oauthError = callbackUrl.searchParams.get("error");
-
-        if (oauthError) {
-          const description =
-            callbackUrl.searchParams.get("error_description") || oauthError;
-
-          response.writeHead(400, {
-            "Content-Type": "text/html; charset=utf-8",
-          });
-
-          response.end(`
-                                    <html>
-                                        <body style="
-                                            font-family: Arial, sans-serif;
-                                            text-align: center;
-                                            padding-top: 80px;
-                                        ">
-                                            <h2>
-                                                ServiceCall authorization
-                                                was not completed.
-                                            </h2>
-
-                                            <p>
-                                                You can close this
-                                                browser window.
-                                            </p>
-                                        </body>
-                                    </html>
-                                `);
-
-          sendAuthStatus("error", description);
-
-          stopCallbackServer();
-
-          return;
-        }
-
-        /*
-         * -----------------------------------------
-         * READ AUTHORIZATION CODE
-         * -----------------------------------------
-         */
-
-        const code = callbackUrl.searchParams.get("code");
-
-        const state = callbackUrl.searchParams.get("state");
-
-        if (!code || !state) {
-          throw new Error("Authorization code or state was missing.");
-        }
-
-        /*
-         * -----------------------------------------
-         * EXCHANGE CODE + CHECK SERVICECALL ACCESS
-         * -----------------------------------------
-         */
-
-        const authResult = await exchangeAuthorizationCode(code, state);
-
-        /*
-         * -----------------------------------------
-         * AUTHENTICATED BUT ACCESS DENIED
-         * -----------------------------------------
-         */
-
-        if (authResult?.state === "access_denied") {
-          console.warn(
-            "ServiceCall OAuth succeeded but access was denied:",
-            authResult,
-          );
-
-          response.writeHead(200, {
-            "Content-Type": "text/html; charset=utf-8",
-          });
-
-          response.end(`
-                                    <!DOCTYPE html>
-                                    <html>
-
-                                    <head>
-                                        <title>
-                                            ServiceCall Desktop
-                                        </title>
-                                    </head>
-
-                                    <body style="
-                                        margin: 0;
-                                        background: #f3f7f6;
-                                        font-family: Arial, sans-serif;
-                                        color: #1f2d2a;
-                                    ">
-
-                                        <div style="
-                                            max-width: 520px;
-                                            margin: 100px auto;
-                                            padding: 40px;
-                                            background: white;
-                                            border-radius: 12px;
-                                            text-align: center;
-                                            box-shadow: 0 8px 28px rgba(0,0,0,0.08);
-                                        ">
-
-                                            <h1>
-                                                ServiceCall Desktop
-                                            </h1>
-
-                                            <h2>
-                                                Access unavailable
-                                            </h2>
-
-                                            <p>
-                                                Your ServiceNow sign-in
-                                                was successful, but
-                                                ServiceCall access has
-                                                not been assigned to
-                                                this account.
-                                            </p>
-
-                                            <p>
-                                                You can close this
-                                                browser window and
-                                                return to ServiceCall
-                                                Desktop.
-                                            </p>
-
-                                        </div>
-
-                                    </body>
-
-                                    </html>
-                                `);
-
-          sendAuthStatus(
-            "access_denied",
-            "ServiceCall access has not been assigned to this account.",
-          );
-
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.show();
-
-            mainWindow.focus();
-          }
-
-          setTimeout(stopCallbackServer, 1000);
-
-          return;
-        }
-
-        /*
-         * -----------------------------------------
-         * AUTHORIZED
-         * -----------------------------------------
-         */
-
-        if (authResult?.state === "ready") {
-          console.log("ServiceCall login authorized:", authResult.user);
-
-          response.writeHead(200, {
-            "Content-Type": "text/html; charset=utf-8",
-          });
-
-          response.end(`
-                                    <!DOCTYPE html>
-                                    <html>
-
-                                    <head>
-                                        <title>
-                                            ServiceCall Desktop
-                                        </title>
-                                    </head>
-
-                                    <body style="
-                                        margin: 0;
-                                        background: #f3f7f6;
-                                        font-family: Arial, sans-serif;
-                                        color: #1f2d2a;
-                                    ">
-
-                                        <div style="
-                                            max-width: 520px;
-                                            margin: 100px auto;
-                                            padding: 40px;
-                                            background: white;
-                                            border-radius: 12px;
-                                            text-align: center;
-                                            box-shadow: 0 8px 28px rgba(0,0,0,0.08);
-                                        ">
-
-                                            <h1 style="
-                                                margin-bottom: 12px;
-                                            ">
-                                                ServiceCall Desktop
-                                            </h1>
-
-                                            <h2 style="
-                                                color: #0b6b58;
-                                            ">
-                                                Connected successfully
-                                            </h2>
-
-                                            <p>
-                                                Your ServiceNow account
-                                                is now connected to
-                                                ServiceCall Desktop.
-                                            </p>
-
-                                            <p>
-                                                You can close this
-                                                browser window and
-                                                return to ServiceCall
-                                                Desktop.
-                                            </p>
-
-                                        </div>
-
-                                    </body>
-
-                                    </html>
-                                `);
-
-          sendAuthStatus("connected", "Connected to ServiceCall.");
-
-          /*
-           * OAuth + /me authorization passed.
-           *
-           * exchangeAuthorizationCode()
-           * has already started the background
-           * ServiceCall services.
-           *
-           * Now enter the application.
-           */
-
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            await mainWindow.loadFile("index.html");
-
-            mainWindow.show();
-
-            mainWindow.focus();
-          }
-
-          setTimeout(stopCallbackServer, 1000);
-
-          return;
-        }
-
-        /*
-         * -----------------------------------------
-         * UNEXPECTED AUTH RESULT
-         * -----------------------------------------
-         */
-
-        throw new Error(
-          "ServiceCall authentication completed with an unexpected result.",
-        );
+        oscillator.stop();
       } catch (error) {
-        console.error("ServiceCall OAuth callback failed:", error);
-
-        response.writeHead(500, {
-          "Content-Type": "text/html; charset=utf-8",
-        });
-
-        response.end(`
-                                <html>
-                                    <body style="
-                                        font-family: Arial, sans-serif;
-                                        text-align: center;
-                                        padding-top: 80px;
-                                    ">
-
-                                        <h2>
-                                            ServiceCall connection
-                                            failed.
-                                        </h2>
-
-                                        <p>
-                                            Return to ServiceCall
-                                            Desktop and try again.
-                                        </p>
-
-                                    </body>
-                                </html>
-                            `);
-
-        sendAuthStatus(
-          "error",
-          error?.message || "ServiceCall connection failed.",
-        );
-
-        stopCallbackServer();
+        // Already stopped.
       }
-    });
-
-    /*
-     * -----------------------------------------
-     * CALLBACK SERVER ERROR
-     * -----------------------------------------
-     */
-
-    callbackServer.on("error", (error) => {
-      callbackServer = null;
-
-      reject(error);
-    });
-
-    /*
-     * -----------------------------------------
-     * START CALLBACK SERVER
-     * -----------------------------------------
-     */
-
-    callbackServer.listen(CALLBACK_PORT, CALLBACK_HOST, () => {
-      resolve();
-    });
-  });
-}
-
-/* -------------------------------------------------------
-   WINDOW
-------------------------------------------------------- */
-
-function registerServiceCallProtocol() {
-  if (process.defaultApp) {
-    if (process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient(SERVICECALL_PROTOCOL, process.execPath, [
-        path.resolve(process.argv[1]),
-      ]);
-    }
-  } else {
-    app.setAsDefaultProtocolClient(SERVICECALL_PROTOCOL);
+    }, 500);
+  } catch (error) {
+    console.error("Unable to play ServiceCall ringtone:", error);
   }
 }
 
-/* =====================================================
-   SERVICECALL DEEP LINK HANDLING
-===================================================== */
-
-let pendingDeepLink = null;
-
-/*
- * Extract a ServiceCall deep link from
- * Electron command-line arguments.
- */
-function getServiceCallDeepLink(args) {
-  if (!Array.isArray(args)) {
-    return null;
-  }
-
-  const deepLink = args.find(
-    (arg) => typeof arg === "string" && arg.startsWith("servicecall://"),
-  );
-
-  return deepLink || null;
-}
-
-/*
- * Handle the received deep link.
- *
- * For now we only store and log it.
- * Renderer navigation comes next.
- */
-function handleServiceCallDeepLink(deepLink) {
-  if (!deepLink || !deepLink.startsWith(SERVICECALL_PROTOCOL + "://")) {
-    return;
-  }
-
-  pendingDeepLink = deepLink;
-
-  console.log("ServiceCall deep link received:", deepLink);
+function startRingtone(type) {
+  stopRingtone();
 
   /*
-   * If the renderer is already loaded,
-   * send the link immediately.
-   */
-  if (
-    mainWindow &&
-    !mainWindow.isDestroyed() &&
-    !mainWindow.webContents.isLoading()
-  ) {
-    mainWindow.webContents.send("servicecall-deep-link", {
-      url: deepLink,
-    });
-
-    /*
-     * The renderer now owns this link,
-     * so it is no longer pending.
-     */
-    pendingDeepLink = null;
-  }
-}
-
-function showMainWindow() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore();
-    }
-
-    mainWindow.show();
-    mainWindow.focus();
-
-    return;
-  }
-
-  createWindow();
-}
-
-async function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 900,
-    height: 650,
-    minWidth: 700,
-    minHeight: 500,
-    title: "ServiceCall Desktop",
-
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-
-  /*
-   * -----------------------------------------
-   * RESOLVE STARTUP AUTHENTICATION
-   * -----------------------------------------
-   */
-
-  const startupState = await resolveStartupAuthentication();
-
-  console.log("ServiceCall startup state:", startupState);
-
-  /*
-   * -----------------------------------------
-   * AUTHORIZED USER
-   * -----------------------------------------
-   */
-
-  if (startupState.state === "ready") {
-    /*
-     * Make sure we begin in the
-     * available state.
-     */
-
-    serviceCallAccessUnavailable = false;
-
-    await mainWindow.loadFile("index.html");
-
-    /*
-     * Start background ServiceCall services
-     * ONLY after authorization succeeds.
-     */
-
-    await startHeartbeatLoop();
-
-    startIncomingCallLoop();
-
-    startOutgoingCallLoop();
-
-    startNotificationLoop();
-
-    startAuthorizationMonitor();
-  } else if (startupState.state === "access_denied") {
-    /*
-     * -----------------------------------------
-     * AUTHENTICATED BUT ACCESS NOT AVAILABLE
-     * -----------------------------------------
-     */
-    console.warn("ServiceCall access denied at startup.");
-
-    /*
-     * Startup access denial belongs to the
-     * authentication flow.
-     *
-     * Do NOT use the runtime unavailable page
-     * here.
-     */
-    serviceCallAccessUnavailable = false;
-
-    await mainWindow.loadFile(path.join("auth", "auth-gate.html"));
-
-    /*
-     * Do NOT start the runtime authorization
-     * monitor here.
-     *
-     * The runtime monitor is only for a user
-     * who successfully entered ServiceCall
-     * and later loses access.
-     */
-  } else {
-    /*
-     * -----------------------------------------
-     * LOGIN / AUTHENTICATION GATE
-     * -----------------------------------------
-     */
-    /*
-     * No usable authenticated ServiceCall
-     * session exists.
-     */
-
-    serviceCallAccessUnavailable = false;
-
-    await mainWindow.loadFile(path.join("auth", "auth-gate.html"));
-  }
-
-  /*
-   * -----------------------------------------
-   * WINDOW CLOSE
-   * -----------------------------------------
-   */
-
-  mainWindow.on("close", (event) => {
-    if (!isQuitting) {
-      event.preventDefault();
-
-      mainWindow.hide();
-    }
-  });
-}
-
-/* =====================================================
-   SERVICECALL DESKTOP NOTIFICATION POPUP
-===================================================== */
-
-function showNotificationPopup(notification) {
-  if (!notification || !notification.sys_id) {
-    return;
-  }
-
-  /*
-   * If all visible popup slots are occupied,
-   * keep this notification waiting.
-   */
-  if (notificationPopupWindows.length >= MAX_VISIBLE_NOTIFICATION_POPUPS) {
-    notificationPopupQueue.push(notification);
-
-    console.log("ServiceCall notification queued:", notification.sys_id);
-
-    return;
-  }
-
-  createNotificationPopupWindow(notification);
-}
-
-/* =========================================================
-   CREATE NOTIFICATION POPUP WINDOW
-========================================================= */
-
-function createNotificationPopupWindow(notification) {
-  const { screen } = require("electron");
-
-  const display = screen.getPrimaryDisplay();
-
-  const workArea = display.workArea;
-
-  /*
-   * Existing visible popups are counted
-   * from the bottom upward.
+   * Incoming call:
+   * slightly higher tone.
    *
-   * 0 = bottom slot
-   * 1 = second slot
-   * 2 = third slot
+   * Outgoing call:
+   * lower ringback tone.
    */
-  const slotIndex = notificationPopupWindows.length;
+  const frequency = type === "incoming" ? 520 : 420;
 
-  const popupX = Math.round(
-    workArea.x +
-      workArea.width -
-      NOTIFICATION_POPUP_WIDTH -
-      NOTIFICATION_POPUP_MARGIN,
-  );
+  playRingTone(frequency);
 
-  const popupY = Math.round(
-    workArea.y +
-      workArea.height -
-      NOTIFICATION_POPUP_HEIGHT -
-      NOTIFICATION_POPUP_MARGIN -
-      slotIndex * (NOTIFICATION_POPUP_HEIGHT + NOTIFICATION_POPUP_GAP),
-  );
+  ringtoneInterval = setInterval(() => {
+    playRingTone(frequency);
+  }, 1800);
+}
 
-  const popupWindow = new BrowserWindow({
-    width: NOTIFICATION_POPUP_WIDTH,
+function stopRingtone() {
+  if (ringtoneInterval) {
+    clearInterval(ringtoneInterval);
 
-    height: NOTIFICATION_POPUP_HEIGHT,
+    ringtoneInterval = null;
+  }
+}
 
-    x: popupX,
+/* -------------------------
+   AGORA AUDIO
+------------------------- */
 
-    y: popupY,
+let agoraJoining = false;
 
-    frame: false,
+async function startAgoraAudio() {
+  if (!window.ServiceCallAgora) {
+    console.error("ServiceCall Agora media service is not available.");
 
-    transparent: true,
+    statusText.textContent = "Audio service unavailable";
 
-    resizable: false,
+    return;
+  }
 
-    movable: false,
+  if (window.ServiceCallAgora.isJoined() || agoraJoining) {
+    return;
+  }
 
-    minimizable: false,
+  if (!callSysId) {
+    console.error("ServiceCall call sys_id is missing.");
 
-    maximizable: false,
+    statusText.textContent = "Audio configuration unavailable";
 
-    fullscreenable: false,
+    return;
+  }
 
-    skipTaskbar: true,
+  agoraJoining = true;
 
-    alwaysOnTop: true,
-
-    show: false,
-
-    focusable: true,
-
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-
-      contextIsolation: true,
-
-      nodeIntegration: false,
-    },
-  });
-
-  /*
-   * Keep the notification identity attached
-   * to its own BrowserWindow.
-   */
-  popupWindow.serviceCallNotification = notification;
-
-  notificationPopupWindows.push(popupWindow);
-
-  popupWindow.loadFile("notification-popup.html", {
-    query: {
-      notificationSysId: String(notification.sys_id || ""),
-
-      type: String(
-        notification.type_display || notification.type || "Notification",
-      ),
-
-      title: String(notification.title || "ServiceCall"),
-
-      message: String(notification.message || ""),
-
-      meetingSysId: String(notification.meeting_sys_id || ""),
-
-      callSysId: String(notification.call_sys_id || ""),
-    },
-  });
-
-  popupWindow.once("ready-to-show", () => {
-    if (popupWindow.isDestroyed()) {
-      return;
-    }
-
-    popupWindow.showInactive();
-  });
-
-  popupWindow.on("closed", () => {
-    const popupIndex = notificationPopupWindows.indexOf(popupWindow);
-
-    if (popupIndex !== -1) {
-      notificationPopupWindows.splice(popupIndex, 1);
-    }
+  try {
+    console.log("ServiceCall requesting dynamic media credentials...");
 
     /*
-     * Reposition whatever remains,
-     * then use the newly available slot
-     * for the next queued notification.
+     * Request short-lived credentials
+     * for THIS specific ServiceCall call.
+     *
+     * Electron -> ServiceNow
+     * -> Cloudflare Worker -> Agora token
      */
-    repositionNotificationPopups();
+    const credentials = await window.serviceCall.getMediaCredentials(callSysId);
 
-    showNextQueuedNotification();
-  });
-}
-
-/* =========================================================
-   REPOSITION VISIBLE NOTIFICATIONS
-========================================================= */
-
-function repositionNotificationPopups() {
-  const { screen } = require("electron");
-
-  const display = screen.getPrimaryDisplay();
-
-  const workArea = display.workArea;
-
-  notificationPopupWindows.forEach((popupWindow, index) => {
-    if (!popupWindow || popupWindow.isDestroyed()) {
-      return;
+    if (!credentials || !credentials.success) {
+      throw new Error(
+        credentials && credentials.message
+          ? credentials.message
+          : "Media credentials could not be obtained.",
+      );
     }
 
-    const popupX = Math.round(
-      workArea.x +
-        workArea.width -
-        NOTIFICATION_POPUP_WIDTH -
-        NOTIFICATION_POPUP_MARGIN,
-    );
-
-    const popupY = Math.round(
-      workArea.y +
-        workArea.height -
-        NOTIFICATION_POPUP_HEIGHT -
-        NOTIFICATION_POPUP_MARGIN -
-        index * (NOTIFICATION_POPUP_HEIGHT + NOTIFICATION_POPUP_GAP),
-    );
-
-    popupWindow.setPosition(popupX, popupY, true);
-  });
-}
-
-/* =========================================================
-   SHOW NEXT QUEUED NOTIFICATION
-========================================================= */
-
-function showNextQueuedNotification() {
-  if (notificationPopupWindows.length >= MAX_VISIBLE_NOTIFICATION_POPUPS) {
-    return;
-  }
-
-  if (notificationPopupQueue.length === 0) {
-    return;
-  }
-
-  const nextNotification = notificationPopupQueue.shift();
-
-  createNotificationPopupWindow(nextNotification);
-}
-
-/* -------------------------------------------------------
-   TEMPORARY POPUP TEST
-------------------------------------------------------- */
-
-ipcMain.handle(
-  "servicecall-test-notification-popup",
-
-  async () => {
-    showNotificationPopup({
-      sys_id: "test-notification",
-
-      type: "meeting started",
-
-      type_display: "Meeting Started",
-
-      title: "Meeting started",
-
-      message: '"ServiceCall Test Meeting" has started.',
-
-      meeting_sys_id: "",
-
-      call_sys_id: "",
-    });
-
-    return {
-      success: true,
-    };
-  },
-);
-
-function createTray() {
-  if (tray) {
-    return;
-  }
-
-  /*
-       Temporary tray icon:
-       Electron will use the app icon later.
-       For now we can create the tray only
-       after we add a proper icon file.
-    */
-
-  const trayMenu = Menu.buildFromTemplate([
-    {
-      label: "Open ServiceCall",
-      click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
-      },
-    },
-
-    {
-      type: "separator",
-    },
-
-    {
-      label: "Quit ServiceCall",
-      click: () => {
-        isQuitting = true;
-
-        stopHeartbeatLoop();
-        stopCallbackServer();
-
-        app.quit();
-      },
-    },
-  ]);
-
-  return trayMenu;
-}
-
-/* -------------------------------------------------------
-   SAVE INSTANCE
-------------------------------------------------------- */
-
-ipcMain.handle(
-  "servicecall-get-connection-status",
-
-  async () => {
-    const config = loadConfig();
-
-    if (config.instanceUrl && config.accessToken && heartbeatTimer) {
-      return {
-        connected: true,
-
-        message: "ServiceCall Desktop is connected.",
-      };
-    }
-
-    return {
-      connected: false,
-
-      message: "Sign in to ServiceNow to connect ServiceCall Desktop.",
-    };
-  },
-);
-
-ipcMain.handle(
-  "servicecall-save-instance",
-
-  async (event, instanceUrl) => {
-    const normalizedUrl = normalizeInstanceUrl(instanceUrl);
-
-    if (!isValidServiceNowUrl(normalizedUrl)) {
-      return {
-        success: false,
-
-        message:
-          "Please enter a valid ServiceNow instance URL, for example https://dev12345.service-now.com",
-      };
-    }
-
-    const config = loadConfig();
-
-    config.instanceUrl = normalizedUrl;
-
-    const configUrl =
-      normalizedUrl + "/api/x_1806573_servic_0/servicecall_desktop_api/config";
-
-    const configResponse = await fetch(configUrl, {
-      method: "GET",
-
-      headers: {
-        Accept: "application/json",
-      },
-    });
-
-    const configText = await configResponse.text();
-
-    let serviceCallConfig;
-
-    try {
-      serviceCallConfig = JSON.parse(configText);
-    } catch (error) {
-      return {
-        success: false,
-        message:
-          "The ServiceNow instance returned an invalid ServiceCall configuration.",
-      };
-    }
-
-    const result = serviceCallConfig.result || serviceCallConfig;
-
-    if (!configResponse.ok || !result.success) {
-      return {
-        success: false,
-        message:
-          result.message ||
-          "Unable to retrieve ServiceCall configuration from this instance.",
-      };
-    }
+    const media = credentials.media;
 
     if (
-      !result.oauth_client_id ||
-      !result.redirect_uri ||
-      !result.oauth_scope ||
-      !result.heartbeat_path
+      !media ||
+      !media.app_id ||
+      !media.channel ||
+      !media.token ||
+      !media.uid
     ) {
-      return {
-        success: false,
-        message:
-          "ServiceCall Desktop is not fully configured on this ServiceNow instance.",
-      };
+      throw new Error("ServiceCall returned incomplete media credentials.");
     }
 
-    config.oauthClientId = result.oauth_client_id;
-
-    config.redirectUri = result.redirect_uri;
-
-    config.oauthScope = result.oauth_scope;
-
-    config.heartbeatPath = result.heartbeat_path;
-
-    saveConfig(config);
-
-    return {
-      success: true,
-
-      message: "ServiceNow instance saved successfully.",
-
-      instanceUrl: normalizedUrl,
-    };
-  },
-);
-
-/* -------------------------------------------------------
-   GET INSTANCE
-------------------------------------------------------- */
-
-ipcMain.handle(
-  "servicecall-get-instance",
-
-  async () => {
-    const config = loadConfig();
-
-    return {
-      success: true,
-
-      instanceUrl: config.instanceUrl || "",
-    };
-  },
-);
-
-/* -------------------------------------------------------
-   START OAUTH LOGIN
-------------------------------------------------------- */
-
-ipcMain.handle(
-  "servicecall-start-login",
-
-  async () => {
-    try {
-      const config = loadConfig();
-
-      if (!config.instanceUrl || !config.oauthClientId) {
-        return {
-          success: false,
-
-          message: "Please save your ServiceNow instance first.",
-        };
-      }
-
-      /*
-               Start localhost listener BEFORE
-               opening the browser.
-            */
-
-      await startCallbackServer();
-
-      const codeVerifier = generateCodeVerifier();
-
-      const codeChallenge = generateCodeChallenge(codeVerifier);
-
-      const state = generateState();
-
-      config.pkceCodeVerifier = codeVerifier;
-
-      config.oauthState = state;
-
-      saveConfig(config);
-
-      const authorizeUrl = new URL(config.instanceUrl + "/oauth_auth.do");
-
-      authorizeUrl.searchParams.set("response_type", "code");
-
-      authorizeUrl.searchParams.set("client_id", config.oauthClientId);
-
-      authorizeUrl.searchParams.set("redirect_uri", config.redirectUri);
-
-      authorizeUrl.searchParams.set("scope", config.oauthScope);
-
-      authorizeUrl.searchParams.set("code_challenge", codeChallenge);
-
-      authorizeUrl.searchParams.set("code_challenge_method", "S256");
-
-      authorizeUrl.searchParams.set("state", state);
-
-      await shell.openExternal(authorizeUrl.toString());
-
-      return {
-        success: true,
-
-        message: "ServiceNow sign-in opened in your browser.",
-      };
-    } catch (error) {
-      stopCallbackServer();
-
-      return {
-        success: false,
-
-        message: error.message,
-      };
-    }
-  },
-);
-
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
-
-if (!gotSingleInstanceLock) {
-  app.quit();
-} else {
-  app.on("second-instance", (event, commandLine) => {
-    const deepLink = getServiceCallDeepLink(commandLine);
-
-    if (deepLink) {
-      handleServiceCallDeepLink(deepLink);
-    }
-
-    showMainWindow();
-  });
-}
-
-app.whenReady().then(async () => {
-  registerServiceCallProtocol();
-
-  /*
-   * Was ServiceCall launched by a
-   * servicecall:// URL?
-   */
-  const startupDeepLink = getServiceCallDeepLink(process.argv);
-
-  if (startupDeepLink) {
-    handleServiceCallDeepLink(startupDeepLink);
-  }
-
-  await createWindow();
-
-  /* -----------------------------------------
-           DEVICE SLEEP / RESUME
-        ----------------------------------------- */
-
-  powerMonitor.on("suspend", async () => {
-    console.log("ServiceCall detected device suspend.");
-
-    isDeviceSuspended = true;
-
-    /*
-     * Tell ServiceNow this device
-     * intentionally became Away.
-     *
-     * Keep the user's manual presence
-     * untouched.
-     */
-    await updateDesktopState("away");
-  });
-
-  /* -----------------------------------------
-           DEVICE SLEEP / RESUME
-        ----------------------------------------- */
-
-  powerMonitor.on("suspend", async () => {
-    console.log("ServiceCall detected device suspend.");
-
-    isDeviceSuspended = true;
-
-    /*
-     * Tell ServiceNow this device
-     * intentionally became Away.
-     *
-     * Keep the user's manual presence
-     * untouched.
-     */
-    await updateDesktopState("away");
-  });
-
-  powerMonitor.on("resume", async () => {
-    console.log("ServiceCall detected device resume.");
-
-    isDeviceSuspended = false;
-
-    /*
-     * A heartbeat is better than simply
-     * changing the state to Connected:
-     *
-     * - marks registration Connected
-     * - refreshes Last Seen
-     * - proves ServiceNow is reachable
-     */
-    try {
-      const result = await sendHeartbeatOnce();
-
-      console.log("ServiceCall resume heartbeat:", result);
-    } catch (error) {
-      console.error("ServiceCall resume heartbeat failed:", error);
-    }
-  });
-
-  app.on(
-    "activate",
-
-    () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      }
-    },
-  );
-});
-
-app.on(
-  "window-all-closed",
-
-  () => {
-    // stopHeartbeatLoop();
-    // stopCallbackServer();
-    // if (
-    //     process.platform !==
-    //     'darwin'
-    // ) {
-    //     app.quit();
-    // }
-  },
-);
-
-app.on("before-quit", () => {
-  isQuitting = true;
-
-  stopHeartbeatLoop();
-  stopIncomingCallLoop();
-  stopCallbackServer();
-  stopOutgoingCallLoop();
-});
-
-app.on("open-url", (event, url) => {
-  event.preventDefault();
-
-  handleServiceCallDeepLink(url);
-
-  showMainWindow();
-});
-
-let callWindow = null;
-
-function showCallWindow(mode, callData) {
-  const callSysId = callData.callSysId || "";
-
-  /*
-   * If this exact call window is already open,
-   * simply bring it to the front.
-   */
-  if (
-    callWindow &&
-    !callWindow.isDestroyed() &&
-    activeCallWindowId === callSysId
-  ) {
-    if (callWindow.isMinimized()) {
-      callWindow.restore();
-    }
-
-    callWindow.show();
-    callWindow.focus();
-
-    return;
-  }
-
-  /*
-   * Do not replace an existing active call
-   * with another incoming/outgoing call.
-   */
-  if (
-    callWindow &&
-    !callWindow.isDestroyed() &&
-    activeCallWindowId &&
-    activeCallWindowId !== callSysId
-  ) {
     console.log(
-      "Another ServiceCall window is already active:",
-      activeCallWindowId,
+      "ServiceCall media credentials received.",
+      "Channel:",
+      media.channel,
+      "UID:",
+      media.uid,
     );
 
-    return;
-  }
+    /*
+     * IMPORTANT:
+     *
+     * Never log media.token.
+     */
 
-  activeCallWindowId = callSysId;
+    console.log("ServiceCall joining Agora audio channel...");
 
-  callWindow = new BrowserWindow({
-    width: 440,
-    height: 560,
+    await window.ServiceCallAgora.join({
+      appId: media.app_id,
 
-    minWidth: 440,
-    minHeight: 560,
+      token: media.token,
 
-    resizable: false,
+      channel: media.channel,
 
-    title: "ServiceCall",
-
-    autoHideMenuBar: true,
-
-    show: false,
-
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-
-      contextIsolation: true,
-
-      nodeIntegration: false,
-    },
-  });
-
-  callWindow.loadFile("call-window.html", {
-    query: {
-      mode: mode,
-
-      callSysId: callSysId,
-
-      callNumber: callData.callNumber || "",
-
-      name: callData.name || "Unknown User",
-
-      department: callData.department || "",
-
-      isConference: callData.isConference ? "true" : "false",
+      uid: media.uid,
 
       /*
-       * MEETING CONTEXT
+       * TOKEN RENEWAL CALLBACK
        *
-       * Normal calls will simply receive
-       * isMeeting=false and empty values.
+       * agora-service.js calls this
+       * when Agora warns that the
+       * current token will expire.
+       *
+       * We request fresh credentials
+       * for the SAME ServiceCall call.
        */
-      isMeeting: callData.isMeeting ? "true" : "false",
+      renewToken: async () => {
+        console.log("ServiceCall requesting renewed media credentials...");
 
-      meetingSysId: callData.meetingSysId || "",
+        const renewedCredentials =
+          await window.serviceCall.getMediaCredentials(callSysId);
 
-      meetingNumber: callData.meetingNumber || "",
-
-      meetingTitle: callData.meetingTitle || "",
-    },
-  });
-
-  callWindow.once("ready-to-show", () => {
-    if (callWindow && !callWindow.isDestroyed()) {
-      callWindow.show();
-      callWindow.focus();
-    }
-  });
-
-  callWindow.on("close", async (event) => {
-    /*
-     * Allow the window to actually close
-     * after we finish our own handling.
-     */
-    if (callWindowClosing) {
-      return;
-    }
-
-    event.preventDefault();
-
-    /*
-     * No call sys_id means there is nothing
-     * to update in ServiceNow.
-     */
-    if (!callSysId) {
-      callWindowClosing = true;
-
-      callWindow.close();
-
-      return;
-    }
-
-    try {
-      const result = await serviceCallApiRequest(
-        "/call-status?call_sys_id=" + encodeURIComponent(callSysId),
-        "GET",
-      );
-
-      const state = result.state || "";
-
-      /*
-       * -------------------------------------------------
-       * RINGING / INVITED PARTICIPANT
-       * -------------------------------------------------
-       *
-       * Direct outgoing:
-       * X = Cancel Call
-       *
-       * Direct incoming:
-       * X = Decline Call
-       *
-       * Conference invitation:
-       * Call itself may already be connected,
-       * but this participant is still ringing.
-       * X = Decline conference invitation.
-       */
-      const participantStatus = result.participant_status || "";
-
-      if (participantStatus === "ringing" || participantStatus === "invited") {
-        /*
-         * Original caller cancelling
-         * an unanswered direct call.
-         */
-        if (mode === "calling" && state === "ringing") {
-          await serviceCallApiRequest("/cancel-call", "POST", {
-            call_sys_id: callSysId,
-          });
-        } else {
-          /*
-           * Direct incoming receiver
-           * OR conference invite receiver.
-           */
-          await serviceCallApiRequest("/decline-call", "POST", {
-            call_sys_id: callSysId,
-          });
+        if (!renewedCredentials || !renewedCredentials.success) {
+          throw new Error(
+            renewedCredentials && renewedCredentials.message
+              ? renewedCredentials.message
+              : "Unable to obtain renewed media credentials.",
+          );
         }
 
-        callWindowClosing = true;
+        const renewedMedia = renewedCredentials.media;
 
-        callWindow.close();
+        if (!renewedMedia || !renewedMedia.token) {
+          throw new Error(
+            "ServiceCall returned an incomplete renewed media token.",
+          );
+        }
 
-        return;
-      }
+        /*
+         * Safety check:
+         *
+         * Renewal must remain on
+         * the SAME Agora channel
+         * and SAME participant UID.
+         */
+        if (renewedMedia.channel !== media.channel) {
+          throw new Error(
+            "Renewed media channel does not match the active call.",
+          );
+        }
 
-      /*
-       * -------------------------------------------------
-       * CONNECTED
-       * -------------------------------------------------
-       *
-       * X does NOT end or leave a connected call.
-       *
-       * It only hides the call window.
-       * The call/audio continues in the background.
-       */
-      if (state === "connected" && participantStatus === "connected") {
-        callWindow.hide();
+        if (Number(renewedMedia.uid) !== Number(media.uid)) {
+          throw new Error(
+            "Renewed media UID does not match the active participant.",
+          );
+        }
 
-        return;
-      }
+        console.log(
+          "ServiceCall renewed media credentials received.",
+          "Channel:",
+          renewedMedia.channel,
+          "UID:",
+          renewedMedia.uid,
+        );
 
-      /*
-       * -------------------------------------------------
-       * TERMINAL STATES
-       * -------------------------------------------------
-       *
-       * The call has already finished,
-       * so the window can close normally.
-       */
-      if (
-        state === "completed" ||
-        state === "cancelled" ||
-        state === "declined" ||
-        state === "failed"
-      ) {
-        callWindowClosing = true;
+        /*
+         * NEVER log renewedMedia.token.
+         *
+         * Return only the token to
+         * agora-service.js.
+         */
+        return renewedMedia.token;
+      },
+    });
 
-        callWindow.close();
+    console.log("ServiceCall audio connected successfully.");
+  } catch (error) {
+    console.error("ServiceCall audio connection failed:", error);
 
-        return;
-      }
-
-      /*
-       * Unknown/unexpected state:
-       *
-       * Safest behavior is to hide the
-       * window rather than accidentally
-       * terminating a live call.
-       */
-      callWindow.hide();
-    } catch (error) {
-      console.error("ServiceCall window close handling failed:", error);
-
-      /*
-       * If ServiceNow cannot be reached,
-       * do NOT accidentally terminate
-       * a live call.
-       */
-      if (callWindow && !callWindow.isDestroyed()) {
-        callWindow.hide();
-      }
-    }
-  });
-
-  callWindow.on("closed", () => {
-    callWindow = null;
-
-    callWindowClosing = false;
-
-    activeCallWindowId = null;
-
-    if (activeIncomingCallId === callSysId) {
-      activeIncomingCallId = null;
-    }
-
-    if (activeOutgoingCallId === callSysId) {
-      activeOutgoingCallId = null;
-    }
-  });
+    statusText.textContent = "Connected - audio unavailable";
+  } finally {
+    agoraJoining = false;
+  }
 }
 
-async function serviceCallApiRequest(
-  pathName,
-  method = "GET",
-  body = null,
-  allowRefresh = true,
-) {
-  let config = loadConfig();
-
-  const validAccessToken = await ensureValidAccessToken();
-
-  if (!config || !config.instanceUrl || !config.accessToken) {
-    throw new Error("ServiceCall Desktop is not connected to ServiceNow.");
+async function stopAgoraAudio() {
+  if (!window.ServiceCallAgora) {
+    return;
   }
-
-  const url =
-    config.instanceUrl.replace(/\/$/, "") +
-    "/api/x_1806573_servic_0/servicecall_desktop_api" +
-    pathName;
-
-  const options = {
-    method: method,
-
-    headers: {
-      Accept: "application/json",
-
-      Authorization: "Bearer " + validAccessToken,
-    },
-  };
-
-  if (body) {
-    options.headers["Content-Type"] = "application/json";
-
-    options.body = JSON.stringify(body);
-  }
-
-  let response = await fetch(url, options);
-
-  /*
-   * -------------------------------------------------
-   * ACCESS TOKEN EXPIRED
-   * -------------------------------------------------
-   *
-   * Try ONE automatic refresh.
-   *
-   * We only retry once so a bad/revoked refresh
-   * token cannot create an infinite loop.
-   */
-  if (response.status === 401 && allowRefresh) {
-    console.log(
-      "ServiceCall API authorization expired. Trying automatic renewal...",
-    );
-
-    try {
-      const newAccessToken = await refreshAccessToken();
-
-      /*
-       * Retry the ORIGINAL request using
-       * the newly issued access token.
-       */
-      options.headers["Authorization"] = "Bearer " + newAccessToken;
-
-      response = await fetch(url, options);
-    } catch (refreshError) {
-      console.error(
-        "Automatic ServiceCall authorization renewal failed:",
-        refreshError.message,
-      );
-
-      const error = new Error(
-        "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-      );
-
-      error.code = "AUTHENTICATION_REQUIRED";
-
-      throw error;
-    }
-  }
-
-  let data = {};
 
   try {
-    data = await response.json();
+    await window.ServiceCallAgora.leave();
   } catch (error) {
-    data = {};
+    console.error("Unable to leave ServiceCall audio:", error);
   }
-
-  const result = data.result || data;
-
-  /*
-   * If we're STILL unauthorized after refreshing,
-   * the long-lived authorization is no longer usable.
-   */
-  if (response.status === 401) {
-    const error = new Error(
-      "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-    );
-
-    error.code = "AUTHENTICATION_REQUIRED";
-
-    throw error;
-  }
-
-  if (!response.ok) {
-    const error = new Error(result.message || "ServiceCall request failed.");
-
-    error.code = result.code || "SERVICECALL_API_ERROR";
-
-    throw error;
-  }
-
-  return result;
 }
 
-async function serviceCallBinaryApiRequest(
-  pathName,
-  binaryData,
-  allowRefresh = true,
-) {
-  const config = loadConfig();
+/* -------------------------
+   UI STATE
+------------------------- */
 
-  const validAccessToken = await ensureValidAccessToken();
+function setMode(newMode) {
+  currentMode = newMode;
 
-  if (!config || !config.instanceUrl || !config.accessToken) {
-    throw new Error("ServiceCall Desktop is not connected to ServiceNow.");
+  incomingActions.classList.add("hidden");
+
+  callingActions.classList.add("hidden");
+
+  connectedActions.classList.add("hidden");
+
+  timerElement.classList.add("hidden");
+
+  if (newMode === "incoming") {
+    statusText.textContent = isConference
+      ? "Conference call"
+      : "is calling you...";
+
+    incomingActions.classList.remove("hidden");
+
+    startRingtone("incoming");
+    return;
+  }
+
+  if (newMode === "calling") {
+    statusText.textContent = "Ringing";
+
+    callingActions.classList.remove("hidden");
+
+    startRingtone("outgoing");
+
+    return;
+  }
+
+  if (newMode === "connected") {
+    stopRingtone();
+
+    statusText.textContent = "Connected";
+
+    connectedActions.classList.remove("hidden");
+
+    /*
+     * Normal calls can start their timer
+     * immediately.
+     *
+     * Meetings wait for ServiceNow's
+     * authoritative started_at value so
+     * Rejoin never flashes 00:00 first.
+     */
+    if (!isMeeting) {
+      timerElement.classList.remove("hidden");
+
+      startDurationTimer();
+    }
+
+    startAgoraAudio();
+  }
+
+  if (newMode === "declined") {
+    stopRingtone();
+
+    statusText.textContent = "Call declined";
+
+    stopAllTimers();
+
+    closeCallWindowAfterDelay();
+
+    return;
+  }
+
+  if (newMode === "cancelled") {
+    stopRingtone();
+
+    statusText.textContent = "Call cancelled";
+
+    stopAllTimers();
+
+    closeCallWindowAfterDelay();
+
+    return;
+  }
+
+  if (newMode === "completed") {
+    stopRingtone();
+
+    statusText.textContent = "Call ended";
+
+    stopAllTimers();
+
+    stopAgoraAudio();
+
+    closeCallWindowAfterDelay();
+
+    return;
+  }
+}
+
+/* -------------------------
+   CALL TIMER
+------------------------- */
+
+function startDurationTimer() {
+  if (durationTimer) {
+    return;
   }
 
   /*
-   * Binary data must be a Buffer.
-   */
-  if (!Buffer.isBuffer(binaryData)) {
-    const error = new Error("Attachment data must be binary.");
-
-    error.code = "INVALID_BINARY_DATA";
-
-    throw error;
-  }
-
-  if (binaryData.length === 0) {
-    const error = new Error("Attachment file is empty.");
-
-    error.code = "EMPTY_ATTACHMENT";
-
-    throw error;
-  }
-
-  const url =
-    config.instanceUrl.replace(/\/$/, "") +
-    "/api/x_1806573_servic_0/servicecall_desktop_api" +
-    pathName;
-
-  const options = {
-    method: "POST",
-
-    headers: {
-      Accept: "application/json",
-
-      Authorization: "Bearer " + validAccessToken,
-
-      "Content-Type": "application/octet-stream",
-
-      /*
-       * Gives ServiceNow the actual byte count
-       * of the request body.
-       */
-      "Content-Length": String(binaryData.length),
-    },
-
-    body: binaryData,
-  };
-
-  let response = await fetch(url, options);
-
-  /*
-   * ---------------------------------------------
-   * ACCESS TOKEN EXPIRED
-   * ---------------------------------------------
+   * For meetings, prefer the authoritative
+   * start time returned by ServiceNow.
    *
-   * Same behavior as our existing JSON helper.
+   * For normal calls, preserve the existing
+   * local timer behavior.
    */
-  if (response.status === 401 && allowRefresh) {
-    console.log(
-      "ServiceCall binary API authorization expired. Trying automatic renewal...",
+  if (isMeeting && serverCallStartedAt) {
+    callStartedAt = serverCallStartedAt;
+  } else {
+    callStartedAt = Date.now();
+  }
+
+  function updateDurationDisplay() {
+    if (!callStartedAt) {
+      return;
+    }
+
+    const seconds = Math.max(
+      0,
+      Math.floor((Date.now() - callStartedAt) / 1000),
     );
 
-    try {
-      const newAccessToken = await refreshAccessToken();
+    const hours = Math.floor(seconds / 3600);
 
-      options.headers["Authorization"] = "Bearer " + newAccessToken;
+    const minutes = Math.floor((seconds % 3600) / 60);
 
-      /*
-       * A Buffer can safely be reused for
-       * this single retry.
-       */
-      response = await fetch(url, options);
-    } catch (refreshError) {
-      console.error(
-        "Automatic ServiceCall authorization renewal failed:",
-        refreshError.message,
-      );
+    const remainingSeconds = seconds % 60;
 
-      const error = new Error(
-        "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-      );
-
-      error.code = "AUTHENTICATION_REQUIRED";
-
-      throw error;
+    /*
+     * Under one hour:
+     *     07:24
+     *
+     * One hour or more:
+     *     01:07:24
+     */
+    if (hours > 0) {
+      timerElement.textContent =
+        String(hours).padStart(2, "0") +
+        ":" +
+        String(minutes).padStart(2, "0") +
+        ":" +
+        String(remainingSeconds).padStart(2, "0");
+    } else {
+      timerElement.textContent =
+        String(minutes).padStart(2, "0") +
+        ":" +
+        String(remainingSeconds).padStart(2, "0");
     }
+  }
+
+  /*
+   * Display immediately instead of waiting
+   * one second for the first interval.
+   */
+  updateDurationDisplay();
+
+  durationTimer = setInterval(updateDurationDisplay, 1000);
+}
+
+/* -------------------------
+   STATUS POLLING
+------------------------- */
+
+async function checkCallStatus() {
+  if (!callSysId) {
+    return;
+  }
+
+  try {
+    const result = await window.serviceCall.getCallStatus(callSysId);
+
+    if (!result || !result.success) {
+      return;
+    }
+
+    /*
+     * Keep the live participant list
+     * synchronized with ServiceNow.
+     *
+     * /call-status already runs every
+     * 2 seconds, so no extra polling
+     * request is required.
+     */
+    renderParticipants(
+      Array.isArray(result.participants) ? result.participants : [],
+    );
+
+    const state = result.state;
+
+    console.log("SERVICECALL TIMER DEBUG:", {
+      isMeeting: isMeeting,
+
+      answered_at: result.answered_at,
+
+      localNow: new Date().toISOString(),
+    });
+
+    /*
+     * ServiceNow is authoritative for when
+     * the meeting/call actually started.
+     *
+     * GlideDateTime.getValue() is returned as:
+     * YYYY-MM-DD HH:mm:ss
+     *
+     * ServiceNow stores this value in UTC,
+     * therefore explicitly parse it as UTC.
+     */
+    if (isMeeting && result.started_at) {
+      const parsedStartedAt = Date.parse(
+        result.started_at.replace(" ", "T") + "Z",
+      );
+
+      if (!Number.isNaN(parsedStartedAt)) {
+        serverCallStartedAt = parsedStartedAt;
+
+        callStartedAt = serverCallStartedAt;
+
+        /*
+         * Meeting timer becomes visible only
+         * after the authoritative start time
+         * has been received.
+         */
+        timerElement.classList.remove("hidden");
+
+        startDurationTimer();
+      }
+    }
+
+    /*
+     * Keep the recording indicator synchronized
+     * for every participant in the call.
+     *
+     * /call-status is already polled every
+     * 2 seconds, so no additional timer or
+     * REST request is required.
+     */
+    syncRecordingIndicator(result.recording_active === true);
+
+    /* -------------------------
+   OWNER / PARTICIPANT STATE
+------------------------- */
+
+    currentUserIsOwner = result.is_owner === true;
+
+    participantRole = result.participant_role || "participant";
+
+    const endButton = document.getElementById("endButton");
+
+    if (currentUserIsOwner) {
+      endButton.textContent = isMeeting ? "End Meeting" : "End Conference";
+    } else {
+      endButton.textContent = isMeeting ? "Leave Meeting" : "Leave Call";
+    }
+
+    /* -------------------------
+   PARTICIPANT LEFT
+------------------------- */
+
+    const participantStatus = result.participant_status || "";
+
+    if (participantStatus === "left" || participantStatus === "disconnected") {
+      /*
+       * The overall conference may still be
+       * connected, but THIS participant is
+       * no longer part of it.
+       */
+
+      await stopAgoraAudio();
+
+      stopRingtone();
+
+      stopAllTimers();
+
+      statusText.textContent =
+        participantStatus === "left" ? "You left the call" : "Call ended";
+
+      closeCallWindowAfterDelay();
+
+      return;
+    }
+
+    if (state === "connected" && currentMode !== "connected") {
+      setMode("connected");
+
+      return;
+    }
+
+    if (state === "declined") {
+      setMode("declined");
+
+      return;
+    }
+
+    if (state === "cancelled") {
+      setMode("cancelled");
+
+      return;
+    }
+
+    if (state === "completed") {
+      setMode("completed");
+
+      return;
+    }
+  } catch (error) {
+    console.error("Call status error:", error);
+  }
+}
+
+function startCallStatusPolling() {
+  if (!callSysId) {
+    return;
+  }
+
+  checkCallStatus();
+
+  callStatusTimer = setInterval(checkCallStatus, 2000);
+}
+
+/* -------------------------
+   ACCEPT
+------------------------- */
+
+document.getElementById("acceptButton").addEventListener("click", async () => {
+  try {
+    const result = await window.serviceCall.acceptCall(callSysId);
+
+    if (result.success) {
+      setMode("connected");
+    }
+  } catch (error) {
+    console.error("Accept call failed:", error);
+
+    statusText.textContent = error.message || "Unable to accept call.";
+  }
+});
+
+/* -------------------------
+   DECLINE
+------------------------- */
+
+document.getElementById("declineButton").addEventListener("click", async () => {
+  try {
+    const result = await window.serviceCall.declineCall(callSysId);
+
+    if (result.success) {
+      setMode("declined");
+    }
+  } catch (error) {
+    console.error("Decline call failed:", error);
+
+    statusText.textContent = error.message || "Unable to decline call.";
+  }
+});
+
+/* -------------------------
+   CANCEL
+------------------------- */
+
+document.getElementById("cancelButton").addEventListener("click", async () => {
+  try {
+    const result = await window.serviceCall.cancelCall(callSysId);
+
+    if (result.success) {
+      setMode("cancelled");
+    }
+  } catch (error) {
+    console.error("Cancel call failed:", error);
+
+    statusText.textContent = error.message || "Unable to cancel call.";
+  }
+});
+
+/* -------------------------
+   MUTE / UNMUTE
+------------------------- */
+
+document.getElementById("muteButton").addEventListener("click", async () => {
+  try {
+    if (!window.ServiceCallAgora || !window.ServiceCallAgora.isJoined()) {
+      statusText.textContent = "Audio is not connected";
+
+      return;
+    }
+
+    const currentlyMuted = window.ServiceCallAgora.isMuted();
+
+    const result = await window.ServiceCallAgora.setMuted(!currentlyMuted);
+
+    if (result.success) {
+      document.getElementById("muteButton").textContent = result.muted
+        ? "Unmute"
+        : "Mute";
+
+      console.log(
+        result.muted
+          ? "ServiceCall microphone muted."
+          : "ServiceCall microphone unmuted.",
+      );
+    }
+  } catch (error) {
+    console.error("ServiceCall mute failed:", error);
+
+    statusText.textContent = "Unable to change microphone state";
+  }
+});
+
+/* =======================================================
+   LIVE PARTICIPANTS PANEL
+======================================================= */
+
+function getParticipantInitials(name) {
+  return (
+    String(name || "Unknown User")
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join("") || "?"
+  );
+}
+
+function getParticipantStatusLabel(status) {
+  switch (String(status || "").toLowerCase()) {
+    case "connected":
+      return "Connected";
+
+    case "ringing":
+      return "Ringing";
+
+    case "invited":
+      return "Invited";
+
+    default:
+      return status || "Participant";
+  }
+}
+
+function renderParticipants(participants) {
+  latestCallParticipants = Array.isArray(participants) ? participants : [];
+
+  const connectedParticipantCount = latestCallParticipants.filter(
+    (participant) =>
+      String(participant.status || "").toLowerCase() === "connected",
+  ).length;
+
+  if (participantsPanelCount) {
+    participantsPanelCount.textContent = String(connectedParticipantCount);
+  }
+
+  if (participantsButtonCount) {
+    participantsButtonCount.textContent = String(connectedParticipantCount);
+  }
+
+  if (!participantsPanelBody) {
+    return;
+  }
+
+  participantsPanelBody.innerHTML = "";
+
+  /* -------------------------
+       SECTION LABEL
+    ------------------------- */
+
+  const sectionLabel = document.createElement("div");
+
+  sectionLabel.className = "participants-section-label";
+
+  sectionLabel.textContent = isMeeting ? "In this meeting" : "In this call";
+
+  participantsPanelBody.appendChild(sectionLabel);
+
+  /* -------------------------
+       EMPTY STATE
+    ------------------------- */
+
+  if (latestCallParticipants.length === 0) {
+    const empty = document.createElement("div");
+
+    empty.className = "participants-empty";
+
+    empty.textContent = "No active participants.";
+
+    participantsPanelBody.appendChild(empty);
+
+    return;
   }
 
   /* -------------------------
-     RESPONSE
-  ------------------------- */
+       PARTICIPANTS
+    ------------------------- */
 
-  let data = {};
+  latestCallParticipants.forEach((participant) => {
+    const row = document.createElement("div");
 
-  try {
-    data = await response.json();
-  } catch (error) {
-    data = {};
-  }
+    row.className = "live-participant";
 
-  const result = data.result || data;
+    /* -------------------------
+               AVATAR
+            ------------------------- */
 
-  if (response.status === 401) {
-    const error = new Error(
-      "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-    );
+    const participantAvatar = document.createElement("div");
 
-    error.code = "AUTHENTICATION_REQUIRED";
+    participantAvatar.className = "live-participant-avatar";
 
-    throw error;
-  }
+    participantAvatar.textContent = getParticipantInitials(participant.name);
 
-  if (!response.ok) {
-    console.error("ServiceCall binary API failed:", {
-      status: response.status,
-      statusText: response.statusText,
-      url: url,
-      response: result,
-    });
+    /* -------------------------
+               INFO
+            ------------------------- */
 
-    const error = new Error(
-      result.message ||
-        "ServiceCall binary request failed. HTTP " +
-          response.status +
-          " " +
-          response.statusText,
-    );
+    const info = document.createElement("div");
 
-    error.code = result.code || "SERVICECALL_BINARY_API_ERROR";
+    info.className = "live-participant-info";
 
-    throw error;
-  }
-  return result;
-}
+    const name = document.createElement("div");
 
-async function serviceCallBinaryDownloadRequest(pathName, allowRefresh = true) {
-  const config = loadConfig();
+    name.className = "live-participant-name";
 
-  const validAccessToken = await ensureValidAccessToken();
+    name.textContent = participant.name || "Unknown User";
 
-  if (!config || !config.instanceUrl || !config.accessToken) {
-    throw new Error("ServiceCall Desktop is not connected to ServiceNow.");
-  }
+    const meta = document.createElement("div");
 
-  const url =
-    config.instanceUrl.replace(/\/$/, "") +
-    "/api/x_1806573_servic_0/servicecall_desktop_api" +
-    pathName;
+    meta.className = "live-participant-meta";
 
-  const options = {
-    method: "GET",
+    const metaParts = [];
 
-    headers: {
-      Accept: "*/*",
-
-      Authorization: "Bearer " + validAccessToken,
-    },
-  };
-
-  let response = await fetch(url, options);
-
-  /*
-   * ---------------------------------------------
-   * ACCESS TOKEN EXPIRED
-   * ---------------------------------------------
-   */
-
-  if (response.status === 401 && allowRefresh) {
-    console.log(
-      "ServiceCall binary download authorization expired. Trying automatic renewal...",
-    );
-
-    try {
-      const newAccessToken = await refreshAccessToken();
-
-      options.headers["Authorization"] = "Bearer " + newAccessToken;
-
-      response = await fetch(url, options);
-    } catch (refreshError) {
-      console.error(
-        "Automatic ServiceCall authorization renewal failed:",
-        refreshError.message,
-      );
-
-      const error = new Error(
-        "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-      );
-
-      error.code = "AUTHENTICATION_REQUIRED";
-
-      throw error;
-    }
-  }
-
-  /*
-   * ---------------------------------------------
-   * AUTHENTICATION FAILURE
-   * ---------------------------------------------
-   */
-
-  if (response.status === 401) {
-    const error = new Error(
-      "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-    );
-
-    error.code = "AUTHENTICATION_REQUIRED";
-
-    throw error;
-  }
-
-  /*
-   * ---------------------------------------------
-   * ERROR RESPONSE
-   * ---------------------------------------------
-   */
-
-  if (!response.ok) {
-    let result = {};
-
-    try {
-      const data = await response.json();
-
-      result = data.result || data;
-    } catch (error) {
-      result = {};
+    if (participant.is_owner === true) {
+      metaParts.push(isMeeting ? "Organizer" : "Owner");
+    } else if (participant.role) {
+      metaParts.push(participant.role);
     }
 
-    console.error("ServiceCall binary download failed:", {
-      status: response.status,
-      statusText: response.statusText,
-      url: url,
-      response: result,
-    });
-
-    const error = new Error(
-      result.message ||
-        "ServiceCall attachment download failed. HTTP " +
-          response.status +
-          " " +
-          response.statusText,
-    );
-
-    error.code = result.code || "SERVICECALL_BINARY_DOWNLOAD_ERROR";
-
-    throw error;
-  }
-
-  /*
-   * ---------------------------------------------
-   * BINARY RESPONSE
-   * ---------------------------------------------
-   */
-
-  const arrayBuffer = await response.arrayBuffer();
-
-  const buffer = Buffer.from(arrayBuffer);
-
-  if (buffer.length === 0) {
-    const error = new Error("Downloaded attachment is empty.");
-
-    error.code = "EMPTY_DOWNLOADED_ATTACHMENT";
-
-    throw error;
-  }
-
-  const contentType =
-    response.headers.get("content-type") || "application/octet-stream";
-
-  const contentDisposition = response.headers.get("content-disposition") || "";
-
-  return {
-    buffer,
-    contentType,
-    contentDisposition,
-  };
-}
-
-async function getCurrentServiceCallUser() {
-  const result = await serviceCallApiRequest("/me", "GET");
-
-  if (!result || result.success !== true) {
-    throw new Error(
-      result?.message || "Unable to retrieve the current ServiceCall user.",
-    );
-  }
-
-  return result;
-}
-
-async function resolveStartupAuthentication() {
-  const config = loadConfig();
-
-  /*
-   * -----------------------------------------
-   * 1. INSTANCE NOT CONFIGURED
-   * -----------------------------------------
-   */
-
-  if (!config || !config.instanceUrl) {
-    return {
-      authenticated: false,
-      authorized: false,
-      state: "instance_required",
-    };
-  }
-
-  /*
-   * -----------------------------------------
-   * 2. NO SAVED SESSION
-   * -----------------------------------------
-   */
-
-  if (!config.accessToken && !config.refreshToken) {
-    return {
-      authenticated: false,
-      authorized: false,
-      state: "login_required",
-    };
-  }
-
-  /*
-   * -----------------------------------------
-   * 3. RESTORE / REFRESH SESSION
-   * -----------------------------------------
-   */
-
-  try {
-    /*
-     * ensureValidAccessToken() currently
-     * expects an access token.
-     *
-     * If only a refresh token remains,
-     * refresh it directly.
-     */
-
-    if (!config.accessToken && config.refreshToken) {
-      await refreshAccessToken();
-    } else {
-      await ensureValidAccessToken();
+    if (participant.department) {
+      metaParts.push(participant.department);
     }
 
-    /*
-     * -------------------------------------
-     * 4. CHECK SERVICENOW IDENTITY + ROLE
-     * -------------------------------------
-     */
+    meta.textContent =
+      metaParts.join(" • ") ||
+      (isMeeting ? "Meeting participant" : "Call participant");
 
-    const currentUser = await getCurrentServiceCallUser();
+    info.appendChild(name);
 
-    const authorization = currentUser?.authorization || {};
+    info.appendChild(meta);
 
-    const user = currentUser?.user || null;
+    /* -------------------------
+               STATUS
+            ------------------------- */
 
-    /*
-     * -----------------------------------------
-     * STORE CURRENT ACCOUNT IDENTITY
-     * -----------------------------------------
-     */
+    const participantStatus = document.createElement("div");
 
-    currentServiceCallUser = user;
+    participantStatus.className = "live-participant-status";
 
-    currentServiceCallAuthorization = authorization;
+    const statusDot = document.createElement("span");
 
-    /*
-     * -------------------------------------
-     * 5. AUTHENTICATED BUT NOT AUTHORIZED
-     * -------------------------------------
-     */
+    statusDot.className = "live-participant-status-dot";
 
-    if (authorization.allowed !== true) {
-      return {
-        authenticated: true,
-        authorized: false,
-        state: "access_denied",
-        user: user,
-        authorization: authorization,
-      };
-    }
+    const statusLabel = document.createElement("span");
 
-    /*
-     * -------------------------------------
-     * 6. AUTHENTICATED + AUTHORIZED
-     * -------------------------------------
-     */
+    statusLabel.textContent = getParticipantStatusLabel(participant.status);
 
-    return {
-      authenticated: true,
-      authorized: true,
-      state: "ready",
-      user: user,
-      authorization: authorization,
-    };
-  } catch (error) {
-    console.error("ServiceCall startup authentication failed:", error);
+    participantStatus.appendChild(statusDot);
 
-    return {
-      authenticated: false,
-      authorized: false,
-      state: "login_required",
-      error: error?.message || "Authentication could not be restored.",
-    };
-  }
+    participantStatus.appendChild(statusLabel);
+
+    /* -------------------------
+               BUILD ROW
+            ------------------------- */
+
+    row.appendChild(participantAvatar);
+
+    row.appendChild(info);
+
+    row.appendChild(participantStatus);
+
+    participantsPanelBody.appendChild(row);
+  });
 }
 
-ipcMain.handle("servicecall-accept-call", async (event, callSysId) => {
-  return await serviceCallApiRequest("/accept-call", "POST", {
-    call_sys_id: callSysId,
-  });
-});
+/* -------------------------
+   OPEN PANEL
+------------------------- */
 
-ipcMain.handle("servicecall-decline-call", async (event, callSysId) => {
-  return await serviceCallApiRequest("/decline-call", "POST", {
-    call_sys_id: callSysId,
-  });
-});
+function openParticipantsPanel() {
+  if (!participantsPanel) {
+    return;
+  }
 
-ipcMain.handle("servicecall-cancel-call", async (event, callSysId) => {
-  return await serviceCallApiRequest("/cancel-call", "POST", {
-    call_sys_id: callSysId,
-  });
-});
+  /*
+   * Render the latest data immediately.
+   */
+  renderParticipants(latestCallParticipants);
 
-ipcMain.handle("servicecall-end-call", async (event, callSysId) => {
-  return await serviceCallApiRequest("/end-call", "POST", {
-    call_sys_id: callSysId,
-  });
-});
+  participantsPanel.classList.remove("hidden");
+}
 
-ipcMain.handle("servicecall-get-call-status", async (event, callSysId) => {
-  return await serviceCallApiRequest(
-    "/call-status?call_sys_id=" + encodeURIComponent(callSysId),
-    "GET",
+/* -------------------------
+   CLOSE PANEL
+------------------------- */
+
+function closeParticipantsPanel() {
+  if (!participantsPanel) {
+    return;
+  }
+
+  participantsPanel.classList.add("hidden");
+}
+
+/* -------------------------
+   PARTICIPANTS BUTTON
+------------------------- */
+
+if (participantsButton) {
+  participantsButton.addEventListener("click", () => {
+    if (currentMode !== "connected") {
+      return;
+    }
+
+    openParticipantsPanel();
+  });
+}
+
+/* -------------------------
+   CLOSE BUTTON
+------------------------- */
+
+if (closeParticipantsPanelButton) {
+  closeParticipantsPanelButton.addEventListener(
+    "click",
+    closeParticipantsPanel,
   );
+}
+
+/* -------------------------
+   ESCAPE TO CLOSE
+------------------------- */
+
+document.addEventListener("keydown", (event) => {
+  if (
+    event.key === "Escape" &&
+    participantsPanel &&
+    !participantsPanel.classList.contains("hidden")
+  ) {
+    closeParticipantsPanel();
+  }
 });
 
-ipcMain.handle(
-  "servicecall-download-recording",
+/* -------------------------
+   ADD PARTICIPANT
+------------------------- */
 
-  async (event, recordingSysId) => {
-    if (!recordingSysId) {
-      return {
-        success: false,
-        code: "RECORDING_ID_REQUIRED",
-        message: "Recording ID was not provided.",
-      };
-    }
+const addUserButton = document.getElementById("addUserButton");
 
-    try {
-      /*
-       * -----------------------------------------
-       * 1. ASK SERVICENOW IF THIS USER
-       *    MAY DOWNLOAD THIS RECORDING
-       * -----------------------------------------
-       */
+const addParticipantModal = document.getElementById("addParticipantModal");
 
-      const downloadInfo = await serviceCallApiRequest(
-        "/recording-download" +
-          "?recording_sys_id=" +
-          encodeURIComponent(recordingSysId),
-        "GET",
-      );
-
-      if (
-        !downloadInfo ||
-        downloadInfo.success !== true ||
-        !downloadInfo.attachment_sys_id
-      ) {
-        throw new Error(
-          downloadInfo && downloadInfo.message
-            ? downloadInfo.message
-            : "Recording download was not authorized.",
-        );
-      }
-
-      /*
-       * -----------------------------------------
-       * 2. GET CURRENT INSTANCE + OAUTH TOKEN
-       * -----------------------------------------
-       */
-
-      const config = loadConfig();
-
-      if (!config || !config.instanceUrl) {
-        throw new Error("ServiceCall Desktop is not connected to ServiceNow.");
-      }
-
-      let accessToken = await ensureValidAccessToken();
-
-      const attachmentUrl =
-        config.instanceUrl.replace(/\/$/, "") +
-        "/api/now/attachment/" +
-        encodeURIComponent(downloadInfo.attachment_sys_id) +
-        "/file";
-
-      async function performDownload(token) {
-        return await fetch(attachmentUrl, {
-          method: "GET",
-
-          headers: {
-            Authorization: "Bearer " + token,
-          },
-        });
-      }
-
-      /*
-       * -----------------------------------------
-       * 3. DOWNLOAD ATTACHMENT
-       * -----------------------------------------
-       */
-
-      let response = await performDownload(accessToken);
-
-      /*
-       * Access token could expire between
-       * authorization and attachment download.
-       */
-      if (response.status === 401 || response.status === 403) {
-        accessToken = await refreshAccessToken();
-
-        response = await performDownload(accessToken);
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          "Unable to download the recording attachment from ServiceNow.",
-        );
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-
-      const recordingBuffer = Buffer.from(arrayBuffer);
-
-      if (recordingBuffer.length <= 0) {
-        throw new Error("The downloaded recording file is empty.");
-      }
-
-      /*
-       * -----------------------------------------
-       * 4. DETERMINE SAFE FILE NAME
-       * -----------------------------------------
-       */
-
-      const format = String(downloadInfo.format || "mp3")
-        .trim()
-        .toLowerCase();
-
-      const extension = format === "mp4" ? ".mp4" : ".mp3";
-
-      let fileName = String(
-        downloadInfo.file_name ||
-          "servicecall-recording-" + recordingSysId + extension,
-      ).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-
-      if (!fileName.toLowerCase().endsWith(extension)) {
-        fileName += extension;
-      }
-
-      /*
-       * -----------------------------------------
-       * 5. WINDOWS SAVE AS DIALOG
-       * -----------------------------------------
-       */
-
-      const saveResult = await dialog.showSaveDialog({
-        title: "Save ServiceCall Recording",
-
-        defaultPath: path.join(app.getPath("downloads"), fileName),
-
-        filters: [
-          {
-            name: format === "mp4" ? "MP4 Video" : "MP3 Audio",
-
-            extensions: [format === "mp4" ? "mp4" : "mp3"],
-          },
-        ],
-      });
-
-      /*
-       * User pressed Cancel.
-       *
-       * This is NOT an error.
-       */
-      if (saveResult.canceled || !saveResult.filePath) {
-        return {
-          success: false,
-          code: "DOWNLOAD_CANCELLED",
-          message: "Recording download was cancelled.",
-        };
-      }
-
-      /*
-       * -----------------------------------------
-       * 6. SAVE FILE LOCALLY
-       * -----------------------------------------
-       */
-
-      await fs.promises.writeFile(saveResult.filePath, recordingBuffer);
-
-      console.log(
-        "ServiceCall recording downloaded successfully.",
-        recordingSysId,
-      );
-
-      return {
-        success: true,
-        code: "RECORDING_DOWNLOADED",
-        recording_sys_id: recordingSysId,
-        file_name: path.basename(saveResult.filePath),
-        file_path: saveResult.filePath,
-        format: format,
-        file_size: recordingBuffer.length,
-      };
-    } catch (error) {
-      console.error("ServiceCall recording download failed:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "RECORDING_DOWNLOAD_FAILED",
-        message: error.message || "Unable to download recording.",
-      };
-    }
-  },
+const closeParticipantModalButton = document.getElementById(
+  "closeParticipantModal",
 );
 
-async function checkOutgoingCallOnce() {
+const participantSearch = document.getElementById("participantSearch");
+
+const participantResults = document.getElementById("participantResults");
+
+const participantMessage = document.getElementById("participantMessage");
+
+let participantSearchTimer = null;
+
+/* -------------------------
+   OPEN MODAL
+------------------------- */
+
+function openParticipantModal() {
+  participantMessage.textContent = "";
+
+  participantMessage.className = "participant-message";
+
+  participantSearch.value = "";
+
+  participantResults.innerHTML =
+    '<div class="participant-empty">' +
+    "Start typing a user's name." +
+    "</div>";
+
+  addParticipantModal.classList.remove("hidden");
+
+  setTimeout(() => {
+    participantSearch.focus();
+  }, 100);
+}
+
+/* -------------------------
+   CLOSE MODAL
+------------------------- */
+
+function closeParticipantModal() {
+  addParticipantModal.classList.add("hidden");
+
+  if (participantSearchTimer) {
+    clearTimeout(participantSearchTimer);
+
+    participantSearchTimer = null;
+  }
+}
+
+/* -------------------------
+   SEARCH USERS
+------------------------- */
+
+async function searchParticipantUsers() {
+  const searchText = participantSearch.value.trim();
+
+  participantMessage.textContent = "";
+
+  participantMessage.className = "participant-message";
+
+  if (searchText.length < 2) {
+    participantResults.innerHTML =
+      '<div class="participant-empty">' +
+      "Enter at least 2 characters." +
+      "</div>";
+
+    return;
+  }
+
+  participantResults.innerHTML =
+    '<div class="participant-empty">' + "Searching..." + "</div>";
+
   try {
-    const result = await serviceCallApiRequest("/outgoing-call", "GET");
+    const result = await window.serviceCall.searchUsers(searchText);
 
-    if (result && result.success && result.outgoing_call) {
-      const outgoingCallId = result.call_sys_id;
+    /*
+     * Ignore an old search result if the
+     * user has already typed something else.
+     */
+    if (participantSearch.value.trim() !== searchText) {
+      return;
+    }
 
-      if (
-        outgoingCallId &&
-        !intentionallyLeftCallIds.has(outgoingCallId) &&
-        outgoingCallId !== activeOutgoingCallId
-      ) {
-        activeOutgoingCallId = outgoingCallId;
+    if (!result || !result.success) {
+      throw new Error(
+        result && result.message ? result.message : "Unable to search users.",
+      );
+    }
 
-        console.log("Outgoing ServiceCall:", result);
+    const users = Array.isArray(result.users) ? result.users : [];
 
-        showCallWindow(
-          result.state === "connected" ? "connected" : "calling",
+    if (users.length === 0) {
+      participantResults.innerHTML =
+        '<div class="participant-empty">' +
+        "No matching users found." +
+        "</div>";
 
-          //console.warn('DEBUG: GENERIC OUTGOING ROLLER OPENING CALL WINDOW'),
-          {
-            callSysId: result.call_sys_id,
+      return;
+    }
 
-            callNumber: result.call_number,
+    /*
+     * Build results safely with DOM APIs.
+     * Do not inject ServiceNow user values
+     * directly into HTML.
+     */
+    participantResults.innerHTML = "";
 
-            name: result.target_user_name || "Unknown User",
+    users.forEach((user) => {
+      const row = document.createElement("div");
 
-            department: result.target_department || "",
-          },
+      row.className = "participant-result";
+
+      const details = document.createElement("div");
+
+      details.className = "participant-details";
+
+      const name = document.createElement("div");
+
+      name.className = "participant-name";
+
+      name.textContent = user.name || "Unknown User";
+
+      const subtitle = document.createElement("div");
+
+      subtitle.className = "participant-subtitle";
+
+      const subtitleParts = [];
+
+      if (user.department) {
+        subtitleParts.push(user.department);
+      }
+
+      if (user.email) {
+        subtitleParts.push(user.email);
+      }
+
+      subtitle.textContent =
+        subtitleParts.join(" • ") || user.user_name || "ServiceNow user";
+
+      details.appendChild(name);
+
+      details.appendChild(subtitle);
+
+      const addButton = document.createElement("button");
+
+      addButton.className = "participant-add";
+
+      addButton.textContent = "Add";
+
+      addButton.addEventListener("click", async () => {
+        await inviteServiceCallParticipant(user, addButton);
+      });
+
+      row.appendChild(details);
+
+      row.appendChild(addButton);
+
+      participantResults.appendChild(row);
+    });
+  } catch (error) {
+    console.error("ServiceCall user search failed:", error);
+
+    participantResults.innerHTML =
+      '<div class="participant-empty">' + "Unable to search users." + "</div>";
+
+    participantMessage.textContent = error.message || "Unable to search users.";
+
+    participantMessage.className = "participant-message error";
+  }
+}
+
+/* -------------------------
+   INVITE USER
+------------------------- */
+
+async function inviteServiceCallParticipant(user, addButton) {
+  if (!user || !user.sys_id) {
+    return;
+  }
+
+  addButton.disabled = true;
+
+  addButton.textContent = "Adding...";
+
+  participantMessage.textContent = "Inviting " + (user.name || "user") + "...";
+
+  participantMessage.className = "participant-message";
+
+  try {
+    const result = await window.serviceCall.inviteParticipant(
+      callSysId,
+      user.sys_id,
+    );
+
+    if (!result || !result.success) {
+      throw new Error(
+        result && result.message
+          ? result.message
+          : "Unable to invite participant.",
+      );
+    }
+
+    addButton.textContent = "Invited";
+
+    participantMessage.textContent =
+      (user.name || "Participant") + " has been invited to the call.";
+
+    participantMessage.className = "participant-message success";
+
+    /*
+     * Leave the success message visible
+     * briefly, then close the modal.
+     */
+    setTimeout(() => {
+      closeParticipantModal();
+    }, 1000);
+  } catch (error) {
+    console.error("ServiceCall participant invite failed:", error);
+
+    addButton.disabled = false;
+
+    addButton.textContent = "Add";
+
+    participantMessage.textContent =
+      error.message || "Unable to invite participant.";
+
+    participantMessage.className = "participant-message error";
+  }
+}
+
+/* -------------------------
+   ADD USER EVENTS
+------------------------- */
+
+addUserButton.addEventListener("click", () => {
+  if (currentMode !== "connected") {
+    return;
+  }
+
+  openParticipantModal();
+});
+
+closeParticipantModalButton.addEventListener("click", closeParticipantModal);
+
+/*
+ * Clicking the dark area outside
+ * the card closes the modal.
+ */
+addParticipantModal.addEventListener("click", (event) => {
+  if (event.target === addParticipantModal) {
+    closeParticipantModal();
+  }
+});
+
+/*
+ * Escape closes the modal.
+ */
+document.addEventListener("keydown", (event) => {
+  if (
+    event.key === "Escape" &&
+    !addParticipantModal.classList.contains("hidden")
+  ) {
+    closeParticipantModal();
+  }
+});
+
+/*
+ * Small debounce so we don't hit
+ * ServiceNow on every keystroke.
+ */
+participantSearch.addEventListener("input", () => {
+  if (participantSearchTimer) {
+    clearTimeout(participantSearchTimer);
+  }
+
+  participantSearchTimer = setTimeout(searchParticipantUsers, 350);
+});
+
+/* =======================================================
+   SERVICECALL SCREEN SHARING
+======================================================= */
+
+const shareScreenButton = document.getElementById("shareScreenButton");
+
+const screenShareContainer = document.getElementById("screenShareContainer");
+
+const screenShareVideo = document.getElementById("screenShareVideo");
+
+const screenSharePlaceholder = document.getElementById(
+  "screenSharePlaceholder",
+);
+
+const screenShareTitle = document.getElementById("screenShareTitle");
+
+const screenSourceModal = document.getElementById("screenSourceModal");
+
+const screenSourceResults = document.getElementById("screenSourceResults");
+
+const closeScreenSourceModalButton = document.getElementById(
+  "closeScreenSourceModal",
+);
+
+let localScreenStream = null;
+
+let localScreenAgoraTrack = null;
+
+let localScreenNativeTrack = null;
+
+let screenShareActionInProgress = false;
+
+let activeRemoteScreenUid = null;
+
+/* -------------------------------------------------------
+   CALL WINDOW LAYOUT
+------------------------------------------------------- */
+
+async function setScreenCallLayout() {
+  if (
+    !window.serviceCall ||
+    typeof window.serviceCall.setCallWindowLayout !== "function"
+  ) {
+    return;
+  }
+
+  try {
+    await window.serviceCall.setCallWindowLayout("screen");
+  } catch (error) {
+    console.error("Unable to expand ServiceCall window:", error);
+  }
+}
+
+async function setCompactCallLayout() {
+  if (
+    !window.serviceCall ||
+    typeof window.serviceCall.setCallWindowLayout !== "function"
+  ) {
+    return;
+  }
+
+  try {
+    await window.serviceCall.setCallWindowLayout("compact");
+  } catch (error) {
+    console.error("Unable to restore ServiceCall window:", error);
+  }
+}
+
+/* -------------------------------------------------------
+   SCREEN VIEW
+------------------------------------------------------- */
+
+async function showScreenShareView(title) {
+  screenShareTitle.textContent = title || "Screen sharing";
+
+  screenShareContainer.classList.remove("hidden");
+
+  screenSharePlaceholder.classList.remove("hidden");
+
+  await setScreenCallLayout();
+}
+
+async function hideScreenShareView() {
+  screenShareVideo.innerHTML = "";
+
+  screenSharePlaceholder.classList.remove("hidden");
+
+  screenShareContainer.classList.add("hidden");
+
+  activeRemoteScreenUid = null;
+
+  /*
+   * Do not collapse if THIS participant
+   * is still sharing.
+   */
+  if (!window.ServiceCallAgora || !window.ServiceCallAgora.isScreenSharing()) {
+    await setCompactCallLayout();
+  }
+}
+
+/* -------------------------------------------------------
+   SOURCE MODAL
+------------------------------------------------------- */
+
+function closeScreenSourceModal() {
+  screenSourceModal.classList.add("hidden");
+
+  screenSourceResults.innerHTML = "";
+}
+
+async function openScreenSourceModal() {
+  if (currentMode !== "connected") {
+    statusText.textContent =
+      "The call must be connected before sharing your screen.";
+
+    return;
+  }
+
+  if (!window.ServiceCallAgora || !window.ServiceCallAgora.isJoined()) {
+    statusText.textContent = "Call media is not connected yet.";
+
+    return;
+  }
+
+  if (
+    !window.serviceCall ||
+    typeof window.serviceCall.getScreenSources !== "function"
+  ) {
+    statusText.textContent = "Screen sharing is unavailable.";
+
+    return;
+  }
+
+  screenSourceModal.classList.remove("hidden");
+
+  screenSourceResults.innerHTML =
+    '<div class="screen-source-message">' +
+    "Loading screens and windows..." +
+    "</div>";
+
+  try {
+    const result = await window.serviceCall.getScreenSources();
+
+    if (!result || !result.success) {
+      throw new Error(
+        result && result.message
+          ? result.message
+          : "Unable to retrieve screens and windows.",
+      );
+    }
+
+    const sources = Array.isArray(result.sources) ? result.sources : [];
+
+    screenSourceResults.innerHTML = "";
+
+    if (sources.length === 0) {
+      screenSourceResults.innerHTML =
+        '<div class="screen-source-message">' +
+        "No screens or windows are available." +
+        "</div>";
+
+      return;
+    }
+
+    sources.forEach((source) => {
+      const item = document.createElement("button");
+
+      item.type = "button";
+
+      item.className = "screen-source-item";
+
+      if (source.thumbnail) {
+        const thumbnail = document.createElement("img");
+
+        thumbnail.className = "screen-source-thumbnail";
+
+        thumbnail.src = source.thumbnail;
+
+        thumbnail.alt = "";
+
+        item.appendChild(thumbnail);
+      }
+
+      const sourceName = document.createElement("div");
+
+      sourceName.className = "screen-source-name";
+
+      sourceName.textContent = source.name || "Screen";
+
+      item.appendChild(sourceName);
+
+      item.addEventListener(
+        "click",
+
+        async () => {
+          await startServiceCallScreenShare(source);
+        },
+      );
+
+      screenSourceResults.appendChild(item);
+    });
+  } catch (error) {
+    console.error("Unable to open ServiceCall screen picker:", error);
+
+    screenSourceResults.innerHTML = "";
+
+    const message = document.createElement("div");
+
+    message.className = "screen-source-message";
+
+    message.textContent =
+      error.message || "Unable to load screens and windows.";
+
+    screenSourceResults.appendChild(message);
+  }
+}
+
+/* -------------------------------------------------------
+   CAPTURE ELECTRON SOURCE
+------------------------------------------------------- */
+
+async function captureDesktopSource(sourceId) {
+  if (!sourceId) {
+    throw new Error("Screen source ID was not provided.");
+  }
+
+  /*
+   * Electron DesktopCapturerSource.id is passed
+   * to Chromium as chromeMediaSourceId.
+   *
+   * We deliberately capture VIDEO ONLY.
+   *
+   * Conference audio already comes from Agora,
+   * therefore desktop/system audio must not be
+   * injected into the call.
+   */
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+
+    video: {
+      mandatory: {
+        chromeMediaSource: "desktop",
+
+        chromeMediaSourceId: sourceId,
+
+        maxWidth: 1920,
+
+        maxHeight: 1080,
+
+        maxFrameRate: 30,
+      },
+    },
+  });
+
+  const videoTracks = stream.getVideoTracks();
+
+  if (videoTracks.length === 0) {
+    stream.getTracks().forEach((track) => track.stop());
+
+    throw new Error("The selected screen did not provide a video track.");
+  }
+
+  return stream;
+}
+
+/* -------------------------------------------------------
+   START LOCAL SCREEN SHARE
+------------------------------------------------------- */
+
+async function startServiceCallScreenShare(source) {
+  if (screenShareActionInProgress) {
+    return;
+  }
+
+  screenShareActionInProgress = true;
+
+  shareScreenButton.disabled = true;
+
+  try {
+    if (!source || !source.id) {
+      throw new Error("Please select a valid screen or window.");
+    }
+
+    if (!window.ServiceCallAgora || !window.ServiceCallAgora.isJoined()) {
+      throw new Error("Call media is not connected.");
+    }
+
+    closeScreenSourceModal();
+
+    statusText.textContent = "Starting screen share...";
+
+    /*
+     * -----------------------------------------
+     * 1. CAPTURE WINDOWS SCREEN/WINDOW
+     * -----------------------------------------
+     */
+
+    const stream = await captureDesktopSource(source.id);
+
+    const nativeTrack = stream.getVideoTracks()[0];
+
+    /*
+     * -----------------------------------------
+     * 2. CREATE AGORA VIDEO TRACK
+     * -----------------------------------------
+     */
+
+    const agoraTrack =
+      await window.ServiceCallAgora.createScreenVideoTrack(nativeTrack);
+
+    /*
+     * Keep references BEFORE publication so
+     * cleanup remains possible if publication
+     * fails.
+     */
+    localScreenStream = stream;
+
+    localScreenNativeTrack = nativeTrack;
+
+    localScreenAgoraTrack = agoraTrack;
+
+    /*
+     * -----------------------------------------
+     * 3. HANDLE WINDOWS/OS STOP SHARING
+     * -----------------------------------------
+     */
+
+    nativeTrack.addEventListener(
+      "ended",
+
+      () => {
+        console.log(
+          "ServiceCall screen capture ended by the operating system.",
         );
+
+        stopServiceCallScreenShare().catch((error) => {
+          console.error("Unable to stop ServiceCall screen share:", error);
+        });
+      },
+
+      {
+        once: true,
+      },
+    );
+
+    /*
+     * -----------------------------------------
+     * 4. PUBLISH THROUGH EXISTING AGORA CALL
+     * -----------------------------------------
+     */
+
+    await window.ServiceCallAgora.startScreenShare(agoraTrack);
+
+    /*
+     * If recording is already running,
+     * tell the recorder that screen video
+     * has now entered the recording.
+     */
+    if (
+      window.ServiceCallRecorder &&
+      window.ServiceCallRecorder.isRecording()
+    ) {
+      await window.ServiceCallRecorder.attachScreen(agoraTrack);
+    }
+
+    /*
+     * -----------------------------------------
+     * 5. SHOW LOCAL PREVIEW
+     * -----------------------------------------
+     */
+
+    await showScreenShareView("You are sharing: " + (source.name || "Screen"));
+
+    screenShareVideo.innerHTML = "";
+
+    screenSharePlaceholder.classList.add("hidden");
+
+    agoraTrack.play(screenShareVideo);
+
+    /*
+     * -----------------------------------------
+     * 6. BUTTON/UI
+     * -----------------------------------------
+     */
+
+    shareScreenButton.textContent = "Stop Sharing";
+
+    shareScreenButton.classList.add("screen-sharing-active");
+
+    statusText.textContent = "Connected";
+
+    console.log(
+      "ServiceCall screen sharing started:",
+      source.name || source.id,
+    );
+  } catch (error) {
+    console.error("Unable to start ServiceCall screen sharing:", error);
+
+    /*
+     * Clean up any partially-created capture.
+     */
+    if (localScreenAgoraTrack) {
+      try {
+        localScreenAgoraTrack.stop();
+      } catch (stopError) {
+        // Ignore.
+      }
+
+      try {
+        localScreenAgoraTrack.close();
+      } catch (closeError) {
+        // Ignore.
+      }
+    }
+
+    if (localScreenStream) {
+      localScreenStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch (stopError) {
+          // Ignore.
+        }
+      });
+    }
+
+    localScreenAgoraTrack = null;
+
+    localScreenNativeTrack = null;
+
+    localScreenStream = null;
+
+    shareScreenButton.textContent = "Share Screen";
+
+    shareScreenButton.classList.remove("screen-sharing-active");
+
+    statusText.textContent = error.message || "Unable to share screen.";
+  } finally {
+    screenShareActionInProgress = false;
+
+    shareScreenButton.disabled = false;
+  }
+}
+
+/* -------------------------------------------------------
+   STOP LOCAL SCREEN SHARE
+------------------------------------------------------- */
+
+async function stopServiceCallScreenShare() {
+  if (screenShareActionInProgress) {
+    return;
+  }
+
+  screenShareActionInProgress = true;
+
+  shareScreenButton.disabled = true;
+
+  try {
+    /*
+     * Recording continues even though
+     * live screen sharing is stopping.
+     *
+     * The recorder returns to blank video,
+     * but remembers that screen sharing
+     * occurred, therefore final output
+     * remains MP4.
+     */
+    if (
+      window.ServiceCallRecorder &&
+      window.ServiceCallRecorder.isRecording()
+    ) {
+      window.ServiceCallRecorder.detachScreen();
+    }
+
+    /*
+     * Agora owns publication state.
+     */
+    if (window.ServiceCallAgora && window.ServiceCallAgora.isScreenSharing()) {
+      await window.ServiceCallAgora.stopScreenShare();
+    }
+
+    /*
+     * Stop the underlying Electron capture.
+     */
+    if (localScreenStream) {
+      localScreenStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch (error) {
+          // Ignore cleanup error.
+        }
+      });
+    }
+
+    localScreenStream = null;
+
+    localScreenNativeTrack = null;
+
+    localScreenAgoraTrack = null;
+
+    screenShareVideo.innerHTML = "";
+
+    screenShareContainer.classList.add("hidden");
+
+    shareScreenButton.textContent = "Share Screen";
+
+    shareScreenButton.classList.remove("screen-sharing-active");
+
+    /*
+     * If nobody else's screen is currently
+     * being displayed, return to compact mode.
+     */
+    if (!activeRemoteScreenUid) {
+      await setCompactCallLayout();
+    }
+
+    if (currentMode === "connected") {
+      statusText.textContent = "Connected";
+    }
+
+    console.log("ServiceCall local screen sharing stopped.");
+  } finally {
+    screenShareActionInProgress = false;
+
+    shareScreenButton.disabled = false;
+  }
+}
+
+/* -------------------------------------------------------
+   REMOTE SCREEN SHARE
+------------------------------------------------------- */
+
+function configureRemoteScreenSharing() {
+  if (
+    !window.ServiceCallAgora ||
+    typeof window.ServiceCallAgora.setRemoteScreenHandler !== "function"
+  ) {
+    console.error("ServiceCall remote screen handler is unavailable.");
+
+    return;
+  }
+
+  window.ServiceCallAgora.setRemoteScreenHandler(async (event) => {
+    if (!event) {
+      return;
+    }
+
+    /*
+     * ---------------------------------
+     * REMOTE SCREEN STARTED
+     * ---------------------------------
+     */
+    if (event.action === "started" && event.track) {
+      activeRemoteScreenUid = String(event.uid);
+
+      /*
+       * If I am recording and another
+       * participant starts sharing,
+       * include their screen in my recording.
+       */
+      if (
+        window.ServiceCallRecorder &&
+        window.ServiceCallRecorder.isRecording()
+      ) {
+        await window.ServiceCallRecorder.attachScreen(event.track);
+      }
+
+      await showScreenShareView("Participant is sharing their screen");
+
+      screenShareVideo.innerHTML = "";
+
+      screenSharePlaceholder.classList.add("hidden");
+
+      try {
+        event.track.play(screenShareVideo);
+
+        console.log("ServiceCall remote screen displayed:", event.uid);
+      } catch (error) {
+        console.error("Unable to display remote ServiceCall screen:", error);
+
+        screenSharePlaceholder.textContent = "Unable to display shared screen.";
+
+        screenSharePlaceholder.classList.remove("hidden");
       }
 
       return;
     }
 
     /*
-     * No outgoing ringing/connected call.
+     * ---------------------------------
+     * REMOTE SCREEN STOPPED
+     * ---------------------------------
      */
-    activeOutgoingCallId = null;
-  } catch (error) {
-    console.error("Outgoing call check failed:", error);
-
-    if (error.code === "AUTHENTICATION_REQUIRED") {
-      stopOutgoingCallLoop();
-
-      sendAuthStatus(
-        "authentication_required",
-        "Your ServiceCall authorization has expired. Please sign in to ServiceNow again.",
-      );
-    }
-  }
-}
-
-function startOutgoingCallLoop() {
-  stopOutgoingCallLoop();
-
-  checkOutgoingCallOnce();
-
-  outgoingCallTimer = setInterval(checkOutgoingCallOnce, 3000);
-}
-
-function stopOutgoingCallLoop() {
-  if (outgoingCallTimer) {
-    clearInterval(outgoingCallTimer);
-
-    outgoingCallTimer = null;
-  }
-}
-
-ipcMain.handle("servicecall-open-active-call", async () => {
-  if (callWindow && !callWindow.isDestroyed()) {
-    if (callWindow.isMinimized()) {
-      callWindow.restore();
-    }
-
-    callWindow.show();
-    callWindow.focus();
-
-    return {
-      success: true,
-      active_call: true,
-    };
-  }
-
-  return {
-    success: true,
-    active_call: false,
-    message: "No active call window is currently available.",
-  };
-});
-
-/* -------------------------------------------------------
-   DYNAMIC MEDIA CREDENTIALS
-------------------------------------------------------- */
-
-ipcMain.handle(
-  "servicecall-get-media-credentials",
-
-  async (event, callSysId) => {
-    if (!callSysId) {
-      return {
-        success: false,
-        code: "CALL_ID_REQUIRED",
-        message: "Call ID was not provided.",
-      };
-    }
-
-    try {
-      const result = await serviceCallApiRequest(
-        "/media-credentials?call_sys_id=" + encodeURIComponent(callSysId),
-        "GET",
-      );
-
-      return result;
-    } catch (error) {
-      console.error(
-        "Unable to get ServiceCall media credentials:",
-        error.message,
-      );
-
-      return {
-        success: false,
-
-        code: error.code || "MEDIA_CREDENTIALS_FAILED",
-
-        message: error.message || "Unable to obtain media credentials.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-invite-participant",
-
-  async (event, callSysId, userSysId) => {
-    if (!callSysId || !userSysId) {
-      return {
-        success: false,
-        code: "INVITE_DATA_REQUIRED",
-        message: "Call ID and user ID are required.",
-      };
-    }
-
-    try {
-      const result = await serviceCallApiRequest(
-        "/invite-participant",
-        "POST",
-        {
-          call_sys_id: callSysId,
-
-          user_sys_id: userSysId,
-        },
-      );
-
-      return result;
-    } catch (error) {
-      console.error("Unable to invite ServiceCall participant:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "INVITE_PARTICIPANT_FAILED",
-        message: error.message || "Unable to invite participant.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-search-users",
-
-  async (event, searchText) => {
-    const search = String(searchText || "").trim();
-
-    if (search.length < 2) {
-      return {
-        success: true,
-        users: [],
-      };
-    }
-
-    try {
-      return await serviceCallApiRequest(
-        "/users?search=" + encodeURIComponent(search),
-        "GET",
-      );
-    } catch (error) {
-      console.error("Unable to search ServiceCall users:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "USER_SEARCH_FAILED",
-
-        message: error.message || "Unable to search users.",
-
-        users: [],
-      };
-    }
-  },
-);
-
-/* =====================================================
-   SERVICECALL CHAT - GET CONVERSATIONS
-===================================================== */
-
-ipcMain.handle(
-  "servicecall-get-conversations",
-
-  async () => {
-    try {
-      const result = await serviceCallApiRequest("/conversations", "GET");
-
-      return result;
-    } catch (error) {
-      console.error("Unable to get ServiceCall conversations:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "GET_CONVERSATIONS_FAILED",
-
-        message: error.message || "Unable to retrieve conversations.",
-
-        conversations: [],
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-leave-call",
-
-  async (event, callSysId) => {
-    if (!callSysId) {
-      return {
-        success: false,
-        code: "CALL_ID_REQUIRED",
-        message: "Call ID was not provided.",
-      };
-    }
-
-    try {
-      return await serviceCallApiRequest("/leave-call", "POST", {
-        call_sys_id: callSysId,
-      });
-    } catch (error) {
-      console.error("Unable to leave ServiceCall:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "LEAVE_CALL_FAILED",
-
-        message: error.message || "Unable to leave the call.",
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   UPLOAD RECORDING ATTACHMENT
-------------------------------------------------------- */
-
-async function uploadRecordingAttachment(
-  recordingSysId,
-  fileData,
-  fileName,
-  format,
-) {
-  if (!recordingSysId) {
-    throw new Error("Recording ID was not provided.");
-  }
-
-  if (!fileData) {
-    throw new Error("Recording file data was not provided.");
-  }
-
-  const normalizedFormat = String(format || "")
-    .trim()
-    .toLowerCase();
-
-  if (normalizedFormat !== "mp3" && normalizedFormat !== "mp4") {
-    throw new Error("Recording format must be mp3 or mp4.");
-  }
-
-  const expectedExtension = "." + normalizedFormat;
-
-  let safeFileName = String(fileName || "")
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]/g, "_");
-
-  if (!safeFileName) {
-    safeFileName = "servicecall-recording-" + Date.now() + expectedExtension;
-  }
-
-  /*
-   * Ensure the filename agrees with the
-   * recording format.
-   */
-  if (!safeFileName.toLowerCase().endsWith(expectedExtension)) {
-    safeFileName += expectedExtension;
-  }
-
-  const config = loadConfig();
-
-  if (!config || !config.instanceUrl) {
-    throw new Error("ServiceCall Desktop is not connected to ServiceNow.");
-  }
-
-  /*
-   * Get a valid OAuth access token.
-   *
-   * The renderer never receives this token.
-   */
-  let accessToken = await ensureValidAccessToken();
-
-  /*
-   * IPC can give us a Uint8Array rather
-   * than a Node Buffer.
-   */
-  const recordingBuffer = Buffer.isBuffer(fileData)
-    ? fileData
-    : Buffer.from(fileData);
-
-  if (recordingBuffer.length <= 0) {
-    throw new Error("Recording file is empty.");
-  }
-
-  const contentType = normalizedFormat === "mp3" ? "audio/mpeg" : "video/mp4";
-
-  const tableName = "x_1806573_servic_0_servicecall_recording";
-
-  const uploadUrl =
-    config.instanceUrl.replace(/\/$/, "") +
-    "/api/now/attachment/file" +
-    "?table_name=" +
-    encodeURIComponent(tableName) +
-    "&table_sys_id=" +
-    encodeURIComponent(recordingSysId) +
-    "&file_name=" +
-    encodeURIComponent(safeFileName);
-
-  async function performUpload(token) {
-    return await fetch(uploadUrl, {
-      method: "POST",
-
-      headers: {
-        Authorization: "Bearer " + token,
-
-        Accept: "application/json",
-
-        "Content-Type": contentType,
-      },
+    if (event.action === "stopped") {
+      const stoppedUid = String(event.uid || "");
 
       /*
-       * IMPORTANT:
-       *
-       * Raw binary.
-       * No JSON.
-       * No Base64.
+       * Ignore stop events for some
+       * other remote video track.
        */
-      body: recordingBuffer,
-    });
-  }
+      if (activeRemoteScreenUid && stoppedUid !== activeRemoteScreenUid) {
+        return;
+      }
 
-  let response = await performUpload(accessToken);
+      activeRemoteScreenUid = null;
 
-  /*
-   * If OAuth expired between obtaining the
-   * token and uploading the file, refresh
-   * once and retry the same binary upload.
-   */
-  if (response.status === 401 || response.status === 403) {
-    console.log(
-      "Recording upload authorization expired. Attempting automatic renewal...",
-    );
+      /*
+       * The remote participant stopped
+       * sharing their screen.
+       *
+       * Recording itself continues.
+       * It still remembers that a screen
+       * was used, so final output remains MP4.
+       */
+      if (
+        window.ServiceCallRecorder &&
+        window.ServiceCallRecorder.isRecording()
+      ) {
+        window.ServiceCallRecorder.detachScreen();
+      }
+
+      screenShareVideo.innerHTML = "";
+
+      /*
+       * If THIS user is sharing,
+       * their local preview should
+       * remain visible.
+       */
+      if (
+        window.ServiceCallAgora &&
+        window.ServiceCallAgora.isScreenSharing() &&
+        localScreenAgoraTrack
+      ) {
+        screenShareTitle.textContent = "You are sharing your screen";
+
+        screenSharePlaceholder.classList.add("hidden");
+
+        try {
+          localScreenAgoraTrack.play(screenShareVideo);
+        } catch (error) {
+          console.error("Unable to restore local screen preview:", error);
+        }
+
+        return;
+      }
+
+      await hideScreenShareView();
+
+      console.log("ServiceCall remote screen sharing stopped.");
+    }
+  });
+}
+
+/* -------------------------------------------------------
+   SHARE SCREEN BUTTON
+------------------------------------------------------- */
+
+shareScreenButton.addEventListener(
+  "click",
+
+  async () => {
+    if (currentMode !== "connected") {
+      return;
+    }
 
     try {
-      accessToken = await refreshAccessToken();
+      if (
+        window.ServiceCallAgora &&
+        window.ServiceCallAgora.isScreenSharing()
+      ) {
+        await stopServiceCallScreenShare();
+      } else {
+        await openScreenSourceModal();
+      }
+    } catch (error) {
+      console.error("ServiceCall screen sharing action failed:", error);
 
-      response = await performUpload(accessToken);
-    } catch (refreshError) {
-      const authError = new Error(
-        "Your ServiceCall authorization has expired. Please sign in again.",
-      );
-
-      authError.code = "AUTHENTICATION_REQUIRED";
-
-      throw authError;
+      statusText.textContent =
+        error.message || "Unable to change screen sharing.";
     }
+  },
+);
+
+/* -------------------------------------------------------
+   SCREEN MODAL EVENTS
+------------------------------------------------------- */
+
+closeScreenSourceModalButton.addEventListener("click", closeScreenSourceModal);
+
+screenSourceModal.addEventListener(
+  "click",
+
+  (event) => {
+    if (event.target === screenSourceModal) {
+      closeScreenSourceModal();
+    }
+  },
+);
+
+/*
+ * We already have an Escape handler for the
+ * participant modal. This separate listener is
+ * safe and handles only the screen picker.
+ */
+document.addEventListener(
+  "keydown",
+
+  (event) => {
+    if (
+      event.key === "Escape" &&
+      !screenSourceModal.classList.contains("hidden")
+    ) {
+      closeScreenSourceModal();
+    }
+  },
+);
+
+/* -------------------------------------------------------
+   INITIALIZE REMOTE SCREEN HANDLER
+------------------------------------------------------- */
+
+configureRemoteScreenSharing();
+
+/* -------------------------
+   SERVICECALL RECORDING
+------------------------- */
+
+const recordButton = document.getElementById("recordButton");
+
+const recordingText = document.getElementById("recordingText");
+
+let recordingStartedAt = null;
+
+let serviceNowRecordingSysId = null;
+
+let recordingActionInProgress = false;
+
+let remoteRecordingActive = false;
+
+/* -------------------------
+   SHOW RECORDING MESSAGE
+------------------------- */
+
+function showRecordingMessage(message, autoHide = false) {
+  recordingText.textContent = message;
+
+  recordingText.classList.remove("hidden");
+
+  if (autoHide) {
+    setTimeout(() => {
+      /*
+       * Do not hide the message if
+       * another recording has started
+       * during the timeout.
+       */
+      if (
+        !window.ServiceCallRecorder ||
+        !window.ServiceCallRecorder.isRecording()
+      ) {
+        recordingText.classList.add("hidden");
+      }
+    }, 3000);
+  }
+}
+
+/* -------------------------
+   SYNC RECORDING INDICATOR
+------------------------- */
+
+function syncRecordingIndicator(recordingActive) {
+  remoteRecordingActive = recordingActive === true;
+
+  /*
+   * Never overwrite local recording
+   * workflow messages such as:
+   *
+   * Starting recording...
+   * Processing recording...
+   * Saving recording...
+   */
+  if (recordingActionInProgress) {
+    return;
   }
 
-  const responseText = await response.text();
+  /*
+   * This desktop is itself actively
+   * recording the call.
+   *
+   * Its local state is authoritative.
+   */
+  if (window.ServiceCallRecorder && window.ServiceCallRecorder.isRecording()) {
+    showRecordingMessage("Call is being recorded");
 
-  let data = {};
+    return;
+  }
+
+  /*
+   * Another participant is recording,
+   * or this participant joined after
+   * recording had already started.
+   */
+  if (remoteRecordingActive) {
+    showRecordingMessage("Call is being recorded");
+
+    return;
+  }
+
+  /*
+   * No active recording exists.
+   */
+  recordingText.classList.add("hidden");
+}
+
+/* -------------------------
+   START RECORDING
+------------------------- */
+
+async function startServiceCallRecording() {
+  if (recordingActionInProgress) {
+    return;
+  }
+
+  if (currentMode !== "connected") {
+    throw new Error("The call must be connected before recording.");
+  }
+
+  if (!window.ServiceCallRecorder) {
+    throw new Error("ServiceCall recording service is unavailable.");
+  }
+
+  if (!window.ServiceCallAgora || !window.ServiceCallAgora.isJoined()) {
+    throw new Error("Call audio is not connected yet.");
+  }
+
+  if (
+    !window.serviceCall ||
+    typeof window.serviceCall.startRecording !== "function"
+  ) {
+    throw new Error("ServiceCall recording API is unavailable.");
+  }
+
+  recordingActionInProgress = true;
+
+  recordButton.disabled = true;
+
+  showRecordingMessage("Starting recording...");
 
   try {
-    data = responseText ? JSON.parse(responseText) : {};
+    /*
+     * -----------------------------------------
+     * 1. CREATE SERVICENOW RECORDING SESSION
+     * -----------------------------------------
+     */
+
+    const serviceNowResult = await window.serviceCall.startRecording(callSysId);
+
+    if (!serviceNowResult || !serviceNowResult.success) {
+      throw new Error(
+        serviceNowResult && serviceNowResult.message
+          ? serviceNowResult.message
+          : "Unable to create ServiceCall recording.",
+      );
+    }
+
+    const recordingSysId = serviceNowResult.recording_sys_id;
+
+    if (!recordingSysId) {
+      throw new Error("ServiceNow did not return a recording ID.");
+    }
+
+    serviceNowRecordingSysId = recordingSysId;
+
+    /*
+     * -----------------------------------------
+     * 2. START LOCAL MIXED AUDIO CAPTURE
+     * -----------------------------------------
+     */
+
+    const localResult = await window.ServiceCallRecorder.start();
+
+    if (!localResult || !localResult.success) {
+      throw new Error(
+        localResult && localResult.message
+          ? localResult.message
+          : "Unable to start local recording.",
+      );
+    }
+
+    recordingStartedAt = Date.now();
+
+    recordButton.textContent = "Stop Recording";
+
+    showRecordingMessage("Call is being recorded");
+
+    console.log(
+      "ServiceCall recording started.",
+      "Recording:",
+      serviceNowRecordingSysId,
+      "Capture format:",
+      localResult.mimeType,
+    );
   } catch (error) {
-    throw new Error(
-      "ServiceNow returned an invalid attachment upload response.",
-    );
+    /*
+     * If ServiceNow successfully created the
+     * recording record but local capture could
+     * not start, keep the sys_id for diagnostics.
+     *
+     * Later we can add a dedicated failed-state
+     * endpoint. Do not falsely mark it Available.
+     */
+
+    console.error("Unable to start ServiceCall recording:", error);
+
+    recordButton.textContent = "Record Call";
+
+    showRecordingMessage(error.message || "Unable to start recording.", true);
+
+    throw error;
+  } finally {
+    recordingActionInProgress = false;
+
+    recordButton.disabled = false;
   }
-
-  const result = data.result || data;
-
-  console.log(
-    "ServiceCall Attachment API response:",
-    "HTTP",
-    response.status,
-    data,
-  );
-
-  if (!response.ok) {
-    const uploadError = new Error(
-      (result &&
-        result.error &&
-        (result.error.message || result.error.detail)) ||
-        (result && result.message) ||
-        (data && data.error && (data.error.message || data.error.detail)) ||
-        "ServiceNow recording upload failed.",
-    );
-
-    uploadError.code = "RECORDING_UPLOAD_FAILED";
-
-    throw uploadError;
-  }
-
-  if (!result || !result.sys_id) {
-    throw new Error("ServiceNow did not return an attachment ID.");
-  }
-
-  /*
-   * Extra verification using the metadata
-   * ServiceNow returned from Attachment API.
-   */
-  if (result.table_sys_id && result.table_sys_id !== recordingSysId) {
-    throw new Error(
-      "Uploaded attachment was associated with the wrong recording.",
-    );
-  }
-
-  if (result.table_name && result.table_name !== tableName) {
-    throw new Error("Uploaded attachment was associated with the wrong table.");
-  }
-
-  console.log(
-    "ServiceCall recording uploaded successfully.",
-    "Attachment:",
-    result.sys_id,
-    "Size:",
-    result.size_bytes || recordingBuffer.length,
-  );
-
-  /*
-   * Never return the OAuth token.
-   */
-  return {
-    success: true,
-
-    attachment_sys_id: result.sys_id,
-
-    file_name: result.file_name || safeFileName,
-
-    file_size: Number(result.size_bytes || recordingBuffer.length),
-
-    content_type: result.content_type || contentType,
-  };
 }
 
-ipcMain.handle(
-  "servicecall-upload-recording",
-
-  async (event, recordingSysId, fileData, fileName, format) => {
-    try {
-      return await uploadRecordingAttachment(
-        recordingSysId,
-        fileData,
-        fileName,
-        format,
-      );
-    } catch (error) {
-      console.error("Unable to upload ServiceCall recording:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "RECORDING_UPLOAD_FAILED",
-
-        message: error.message || "Unable to upload recording.",
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   SERVICECALL RECORDING
-------------------------------------------------------- */
-
-/*
- * Create the ServiceCall Recording record.
- *
- * This does NOT start local media capture by itself.
- * It creates the authoritative recording session
- * in ServiceNow.
- */
-ipcMain.handle(
-  "servicecall-start-recording",
-
-  async (event, callSysId) => {
-    if (!callSysId) {
-      return {
-        success: false,
-        code: "CALL_ID_REQUIRED",
-        message: "Call ID was not provided.",
-      };
-    }
-
-    try {
-      return await serviceCallApiRequest("/start-recording", "POST", {
-        call_sys_id: callSysId,
-      });
-    } catch (error) {
-      console.error("Unable to start ServiceCall recording:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "START_RECORDING_FAILED",
-
-        message: error.message || "Unable to start recording.",
-      };
-    }
-  },
-);
-
-/*
- * Tell ServiceNow that media capture has stopped
- * and the recording is now being processed.
- */
-ipcMain.handle(
-  "servicecall-finish-recording",
-
-  async (event, recordingSysId) => {
-    if (!recordingSysId) {
-      return {
-        success: false,
-        code: "RECORDING_ID_REQUIRED",
-        message: "Recording ID was not provided.",
-      };
-    }
-
-    try {
-      return await serviceCallApiRequest("/finish-recording", "POST", {
-        recording_sys_id: recordingSysId,
-      });
-    } catch (error) {
-      console.error("Unable to finish ServiceCall recording:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "FINISH_RECORDING_FAILED",
-
-        message: error.message || "Unable to finish recording.",
-      };
-    }
-  },
-);
-
-/*
- * After the binary file has been successfully
- * uploaded to sys_attachment, this finalizes the
- * ServiceCall Recording record.
- */
-ipcMain.handle(
-  "servicecall-complete-recording",
-
-  async (event, recordingSysId, attachmentSysId, format) => {
-    if (!recordingSysId || !attachmentSysId || !format) {
-      return {
-        success: false,
-        code: "RECORDING_DATA_REQUIRED",
-        message: "Recording ID, attachment ID and format are required.",
-      };
-    }
-
-    try {
-      return await serviceCallApiRequest("/complete-recording", "POST", {
-        recording_sys_id: recordingSysId,
-
-        attachment_sys_id: attachmentSysId,
-
-        format: format,
-      });
-    } catch (error) {
-      console.error("Unable to complete ServiceCall recording:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "COMPLETE_RECORDING_FAILED",
-
-        message: error.message || "Unable to complete recording.",
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   FINALIZE VOICE RECORDING
-------------------------------------------------------- */
-
-ipcMain.handle(
-  "servicecall-finalize-voice-recording",
-
-  async (event, recordingSysId, webmData) => {
-    if (!recordingSysId) {
-      return {
-        success: false,
-        code: "RECORDING_ID_REQUIRED",
-        message: "Recording ID was not provided.",
-      };
-    }
-
-    if (!webmData) {
-      return {
-        success: false,
-        code: "RECORDING_DATA_REQUIRED",
-        message: "Recording data was not provided.",
-      };
-    }
-
-    try {
-      /*
-       * IPC structured cloning commonly
-       * gives the main process a Uint8Array.
-       */
-      const webmBuffer = Buffer.isBuffer(webmData)
-        ? webmData
-        : Buffer.from(webmData);
-
-      if (webmBuffer.length <= 0) {
-        throw new Error("Recording data is empty.");
-      }
-
-      console.log(
-        "ServiceCall voice recording received.",
-        "WebM size:",
-        webmBuffer.length,
-      );
-
-      /* -----------------------------------------
-               1. WEBM -> REAL MP3
-            ----------------------------------------- */
-
-      const converted = await convertWebmToMp3(webmBuffer);
-
-      if (!converted || !converted.success || !converted.buffer) {
-        throw new Error("Unable to convert ServiceCall recording to MP3.");
-      }
-
-      /* -----------------------------------------
-               2. MARK RECORDING PROCESSING
-            ----------------------------------------- */
-
-      const finishResult = await serviceCallApiRequest(
-        "/finish-recording",
-        "POST",
-        {
-          recording_sys_id: recordingSysId,
-        },
-      );
-
-      if (!finishResult || finishResult.success !== true) {
-        throw new Error(
-          finishResult && finishResult.message
-            ? finishResult.message
-            : "Unable to finish ServiceCall recording.",
-        );
-      }
-
-      /* -----------------------------------------
-               3. UPLOAD FINAL MP3
-            ----------------------------------------- */
-
-      const fileName = "servicecall-recording-" + recordingSysId + ".mp3";
-
-      const uploadResult = await uploadRecordingAttachment(
-        recordingSysId,
-        converted.buffer,
-        fileName,
-        "mp3",
-      );
-
-      console.log("ServiceCall attachment upload result:", uploadResult);
-
-      if (
-        !uploadResult ||
-        !uploadResult.success ||
-        !uploadResult.attachment_sys_id
-      ) {
-        throw new Error(
-          uploadResult && uploadResult.message
-            ? uploadResult.message
-            : "Unable to upload ServiceCall recording.",
-        );
-      }
-
-      /* -----------------------------------------
-               4. COMPLETE RECORDING
-            ----------------------------------------- */
-
-      const completeResult = await serviceCallApiRequest(
-        "/complete-recording",
-        "POST",
-        {
-          recording_sys_id: recordingSysId,
-
-          attachment_sys_id: uploadResult.attachment_sys_id,
-
-          format: "mp3",
-        },
-      );
-
-      if (!completeResult || completeResult.success !== true) {
-        throw new Error(
-          completeResult && completeResult.message
-            ? completeResult.message
-            : "Unable to complete ServiceCall recording.",
-        );
-      }
-
-      console.log(
-        "ServiceCall voice recording finalized successfully.",
-        recordingSysId,
-      );
-
-      return {
-        success: true,
-
-        code: "VOICE_RECORDING_AVAILABLE",
-
-        recording_sys_id: recordingSysId,
-
-        attachment_sys_id: uploadResult.attachment_sys_id,
-
-        format: "mp3",
-
-        file_name: uploadResult.file_name,
-
-        file_size: uploadResult.file_size,
-
-        status: completeResult.status || "available",
-
-        expires_at: completeResult.expires_at || "",
-      };
-    } catch (error) {
-      console.error("ServiceCall voice recording finalization failed:", error);
-
-      return {
-        success: false,
-
-        code: error.code || "VOICE_RECORDING_FINALIZATION_FAILED",
-
-        message: error.message || "Unable to finalize ServiceCall recording.",
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   FINALIZE SCREEN RECORDING
-------------------------------------------------------- */
-
-/*
- * Finalizes a ServiceCall recording that contained
- * screen sharing at least once.
- *
- * Renderer WebM:
- *   VP8 canvas video
- *   +
- *   Opus mixed conference audio
- *
- * Main process:
- *   WebM
- *   -> FFmpeg
- *   -> H.264 + AAC MP4
- *   -> /finish-recording
- *   -> ServiceNow Attachment API
- *   -> /complete-recording
- */
-ipcMain.handle(
-  "servicecall-finalize-screen-recording",
-
-  async (event, recordingSysId, webmData) => {
-    if (!recordingSysId) {
-      return {
-        success: false,
-
-        code: "RECORDING_ID_REQUIRED",
-
-        message: "Recording ID was not provided.",
-      };
-    }
-
-    if (!webmData) {
-      return {
-        success: false,
-
-        code: "RECORDING_DATA_REQUIRED",
-
-        message: "Recording data was not provided.",
-      };
-    }
-
-    try {
-      /*
-       * IPC structured cloning normally
-       * gives the main process a Uint8Array.
-       */
-      const webmBuffer = Buffer.isBuffer(webmData)
-        ? webmData
-        : Buffer.from(webmData);
-
-      if (webmBuffer.length <= 0) {
-        throw new Error("Recording data is empty.");
-      }
-
-      console.log(
-        "ServiceCall screen recording received.",
-        "WebM size:",
-        webmBuffer.length,
-      );
-
-      /* -----------------------------------------
-               1. WEBM -> REAL MP4
-            ----------------------------------------- */
-
-      const converted = await convertWebmToMp4(webmBuffer);
-
-      if (!converted || !converted.success || !converted.buffer) {
-        throw new Error("Unable to convert ServiceCall recording to MP4.");
-      }
-
-      console.log(
-        "ServiceCall screen recording converted.",
-        "MP4 size:",
-        converted.size,
-      );
-
-      /* -----------------------------------------
-               2. MARK RECORDING PROCESSING
-            ----------------------------------------- */
-
-      const finishResult = await serviceCallApiRequest(
-        "/finish-recording",
-        "POST",
-        {
-          recording_sys_id: recordingSysId,
-        },
-      );
-
-      if (!finishResult || finishResult.success !== true) {
-        throw new Error(
-          finishResult && finishResult.message
-            ? finishResult.message
-            : "Unable to finish ServiceCall recording.",
-        );
-      }
-
-      /* -----------------------------------------
-               3. UPLOAD FINAL MP4
-            ----------------------------------------- */
-
-      const fileName = "servicecall-recording-" + recordingSysId + ".mp4";
-
-      const uploadResult = await uploadRecordingAttachment(
-        recordingSysId,
-        converted.buffer,
-        fileName,
-        "mp4",
-      );
-
-      if (
-        !uploadResult ||
-        !uploadResult.success ||
-        !uploadResult.attachment_sys_id
-      ) {
-        throw new Error(
-          uploadResult && uploadResult.message
-            ? uploadResult.message
-            : "Unable to upload ServiceCall screen recording.",
-        );
-      }
-
-      /* -----------------------------------------
-               4. COMPLETE RECORDING
-            ----------------------------------------- */
-
-      const completeResult = await serviceCallApiRequest(
-        "/complete-recording",
-        "POST",
-        {
-          recording_sys_id: recordingSysId,
-
-          attachment_sys_id: uploadResult.attachment_sys_id,
-
-          format: "mp4",
-        },
-      );
-
-      if (!completeResult || completeResult.success !== true) {
-        throw new Error(
-          completeResult && completeResult.message
-            ? completeResult.message
-            : "Unable to complete ServiceCall screen recording.",
-        );
-      }
-
-      console.log(
-        "ServiceCall screen recording finalized successfully.",
-        recordingSysId,
-      );
-
-      return {
-        success: true,
-
-        code: "SCREEN_RECORDING_AVAILABLE",
-
-        recording_sys_id: recordingSysId,
-
-        attachment_sys_id: uploadResult.attachment_sys_id,
-
-        format: "mp4",
-
-        file_name: uploadResult.file_name,
-
-        file_size: uploadResult.file_size,
-
-        status: completeResult.status || "available",
-
-        expires_at: completeResult.expires_at || "",
-      };
-    } catch (error) {
-      console.error("ServiceCall screen recording finalization failed:", error);
-
-      return {
-        success: false,
-
-        code: error.code || "SCREEN_RECORDING_FINALIZATION_FAILED",
-
-        message:
-          error.message || "Unable to finalize ServiceCall screen recording.",
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   SERVICECALL SCREEN SHARE SOURCES
-------------------------------------------------------- */
-
-/*
- * Return the screens/windows that Electron
- * can capture.
- *
- * IMPORTANT:
- *
- * We return only serializable metadata to
- * the renderer.
- *
- * The renderer will use the selected source ID
- * to request the actual MediaStream.
- */
-ipcMain.handle(
-  "servicecall-get-screen-sources",
-
-  async () => {
-    try {
-      const sources = await desktopCapturer.getSources({
-        types: ["screen", "window"],
-
-        thumbnailSize: {
-          width: 320,
-          height: 180,
-        },
-
-        fetchWindowIcons: true,
-      });
-
-      const safeSources = sources.map((source) => {
-        return {
-          id: source.id,
-
-          name: source.name,
-
-          thumbnail:
-            source.thumbnail && !source.thumbnail.isEmpty()
-              ? source.thumbnail.toDataURL()
-              : "",
-
-          appIcon:
-            source.appIcon && !source.appIcon.isEmpty()
-              ? source.appIcon.toDataURL()
-              : "",
-        };
-      });
-
-      console.log("ServiceCall screen sources available:", safeSources.length);
-
-      return {
-        success: true,
-
-        sources: safeSources,
-      };
-    } catch (error) {
-      console.error("Unable to retrieve ServiceCall screen sources:", error);
-
-      return {
-        success: false,
-
-        code: "SCREEN_SOURCE_FAILED",
-
-        message: error.message || "Unable to retrieve screens and windows.",
-
-        sources: [],
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   SERVICECALL CALL WINDOW LAYOUT
-------------------------------------------------------- */
-
-ipcMain.handle(
-  "servicecall-set-call-window-layout",
-
-  async (event, layout) => {
-    try {
-      const senderWindow = BrowserWindow.fromWebContents(event.sender);
-
-      if (
-        !senderWindow ||
-        senderWindow.isDestroyed() ||
-        senderWindow !== callWindow
-      ) {
-        return {
-          success: false,
-          message: "ServiceCall call window is unavailable.",
-        };
-      }
-
-      if (layout === "screen") {
-        /*
-         * Allow the existing call window
-         * to become a larger screen-share
-         * experience.
-         */
-        senderWindow.setResizable(true);
-
-        senderWindow.setMinimumSize(760, 620);
-
-        senderWindow.setSize(1000, 760, true);
-
-        senderWindow.center();
-
-        return {
-          success: true,
-          layout: "screen",
-        };
-      }
-
-      /*
-       * Return to compact voice-call mode.
-       */
-      senderWindow.setMinimumSize(440, 560);
-
-      senderWindow.setSize(440, 560, true);
-
-      senderWindow.setResizable(false);
-
-      senderWindow.center();
-
-      return {
-        success: true,
-        layout: "compact",
-      };
-    } catch (error) {
-      console.error("Unable to change ServiceCall call window layout:", error);
-
-      return {
-        success: false,
-        message: error.message || "Unable to change call window layout.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-get-recording-history",
-
-  async () => {
-    try {
-      const result = await serviceCallApiRequest("/recording-history", "GET");
-
-      return {
-        success: true,
-        count: Number(result.count || 0),
-        recordings: Array.isArray(result.recordings) ? result.recordings : [],
-      };
-    } catch (error) {
-      console.error(
-        "Unable to load ServiceCall recording history:",
-        error.message,
-      );
-
-      return {
-        success: false,
-        code: error.code || "RECORDING_HISTORY_FAILED",
-        message: error.message || "Unable to load recording history.",
-        count: 0,
-        recordings: [],
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   SERVICECALL MEETINGS
-------------------------------------------------------- */
-
-/*
- * Get all meetings relevant to the currently
- * authenticated ServiceCall user.
- *
- * ServiceNow decides which meetings the user
- * is allowed to see.
- */
-ipcMain.handle(
-  "servicecall-get-my-meetings",
-
-  async (event, options = {}) => {
-    try {
-      let page = parseInt(options.page, 10) || 1;
-
-      if (page < 1) {
-        page = 1;
-      }
-
-      const search = String(options.search || "").trim();
-
-      const status = String(options.status || "")
-        .toLowerCase()
-        .trim();
-
-      const query = new URLSearchParams({
-        page: String(page),
-
-        page_size: "7",
-
-        search: search,
-
-        status: status,
-      });
-
-      const result = await serviceCallApiRequest(
-        "/my-meetings?" + query.toString(),
-        "GET",
-      );
-
-      return result;
-    } catch (error) {
-      console.error("Unable to get ServiceCall meetings:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "GET_MEETINGS_FAILED",
-
-        message: error.message || "Unable to retrieve meetings.",
-
-        count: 0,
-
-        total_count: 0,
-
-        current_page: 1,
-
-        page_size: 7,
-
-        total_pages: 0,
-
-        has_previous: false,
-
-        has_next: false,
-
-        search: "",
-
-        status: "",
-
-        meetings: [],
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   CREATE SERVICECALL MEETING
-------------------------------------------------------- */
-
-/*
- * Create a new ServiceCall meeting.
- *
- * The renderer sends the meeting details here.
- * The main process forwards them securely to
- * ServiceNow using the authenticated OAuth session.
- */
-ipcMain.handle(
-  "servicecall-create-meeting",
-
-  async (event, meetingData) => {
-    try {
-      if (
-        !meetingData ||
-        !meetingData.title ||
-        !meetingData.scheduled_start ||
-        !meetingData.scheduled_end
-      ) {
-        return {
-          success: false,
-
-          code: "MEETING_DATA_REQUIRED",
-
-          message: "Title, start time and end time are required.",
-        };
-      }
-
-      const payload = {
-        title: String(meetingData.title).trim(),
-
-        description: String(meetingData.description || "").trim(),
-
-        scheduled_start: meetingData.scheduled_start,
-
-        scheduled_end: meetingData.scheduled_end,
-
-        timezone: String(meetingData.timezone || "").trim(),
-
-        participants: Array.isArray(meetingData.participants)
-          ? meetingData.participants
-          : [],
-      };
-
-      const result = await serviceCallApiRequest(
-        "/create-meeting",
-        "POST",
-        payload,
-      );
-
-      return result;
-    } catch (error) {
-      console.error("Unable to create ServiceCall meeting:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "CREATE_MEETING_FAILED",
-
-        message: error.message || "Unable to create meeting.",
-      };
-    }
-  },
-);
-
-/* =====================================================
-   UPDATE MEETING
-===================================================== */
-
-ipcMain.handle(
-  "servicecall-update-meeting",
-
-  async (event, meetingSysId, meetingData) => {
-    try {
-      /*
-       * Meeting sys_id is required.
-       */
-      if (!meetingSysId) {
-        return {
-          success: false,
-          code: "MEETING_SYS_ID_REQUIRED",
-          message: "Meeting sys_id is required.",
-        };
-      }
-
-      /*
-       * Basic meeting data validation.
-       */
-      if (
-        !meetingData ||
-        !meetingData.title ||
-        !meetingData.scheduled_start ||
-        !meetingData.scheduled_end
-      ) {
-        return {
-          success: false,
-          code: "MEETING_DATA_REQUIRED",
-          message: "Title, start time and end time are required.",
-        };
-      }
-
-      /*
-       * Build the payload sent to
-       * ServiceNow.
-       */
-      const payload = {
-        meeting_sys_id: String(meetingSysId).trim(),
-
-        title: String(meetingData.title).trim(),
-
-        description: String(meetingData.description || "").trim(),
-
-        scheduled_start: meetingData.scheduled_start,
-
-        scheduled_end: meetingData.scheduled_end,
-
-        timezone: String(meetingData.timezone || "").trim(),
-
-        participants: Array.isArray(meetingData.participants)
-          ? meetingData.participants
-          : [],
-      };
-
-      console.log("Updating ServiceCall meeting:", payload);
-
-      /*
-       * Send the update to ServiceNow.
-       *
-       * We will create this REST resource
-       * in the next step.
-       */
-      const result = await serviceCallApiRequest(
-        "/update-meeting",
-        "POST",
-        payload,
-      );
-
-      return result;
-    } catch (error) {
-      console.error("Unable to update ServiceCall meeting:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "UPDATE_MEETING_FAILED",
-        message: error.message || "Unable to update meeting.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-start-meeting",
-
-  async (event, meetingSysId) => {
-    try {
-      if (!meetingSysId) {
-        return {
-          success: false,
-          code: "MEETING_REQUIRED",
-          message: "Meeting sys_id is required.",
-        };
-      }
-
-      const payload = {
-        meeting_sys_id: String(meetingSysId).trim(),
-      };
-
-      const result = await serviceCallApiRequest(
-        "/start-meeting",
-        "POST",
-        payload,
-      );
-
-      /*
-       * -------------------------------------------------
-       * OPEN EXISTING SERVICECALL WINDOW FOR THE MEETING
-       * -------------------------------------------------
-       *
-       * A meeting creates a normal ServiceCall call record.
-       *
-       * We reuse the existing call window instead of
-       * creating a separate meeting window.
-       */
-      if (result && result.success === true && result.call_sys_id) {
-        /*
-         * Mark this call as already handled so the
-         * generic outgoing-call polling loop does not
-         * treat the meeting as a normal direct call.
-         */
-        activeOutgoingCallId = result.call_sys_id;
-
-        showCallWindow(
-          "connected",
-
-          {
-            callSysId: result.call_sys_id,
-
-            callNumber: result.call_number || "",
-
-            /*
-             * For a meeting, the main display name
-             * is the meeting title.
-             */
-            name: result.title || "ServiceCall Meeting",
-
-            department: "Meeting",
-
-            /*
-             * Meetings use the existing conference
-             * call functionality.
-             */
-            isConference: true,
-
-            /*
-             * Keep meeting context available for
-             * the next step.
-             */
-            isMeeting: true,
-
-            meetingSysId: result.meeting_sys_id || meetingSysId,
-
-            meetingNumber: result.meeting_number || "",
-
-            meetingTitle: result.title || "ServiceCall Meeting",
-          },
-        );
-      }
-
-      return result;
-    } catch (error) {
-      console.error("Unable to start ServiceCall meeting:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "START_MEETING_FAILED",
-
-        message: error.message || "Unable to start meeting.",
-      };
-    }
-  },
-);
-
-/* =======================================================
-   MEETING CHANGE NOTIFICATION
-======================================================= */
-
-ipcMain.on("servicecall-meeting-changed", (event, meetingSysId) => {
-  /*
-   * Forward the meeting change from the
-   * call window to the main desktop window.
-   */
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("servicecall-meeting-changed", {
-      meetingSysId: meetingSysId || "",
-    });
+/* -------------------------
+   STOP + FINALIZE RECORDING
+------------------------- */
+
+async function stopServiceCallRecording() {
+  if (recordingActionInProgress) {
+    return;
   }
-});
 
-/* =====================================================
-   RENDERER READY FOR DEEP LINKS
-===================================================== */
-
-ipcMain.on("servicecall-renderer-ready", (event) => {
-  /*
-   * Only accept this signal from
-   * the main ServiceCall window.
-   */
   if (
-    !mainWindow ||
-    mainWindow.isDestroyed() ||
-    event.sender !== mainWindow.webContents
+    !window.ServiceCallRecorder ||
+    !window.ServiceCallRecorder.isRecording()
   ) {
     return;
   }
 
-  if (!pendingDeepLink) {
-    return;
+  if (!serviceNowRecordingSysId) {
+    throw new Error("ServiceNow recording ID is unavailable.");
   }
 
-  console.log(
-    "Renderer ready. Sending pending ServiceCall deep link:",
-    pendingDeepLink,
-  );
-
-  mainWindow.webContents.send("servicecall-deep-link", {
-    url: pendingDeepLink,
-  });
-
-  pendingDeepLink = null;
-});
-
-/* =======================================================
-   JOIN MEETING
-======================================================= */
-
-ipcMain.handle(
-  "servicecall-join-meeting",
-
-  async (event, meetingSysId) => {
-    try {
-      if (!meetingSysId) {
-        return {
-          success: false,
-          code: "MEETING_REQUIRED",
-          message: "Meeting sys_id is required.",
-        };
-      }
-
-      const payload = {
-        meeting_sys_id: String(meetingSysId).trim(),
-      };
-
-      const result = await serviceCallApiRequest(
-        "/join-meeting",
-        "POST",
-        payload,
-      );
-
-      if (result && result.success === true && result.call_sys_id) {
-        /*
-         * Explicit Join means the user wants
-         * this meeting call again.
-         */
-        intentionallyLeftCallIds.delete(result.call_sys_id);
-
-        /*
-         * This user is now connected
-         * to the existing meeting call.
-         */
-        activeOutgoingCallId = result.call_sys_id;
-
-        /*
-         * Reuse our existing call window.
-         *
-         * IMPORTANT:
-         * Pass full meeting context so
-         * call-window.js knows this is
-         * a ServiceCall Meeting.
-         */
-        //console.warn('DEBUG: GENERIC OUTGOING ROLLER OPENING CALL WINDOW'),
-        showCallWindow("connected", {
-          callSysId: result.call_sys_id,
-
-          callNumber: result.call_number || "",
-
-          name: result.title || "ServiceCall Meeting",
-
-          department: "Meeting",
-
-          isConference: true,
-
-          isMeeting: true,
-
-          meetingSysId: result.meeting_sys_id || meetingSysId,
-
-          meetingNumber: result.meeting_number || "",
-
-          meetingTitle: result.title || "ServiceCall Meeting",
-        });
-      }
-
-      return result;
-    } catch (error) {
-      console.error("Unable to join ServiceCall meeting:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "JOIN_MEETING_FAILED",
-        message: error.message || "Unable to join meeting.",
-      };
-    }
-  },
-);
-
-/* =======================================================
-   LEAVE MEETING
-======================================================= */
-
-ipcMain.handle(
-  "servicecall-leave-meeting",
-
-  async (event, meetingSysId) => {
-    try {
-      if (!meetingSysId) {
-        return {
-          success: false,
-          code: "MEETING_REQUIRED",
-          message: "Meeting sys_id is required.",
-        };
-      }
-
-      const payload = {
-        meeting_sys_id: String(meetingSysId).trim(),
-      };
-
-      const result = await serviceCallApiRequest(
-        "/leave-meeting",
-        "POST",
-        payload,
-      );
-
-      if (result && result.success === true) {
-        /*
-         * Remember that THIS user deliberately
-         * left this call.
-         *
-         * The meeting itself may remain In Progress,
-         * so polling must not reopen its window.
-         */
-        if (result.call_sys_id) {
-          intentionallyLeftCallIds.add(result.call_sys_id);
-        }
-
-        /*
-         * The user left this meeting,
-         * so clear this call from the
-         * active desktop state if needed.
-         */
-        if (activeOutgoingCallId === result.call_sys_id) {
-          activeOutgoingCallId = null;
-        }
-
-        /*
-         * Refresh the Meetings page.
-         */
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("servicecall-meeting-changed", {
-            meetingSysId: result.meeting_sys_id || meetingSysId,
-          });
-        }
-      }
-
-      return result;
-    } catch (error) {
-      console.error("Unable to leave ServiceCall meeting:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "LEAVE_MEETING_FAILED",
-        message: error.message || "Unable to leave meeting.",
-      };
-    }
-  },
-);
-
-/* =======================================================
-   END MEETING
-======================================================= */
-
-ipcMain.handle(
-  "servicecall-end-meeting",
-
-  async (event, meetingSysId) => {
-    try {
-      if (!meetingSysId) {
-        return {
-          success: false,
-          code: "MEETING_REQUIRED",
-          message: "Meeting sys_id is required.",
-        };
-      }
-
-      const payload = {
-        meeting_sys_id: String(meetingSysId).trim(),
-      };
-
-      const result = await serviceCallApiRequest(
-        "/end-meeting",
-        "POST",
-        payload,
-      );
-
-      if (result && result.success === true) {
-        /*
-         * Meeting call has ended.
-         */
-        if (activeOutgoingCallId === result.call_sys_id) {
-          activeOutgoingCallId = null;
-        }
-
-        if (activeIncomingCallId === result.call_sys_id) {
-          activeIncomingCallId = null;
-        }
-
-        /*
-         * Tell the main Meetings page
-         * that meeting data changed.
-         */
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("servicecall-meeting-changed", {
-            meetingSysId: result.meeting_sys_id || meetingSysId,
-          });
-        }
-      }
-
-      return result;
-    } catch (error) {
-      console.error("Unable to end ServiceCall meeting:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "END_MEETING_FAILED",
-        message: error.message || "Unable to end meeting.",
-      };
-    }
-  },
-);
-
-/* =======================================================
-   CANCEL MEETING
-======================================================= */
-
-ipcMain.handle(
-  "servicecall-cancel-meeting",
-
-  async (event, meetingSysId) => {
-    try {
-      if (!meetingSysId) {
-        return {
-          success: false,
-          code: "MEETING_REQUIRED",
-          message: "Meeting sys_id is required.",
-        };
-      }
-
-      const payload = {
-        meeting_sys_id: String(meetingSysId).trim(),
-      };
-
-      const result = await serviceCallApiRequest(
-        "/cancel-meeting",
-        "POST",
-        payload,
-      );
-
-      if (result && result.success === true) {
-        /*
-         * Tell the main Meetings page
-         * that this meeting changed.
-         */
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("servicecall-meeting-changed", {
-            meetingSysId: result.meeting_sys_id || meetingSysId,
-          });
-        }
-      }
-
-      return result;
-    } catch (error) {
-      console.error("Unable to cancel ServiceCall meeting:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "CANCEL_MEETING_FAILED",
-        message: error.message || "Unable to cancel meeting.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-get-meeting-details",
-
-  async (event, meetingSysId) => {
-    try {
-      if (!meetingSysId) {
-        return {
-          success: false,
-          code: "MEETING_REQUIRED",
-          message: "Meeting sys_id is required.",
-        };
-      }
-
-      const query = new URLSearchParams({
-        meeting_sys_id: String(meetingSysId).trim(),
-      });
-
-      const result = await serviceCallApiRequest(
-        "/meeting-details?" + query.toString(),
-        "GET",
-      );
-
-      return result;
-    } catch (error) {
-      console.error(
-        "Unable to get ServiceCall meeting details:",
-        error.message,
-      );
-
-      return {
-        success: false,
-        code: error.code || "MEETING_DETAILS_FAILED",
-        message: error.message || "Unable to retrieve meeting details.",
-      };
-    }
-  },
-);
-
-/* =======================================================
-   SERVICECALL NOTIFICATIONS
-======================================================= */
-
-/*
- * Get notifications for the currently
- * authenticated ServiceCall user.
- *
- * ServiceNow determines the recipient from
- * the authenticated OAuth user.
- */
-ipcMain.handle(
-  "servicecall-get-notifications",
-
-  async (event, options = {}) => {
-    try {
-      let page = parseInt(options.page, 10) || 1;
-
-      if (page < 1) {
-        page = 1;
-      }
-
-      let pageSize = parseInt(options.pageSize, 10) || 20;
-
-      /*
-       * Keep desktop requests reasonable.
-       */
-      if (pageSize < 1) {
-        pageSize = 20;
-      }
-
-      if (pageSize > 50) {
-        pageSize = 50;
-      }
-
-      const search = String(options.search || "")
-        .trim()
-        .substring(0, 100);
-
-      const query = new URLSearchParams({
-        page: String(page),
-
-        page_size: String(pageSize),
-      });
-
-      if (search) {
-        query.set("search", search);
-      }
-
-      const result = await serviceCallApiRequest(
-        "/notifications?" + query.toString(),
-        "GET",
-      );
-
-      return result;
-    } catch (error) {
-      console.error("Unable to get ServiceCall notifications:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "GET_NOTIFICATIONS_FAILED",
-
-        message: error.message || "Unable to retrieve notifications.",
-
-        notifications: [],
-
-        unread_count: 0,
-
-        page: 1,
-
-        page_size: 20,
-
-        has_more: false,
-      };
-    }
-  },
-);
-
-/* =======================================================
-   MARK NOTIFICATION READ
-======================================================= */
-
-ipcMain.handle(
-  "servicecall-mark-notification-read",
-
-  async (event, notificationSysId) => {
-    try {
-      const sysId = String(notificationSysId || "").trim();
-
-      if (!sysId) {
-        return {
-          success: false,
-          code: "NOTIFICATION_REQUIRED",
-          message: "Notification sys_id is required.",
-        };
-      }
-
-      return await serviceCallApiRequest("/mark-notification-read", "POST", {
-        notification_sys_id: sysId,
-      });
-    } catch (error) {
-      console.error(
-        "Unable to mark ServiceCall notification as read:",
-        error.message,
-      );
-
-      return {
-        success: false,
-
-        code: error.code || "MARK_NOTIFICATION_READ_FAILED",
-
-        message: error.message || "Unable to mark notification as read.",
-      };
-    }
-  },
-);
-
-/* -------------------------------------------------------
-   DISMISS NOTIFICATION POPUP
-------------------------------------------------------- */
-
-ipcMain.on("servicecall-dismiss-notification-popup", (event) => {
-  /*
-   * Get the exact BrowserWindow that
-   * sent this dismiss request.
-   *
-   * This is important now because several
-   * notification popups may exist at once.
-   */
-
-  const popupWindow = BrowserWindow.fromWebContents(event.sender);
-
-  if (!popupWindow || popupWindow.isDestroyed()) {
-    return;
+  if (
+    !window.serviceCall ||
+    typeof window.serviceCall.finalizeVoiceRecording !== "function"
+  ) {
+    throw new Error("ServiceCall recording finalization API is unavailable.");
   }
 
-  popupWindow.destroy();
-});
+  recordingActionInProgress = true;
 
-ipcMain.on("servicecall-open-notification", (event, notificationData) => {
-  console.log(
-    "ServiceCall notification OPEN request received:",
-    notificationData,
-  );
+  recordButton.disabled = true;
 
-  /*
-   * Restore ServiceCall when the user
-   * clicks a desktop notification.
-   */
+  showRecordingMessage("Processing recording...");
 
-  showMainWindow();
-
-  /*
-   * Make sure the main ServiceCall
-   * window is brought to the front.
-   */
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return;
-  }
-
-  if (mainWindow.isMinimized()) {
-    mainWindow.restore();
-  }
-
-  mainWindow.show();
-
-  mainWindow.focus();
-
-  /*
-   * -----------------------------------------
-   * MEETING NOTIFICATION
-   * -----------------------------------------
-   *
-   * If this notification belongs to a
-   * meeting, forward that meeting to the
-   * main renderer.
-   *
-   * The renderer will remain responsible
-   * for securely retrieving the meeting
-   * details from ServiceNow.
-   */
-
-  const meetingSysId = String(
-    notificationData && notificationData.meetingSysId
-      ? notificationData.meetingSysId
-      : "",
-  ).trim();
-
-  if (/^[0-9a-f]{32}$/i.test(meetingSysId)) {
-    console.log("Opening meeting from ServiceCall notification:", meetingSysId);
-
-    mainWindow.webContents.send("servicecall-open-notification-meeting", {
-      meetingSysId: meetingSysId,
-
-      notificationSysId: String(
-        notificationData && notificationData.notificationSysId
-          ? notificationData.notificationSysId
-          : "",
-      ),
-
-      type: String(
-        notificationData && notificationData.type ? notificationData.type : "",
-      ),
-    });
-  }
-});
-
-ipcMain.handle(
-  "servicecall-start-call",
-
-  async (event, targetUserSysId) => {
-    try {
-      const targetUser = String(targetUserSysId || "").trim();
-
-      if (!targetUser) {
-        return {
-          success: false,
-          code: "TARGET_USER_REQUIRED",
-          message: "Target user is required.",
-        };
-      }
-
-      const result = await serviceCallApiRequest("/start-call", "POST", {
-        target_user_sys_id: targetUser,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("Unable to start ServiceCall:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "START_CALL_FAILED",
-
-        message: error.message || "Unable to start the ServiceCall.",
-      };
-    }
-  },
-);
-
-/* ==========================================
-   SERVICECALL - CALL HISTORY
-========================================== */
-
-ipcMain.handle("servicecall-get-call-history", async () => {
-  try {
-    const allHistory = [];
-    const pageSize = 100;
-    let offset = 0;
-    let total = 0;
-    let hasMore = true;
-
-    while (hasMore) {
-      const result = await serviceCallApiRequest(
-        `/call-history?limit=${pageSize}&offset=${offset}`,
-        "GET",
-      );
-
-      if (!result || result.success !== true) {
-        return (
-          result || {
-            success: false,
-            code: "CALL_HISTORY_ERROR",
-            message: "Unable to retrieve call history.",
-          }
-        );
-      }
-
-      const page = Array.isArray(result.history) ? result.history : [];
-
-      allHistory.push(...page);
-
-      total = Number(result.total) || 0;
-      hasMore = result.has_more === true;
-
-      if (page.length === 0) {
-        break;
-      }
-
-      offset += page.length;
-
-      // Safety limit for initial desktop implementation.
-      if (offset >= 1000) {
-        break;
-      }
-    }
-
-    return {
-      success: true,
-      code: "CALL_HISTORY_FETCHED",
-      history: allHistory,
-      total: total,
-      limit: allHistory.length,
-      offset: 0,
-      has_more: hasMore,
-    };
-  } catch (error) {
-    console.error("ServiceCall Call History error:", error);
-
-    return {
-      success: false,
-      code: "CALL_HISTORY_ERROR",
-      message: error.message,
-    };
-  }
-});
-
-ipcMain.handle(
-  "servicecall-update-presence",
-
-  async (event, presenceData = {}) => {
-    try {
-      const status = String(presenceData.status || "").trim();
-
-      const oofReason = String(presenceData.oofReason || "").trim();
-
-      if (!status) {
-        return {
-          success: false,
-          code: "PRESENCE_REQUIRED",
-          message: "Presence status is required.",
-        };
-      }
-
-      return await serviceCallApiRequest("/presence", "POST", {
-        status: status,
-        oof_reason: oofReason,
-      });
-    } catch (error) {
-      console.error("Unable to update ServiceCall presence:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "UPDATE_PRESENCE_FAILED",
-        message: error.message || "Unable to update presence.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-get-my-presence",
-
-  async () => {
-    try {
-      const result = await serviceCallApiRequest("/presence", "GET");
-
-      return result;
-    } catch (error) {
-      console.error("Unable to get ServiceCall presence:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "GET_PRESENCE_FAILED",
-
-        message: error.message || "Unable to retrieve presence.",
-      };
-    }
-  },
-);
-
-ipcMain.handle("servicecall-check-access", async () => {
   try {
     /*
-     * Make sure the saved OAuth
-     * session is still usable.
+     * -----------------------------------------
+     * 1. STOP LOCAL MEDIARECORDER
+     * -----------------------------------------
      */
 
-    await ensureValidAccessToken();
+    const localResult = await window.ServiceCallRecorder.stop();
 
-    /*
-     * Re-check identity + current
-     * ServiceCall roles.
-     */
-
-    const currentUser = await getCurrentServiceCallUser();
-
-    const authorization = currentUser?.authorization || {};
-
-    /*
-     * Keep current runtime identity
-     * and authorization up to date.
-     */
-
-    currentServiceCallUser = currentUser?.user || null;
-
-    currentServiceCallAuthorization = authorization;
-
-    /*
-     * ACCESS IS STILL NOT AVAILABLE
-     */
-
-    if (authorization.allowed !== true) {
-      return {
-        success: true,
-        authenticated: true,
-        authorized: false,
-        state: "access_denied",
-        user: currentServiceCallUser,
-        authorization: currentServiceCallAuthorization,
-      };
+    if (!localResult || !localResult.success || !localResult.blob) {
+      throw new Error(
+        localResult && localResult.message
+          ? localResult.message
+          : "Unable to stop local recording.",
+      );
     }
 
+    const durationSeconds = recordingStartedAt
+      ? Math.max(1, Math.round((Date.now() - recordingStartedAt) / 1000))
+      : 0;
+
+    console.log(
+      "ServiceCall local recording stopped.",
+      "Duration:",
+      durationSeconds,
+      "seconds",
+      "WebM size:",
+      localResult.size,
+    );
+
     /*
-     * ACCESS IS AVAILABLE
+     * -----------------------------------------
+     * 2. BLOB -> UINT8ARRAY
+     * -----------------------------------------
      *
-     * If ServiceCall was suspended because
-     * access had previously been removed,
-     * restore the complete runtime and UI.
+     * We do not expose OAuth credentials here.
+     *
+     * Only recording bytes cross the preload
+     * IPC bridge into Electron's main process.
      */
 
-    if (serviceCallAccessUnavailable) {
-      console.log("ServiceCall access restored by manual check.");
+    const arrayBuffer = await localResult.blob.arrayBuffer();
 
+    const webmData = new Uint8Array(arrayBuffer);
+
+    if (webmData.byteLength <= 0) {
+      throw new Error("The captured recording is empty.");
+    }
+
+    /*
+     * -----------------------------------------
+     * 3. ELECTRON MAIN PROCESS
+     * -----------------------------------------
+     *
+     * main.js performs:
+     *
+     * WebM
+     *   -> FFmpeg
+     *   -> real MP3
+     *   -> /finish-recording
+     *   -> Attachment API
+     *   -> /complete-recording
+     */
+
+    showRecordingMessage("Saving recording...");
+
+    /*
+     * Decide the final format from what actually
+     * happened during this recording.
+     *
+     * No screen share:
+     *     WebM audio -> MP3
+     *
+     * Screen share occurred at any point:
+     *     WebM audio/video -> MP4
+     */
+    const hadScreenShare = localResult.hadScreenShare === true;
+
+    console.log(
+      "ServiceCall final recording type:",
+      hadScreenShare ? "MP4 - screen sharing occurred" : "MP3 - audio only",
+    );
+
+    let finalResult;
+
+    if (hadScreenShare) {
       /*
-       * Change the state before restoring.
+       * Screen sharing occurred at least once.
+       *
+       * Even if sharing stopped before the
+       * recording stopped, the final recording
+       * remains MP4.
        */
-
-      serviceCallAccessUnavailable = false;
-
-      try {
-        await resumeServiceCallRuntime();
-
-        await restoreServiceCallApplication();
-      } catch (restoreError) {
-        /*
-         * Restoration failed.
-         *
-         * Put ServiceCall back into the
-         * unavailable state so another
-         * check can retry.
-         */
-
-        serviceCallAccessUnavailable = true;
-
-        console.error(
-          "Unable to restore ServiceCall after manual access check:",
-          restoreError,
+      if (
+        !window.serviceCall ||
+        typeof window.serviceCall.finalizeScreenRecording !== "function"
+      ) {
+        throw new Error(
+          "ServiceCall screen recording finalization is unavailable.",
         );
-
-        throw restoreError;
       }
+
+      finalResult = await window.serviceCall.finalizeScreenRecording(
+        serviceNowRecordingSysId,
+        webmData,
+      );
     } else {
       /*
-       * Normal access check.
-       *
-       * ServiceCall was not previously
-       * suspended.
+       * Voice-only recording.
        */
-
-      await startHeartbeatLoop();
-
-      startIncomingCallLoop();
-
-      startOutgoingCallLoop();
-
-      startNotificationLoop();
-
-      startAuthorizationMonitor();
+      finalResult = await window.serviceCall.finalizeVoiceRecording(
+        serviceNowRecordingSysId,
+        webmData,
+      );
     }
 
-    return {
-      success: true,
-      authenticated: true,
-      authorized: true,
-      state: "ready",
-      user: currentServiceCallUser,
-      authorization: currentServiceCallAuthorization,
-    };
-  } catch (error) {
-    console.error("ServiceCall access check failed:", error);
-
-    return {
-      success: false,
-      authenticated: false,
-      authorized: false,
-      state: "login_required",
-      message: error?.message || "Unable to check ServiceCall access.",
-    };
-  }
-});
-
-ipcMain.handle("servicecall-get-current-account", async () => {
-  /*
-   * No authenticated identity
-   * has been resolved yet.
-   */
-
-  if (!currentServiceCallUser) {
-    return {
-      success: false,
-      authenticated: false,
-      user: null,
-      authorization: null,
-    };
-  }
-
-  return {
-    success: true,
-    authenticated: true,
-
-    user: currentServiceCallUser,
-
-    authorization: currentServiceCallAuthorization || {
-      allowed: false,
-      is_servicecall_user: false,
-      is_servicecall_admin: false,
-    },
-  };
-});
-
-async function stopCurrentServiceCallSession() {
-  /*
-   * -----------------------------------------
-   * STOP HEARTBEAT
-   * -----------------------------------------
-   */
-
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-
-    heartbeatTimer = null;
-  }
-
-  /*
-   * -----------------------------------------
-   * STOP INCOMING CALL MONITOR
-   * -----------------------------------------
-   */
-
-  if (incomingCallTimer) {
-    clearInterval(incomingCallTimer);
-
-    incomingCallTimer = null;
-  }
-
-  /*
-   * -----------------------------------------
-   * STOP OUTGOING CALL MONITOR
-   * -----------------------------------------
-   */
-
-  if (outgoingCallTimer) {
-    clearInterval(outgoingCallTimer);
-
-    outgoingCallTimer = null;
-  }
-
-  /*
-   * -----------------------------------------
-   * STOP NOTIFICATION MONITOR
-   * -----------------------------------------
-   */
-
-  stopNotificationLoop();
-
-  /*
-   * -----------------------------------------
-   * STOP AUTHORIZATION MONITOR
-   * -----------------------------------------
-   */
-
-  stopAuthorizationMonitor();
-
-  /*
-   * -----------------------------------------
-   * RESET NOTIFICATION SESSION STATE
-   * -----------------------------------------
-   *
-   * Desktop notification detection state
-   * belongs to the currently authenticated
-   * ServiceCall account.
-   *
-   * The next account must establish its own
-   * notification baseline.
-   */
-
-  surfacedNotificationIds.clear();
-
-  console.log("ServiceCall Notification Session state reset");
-
-  console.log("ServiceCall notification baseline reset.");
-  /*
-   * -----------------------------------------
-   * MARK DESKTOP OFFLINE
-   * -----------------------------------------
-   *
-   * Do this BEFORE clearing the active
-   * authenticated account.
-   */
-
-  try {
-    await signOutDesktopSession();
-  } catch (error) {
-    console.error("ServiceCall explicit sign out failed:", error);
-
-    /*
-     * Fallback:
-     *
-     * If the dedicated sign-out endpoint
-     * fails, still try to mark this device
-     * registration offline.
-     */
-
-    try {
-      await updateDesktopState("offline");
-    } catch (fallbackError) {
-      console.error("ServiceCall offline fallback failed:", fallbackError);
-    }
-  }
-
-  /*
-   * -----------------------------------------
-   * CLEAR ACTIVE IN-MEMORY IDENTITY
-   * -----------------------------------------
-   */
-
-  currentServiceCallUser = null;
-
-  currentServiceCallAuthorization = null;
-
-  activeIncomingCallId = null;
-
-  activeOutgoingCallId = null;
-
-  console.log("Current ServiceCall session stopped.");
-
-  return {
-    success: true,
-  };
-}
-
-ipcMain.handle("servicecall-sign-out", async () => {
-  try {
-    console.log("ServiceCall sign out requested.");
-
-    /*
-     * Preserve the latest OAuth session
-     * inside the currently active saved
-     * account before signing out.
-     */
-    let config = loadConfig();
-
-    config = syncActiveAccountTokens(config);
-
-    saveConfig(config);
-
-    /*
-     * Stop heartbeat/call monitoring,
-     * mark this desktop offline,
-     * and clear the active in-memory
-     * account identity.
-     */
-    await stopCurrentServiceCallSession();
-
-    /*
-     * IMPORTANT:
-     *
-     * Do NOT delete accessToken or
-     * refreshToken here.
-     *
-     * Saved-account support will own
-     * token storage shortly.
-     */
-
-    /*
-     * Return the main window to our
-     * authentication/account entry page.
-     */
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      await mainWindow.loadFile("auth/auth-gate.html");
-
-      mainWindow.show();
-
-      mainWindow.focus();
-    }
-
-    console.log("ServiceCall signed out of active session.");
-
-    return {
-      success: true,
-      state: "signed_out",
-    };
-  } catch (error) {
-    console.error("ServiceCall sign out failed:", error);
-
-    return {
-      success: false,
-      state: "error",
-      message: error?.message || "Unable to sign out of ServiceCall.",
-    };
-  }
-});
-
-async function signOutDesktopSession() {
-  const deviceId = getOrCreateDeviceId();
-
-  const result = await serviceCallApiRequest("/desktop-sign-out", "POST", {
-    device_id: deviceId,
-  });
-
-  if (!result || result.success !== true) {
-    throw new Error(
-      result?.message || "Unable to sign out of ServiceCall Desktop.",
-    );
-  }
-
-  console.log("ServiceCall desktop sign out:", result);
-
-  return result;
-}
-
-ipcMain.handle("servicecall-get-saved-accounts", async () => {
-  try {
-    const accounts = getSavedAccounts();
-
-    return {
-      success: true,
-      accounts: accounts,
-    };
-  } catch (error) {
-    console.error("Unable to load ServiceCall saved accounts:", error);
-
-    return {
-      success: false,
-      accounts: [],
-      message: error?.message || "Unable to load saved accounts.",
-    };
-  }
-});
-
-ipcMain.handle(
-  "servicecall-remove-saved-account",
-  async (event, accountKey) => {
-    try {
-      return await removeSavedAccount(String(accountKey || ""));
-    } catch (error) {
-      console.error("Unable to remove saved ServiceCall account:", error);
-
-      return {
-        success: false,
-        state: "error",
-        message: error?.message || "Unable to remove the saved account.",
-      };
-    }
-  },
-);
-
-async function activateSavedAccount(accountKey) {
-  let config = loadConfig();
-
-  config = ensureSavedAccountStructure(config);
-
-  const account = config.savedAccounts[accountKey];
-
-  if (!account) {
-    return {
-      success: false,
-      state: "account_not_found",
-      message: "The selected ServiceCall account could not be found.",
-    };
-  }
-
-  /*
-   * Restore this account's instance
-   * and OAuth session into the active
-   * runtime configuration.
-   */
-
-  config.instanceUrl = account.instanceUrl || "";
-
-  config.accessToken = account.accessToken || "";
-
-  config.refreshToken = account.refreshToken || "";
-
-  config.tokenType = account.tokenType || "Bearer";
-
-  config.expiresIn = account.expiresIn || 0;
-
-  config.tokenObtainedAt = account.tokenObtainedAt || 0;
-
-  config.activeAccountKey = accountKey;
-
-  saveConfig(config);
-
-  try {
-    /*
-     * May automatically refresh the
-     * selected account's access token.
-     */
-
-    await ensureValidAccessToken();
-
-    /*
-     * IMPORTANT:
-     * Never trust the role snapshot
-     * stored in savedAccounts.
-     *
-     * Ask ServiceNow again.
-     */
-
-    const currentUser = await getCurrentServiceCallUser();
-
-    const authorization = currentUser?.authorization || {};
-
-    /*
-     * SECURITY CHECK:
-     *
-     * Make sure the OAuth identity still
-     * belongs to the account that the
-     * user selected.
-     */
-
-    if (
-      String(currentUser?.user?.sys_id || "") !==
-      String(account.userSysId || "")
-    ) {
+    if (!finalResult || !finalResult.success) {
       throw new Error(
-        "The authenticated ServiceNow identity does not match the selected saved account.",
+        finalResult && finalResult.message
+          ? finalResult.message
+          : "Unable to save ServiceCall recording.",
       );
     }
 
+    console.log(
+      "ServiceCall recording available.",
+      "Recording:",
+      finalResult.recording_sys_id,
+      "Attachment:",
+      finalResult.attachment_sys_id,
+      "Format:",
+      finalResult.format,
+      "Size:",
+      finalResult.file_size,
+      "Expires:",
+      finalResult.expires_at,
+    );
+
     /*
-     * Restore the authenticated identity
-     * into the active Electron runtime.
-     *
-     * Saved-account activation must establish
-     * the same runtime identity state as a
-     * fresh OAuth login.
+     * -----------------------------------------
+     * 4. SUCCESS
+     * -----------------------------------------
      */
 
-    currentServiceCallUser = currentUser?.user || null;
+    serviceNowRecordingSysId = null;
 
-    currentServiceCallAuthorization = authorization;
+    recordingStartedAt = null;
 
-    /*
-     * Refresh cached DISPLAY metadata.
-     * These values never grant access.
-     */
+    recordButton.textContent = "Record Call";
 
-    config = loadConfig();
-
-    config = ensureSavedAccountStructure(config);
-
-    const savedAccount = config.savedAccounts[accountKey];
-
-    if (savedAccount) {
-      savedAccount.name = currentUser?.user?.name || savedAccount.name || "";
-
-      savedAccount.userName =
-        currentUser?.user?.user_name || savedAccount.userName || "";
-
-      savedAccount.email = currentUser?.user?.email || "";
-
-      savedAccount.serviceCallId = currentUser?.user?.servicecall_id || "";
-
-      savedAccount.isServiceCallUser =
-        authorization.is_servicecall_user === true;
-
-      savedAccount.isServiceCallAdmin =
-        authorization.is_servicecall_admin === true;
-
-      savedAccount.lastUsedAt = new Date().toISOString();
-
-      config.savedAccounts[accountKey] = savedAccount;
-
-      saveConfig(config);
-    }
-
-    if (authorization.allowed !== true) {
-      return {
-        success: true,
-        authenticated: true,
-        authorized: false,
-        state: "access_denied",
-        user: currentUser?.user || null,
-        authorization: authorization,
-      };
-    }
-
-    await startHeartbeatLoop();
-
-    startIncomingCallLoop();
-
-    startOutgoingCallLoop();
-
-    startNotificationLoop();
-
-    startAuthorizationMonitor();
-    return {
-      success: true,
-      authenticated: true,
-      authorized: true,
-      state: "ready",
-      user: currentUser?.user || null,
-      authorization: authorization,
-    };
+    showRecordingMessage("Recording saved", true);
   } catch (error) {
-    console.error("Unable to activate saved ServiceCall account:", error);
+    console.error("ServiceCall recording finalization failed:", error);
 
-    return {
-      success: false,
-      authenticated: false,
-      authorized: false,
-      state: "login_required",
+    /*
+     * Local recording has already stopped,
+     * therefore reset the button.
+     *
+     * We intentionally do NOT pretend the
+     * ServiceNow recording is Available.
+     */
 
-      message: error?.message || "This account needs to sign in again.",
-    };
+    recordButton.textContent = "Record Call";
+
+    recordingStartedAt = null;
+
+    showRecordingMessage(error.message || "Unable to save recording.");
+
+    throw error;
+  } finally {
+    recordingActionInProgress = false;
+
+    recordButton.disabled = false;
   }
 }
 
-/* =========================================================
-   REMOVE SAVED ACCOUNT
-========================================================= */
-
-async function removeSavedAccount(accountKey) {
-  let config = loadConfig();
-
-  config = ensureSavedAccountStructure(config);
-
-  accountKey = String(accountKey || "").trim();
-
-  if (!accountKey || !config.savedAccounts[accountKey]) {
-    return {
-      success: false,
-      state: "account_not_found",
-      message: "The saved ServiceCall account could not be found.",
-    };
-  }
-
-  const wasActive = config.activeAccountKey === accountKey;
-
-  /*
-   * If this happens to be the currently
-   * active account, stop its runtime
-   * session first.
-   */
-  if (wasActive) {
-    try {
-      await stopCurrentServiceCallSession();
-    } catch (error) {
-      console.warn(
-        "ServiceCall session cleanup during account removal failed:",
-        error,
-      );
-    }
-  }
-
-  /*
-   * Delete the complete saved entry.
-   *
-   * Because OAuth credentials live inside
-   * this account object, its saved tokens
-   * disappear with it.
-   */
-  delete config.savedAccounts[accountKey];
-
-  if (wasActive) {
-    config.activeAccountKey = "";
-
-    /*
-     * Clear the legacy/current runtime
-     * OAuth fields too.
-     *
-     * Other saved accounts remain
-     * completely untouched.
-     */
-    delete config.accessToken;
-    delete config.refreshToken;
-    delete config.tokenType;
-    delete config.expiresIn;
-    delete config.tokenObtainedAt;
-  }
-
-  saveConfig(config);
-
-  console.log("ServiceCall saved account removed:", accountKey);
-
-  return {
-    success: true,
-    state: "account_removed",
-    removedAccountKey: accountKey,
-  };
-}
-
-ipcMain.handle(
-  "servicecall-activate-saved-account",
-  async (event, accountKey) => {
-    return await activateSavedAccount(String(accountKey || ""));
-  },
-);
-
-/* =====================================================
-   SERVICECALL CHAT - GET MESSAGES
-===================================================== */
-
-ipcMain.handle(
-  "servicecall-get-messages",
-
-  async (event, payload = {}) => {
-    const conversationId = String(payload.conversationSysId || "").trim();
-
-    const afterMessageSysId = String(payload.afterMessageSysId || "").trim();
-
-    const beforeMessageSysId = String(payload.beforeMessageSysId || "").trim();
-
-    const editedAfter = String(payload.editedAfter || "").trim();
-
-    let limit = parseInt(payload.limit, 10);
-
-    /*
-     * Keep the Electron-side value bounded
-     * exactly like the ServiceNow API.
-     */
-    if (!Number.isFinite(limit) || limit < 1) {
-      limit = 50;
-    }
-
-    if (limit > 100) {
-      limit = 100;
-    }
-
-    if (!conversationId) {
-      return {
-        success: false,
-        code: "CONVERSATION_REQUIRED",
-        message: "Conversation is required.",
-        messages: [],
-      };
-    }
-
-    /*
-     * A request must never ask for both
-     * newer and older messages at once.
-     */
-    if (afterMessageSysId && beforeMessageSysId) {
-      return {
-        success: false,
-        code: "INVALID_MESSAGE_CURSOR",
-        message:
-          "after and before message checkpoints cannot be used together.",
-        messages: [],
-      };
-    }
-
-    try {
-      /*
-       * Base request.
-       */
-      let endpoint =
-        "/messages?conversation_id=" + encodeURIComponent(conversationId);
-
-      /*
-       * Silent incremental refresh:
-       *
-       * Give me messages NEWER than
-       * this checkpoint.
-       */
-      if (afterMessageSysId) {
-        endpoint += "&after=" + encodeURIComponent(afterMessageSysId);
-      }
-
-      /*
-       * Edited-message live synchronization.
-       */
-      if (editedAfter) {
-        endpoint += "&edited_after=" + encodeURIComponent(editedAfter);
-      }
-      /*
-       * Older history:
-       *
-       * Give me messages OLDER than
-       * this checkpoint.
-       */
-      if (beforeMessageSysId) {
-        endpoint += "&before=" + encodeURIComponent(beforeMessageSysId);
-      }
-
-      /*
-       * Initial/history page size.
-       *
-       * The backend currently ignores this
-       * for an "after" live-sync request,
-       * which is intentional.
-       */
-      endpoint += "&limit=" + encodeURIComponent(String(limit));
-
-      const result = await serviceCallApiRequest(endpoint, "GET");
-
-      return result;
-    } catch (error) {
-      console.error("Unable to get ServiceCall messages:", error.message);
-
-      return {
-        success: false,
-        code: error.code || "GET_MESSAGES_FAILED",
-        message: error.message || "Unable to retrieve messages.",
-        messages: [],
-      };
-    }
-  },
-);
-
-/* =====================================================
-   SERVICECALL CHAT - SEND MESSAGE
-===================================================== */
-
-ipcMain.handle(
-  "servicecall-send-message",
-
-  async (event, payload = {}) => {
-    const recipientSysId = String(payload.recipientSysId || "").trim();
-
-    const conversationSysId = String(payload.conversationSysId || "").trim();
-
-    const message = String(payload.message || "").trim();
-
-    const replyToMessageSysId = String(
-      payload.replyToMessageSysId || "",
-    ).trim();
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (!recipientSysId && !conversationSysId) {
-      return {
-        success: false,
-        code: "MESSAGE_TARGET_REQUIRED",
-        message: "A message recipient or conversation is required.",
-      };
-    }
-
-    if (!message) {
-      return {
-        success: false,
-        code: "MESSAGE_REQUIRED",
-        message: "Message cannot be empty.",
-      };
-    }
-
-    if (message.length > 10000) {
-      return {
-        success: false,
-        code: "MESSAGE_TOO_LONG",
-        message: "Message cannot exceed 10000 characters.",
-      };
-    }
-
-    /*
-     * Reply is optional.
-     *
-     * When supplied, it must look like a
-     * ServiceNow sys_id before we send it
-     * to the server.
-     */
-    if (replyToMessageSysId && !/^[0-9a-f]{32}$/i.test(replyToMessageSysId)) {
-      return {
-        success: false,
-        code: "INVALID_REPLY_MESSAGE",
-        message: "Invalid reply message.",
-      };
-    }
-
-    try {
-      const requestBody = {
-        message: message,
-      };
-
-      /*
-       * Existing direct-chat path.
-       */
-      if (recipientSysId) {
-        requestBody.recipient_sys_id = recipientSysId;
-      }
-
-      /*
-       * Existing group-conversation path.
-       */
-      if (conversationSysId) {
-        requestBody.conversation_id = conversationSysId;
-      }
-
-      /*
-       * Optional reply.
-       *
-       * Do not send the property at all for
-       * an ordinary message.
-       */
-      if (replyToMessageSysId) {
-        requestBody.reply_to_message_sys_id = replyToMessageSysId;
-      }
-
-      const result = await serviceCallApiRequest(
-        "/send-message",
-        "POST",
-        requestBody,
-      );
-
-      return result;
-    } catch (error) {
-      console.error("Unable to send ServiceCall message:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "SEND_MESSAGE_FAILED",
-
-        message: error.message || "Unable to send message.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-prepare-chat-attachment",
-
-  async (event, payload = {}) => {
-    const conversationSysId = String(payload.conversationSysId || "").trim();
-
-    const fileName = String(payload.fileName || "").trim();
-
-    const mimeType = String(
-      payload.mimeType || "application/octet-stream",
-    ).trim();
-
-    const fileSize = Number(payload.fileSize || 0);
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (!conversationSysId || !/^[0-9a-f]{32}$/i.test(conversationSysId)) {
-      return {
-        success: false,
-        code: "INVALID_CONVERSATION",
-        message: "A valid conversation is required.",
-      };
-    }
-
-    if (!fileName) {
-      return {
-        success: false,
-        code: "FILE_NAME_REQUIRED",
-        message: "File name is required.",
-      };
-    }
-
-    if (!Number.isFinite(fileSize) || fileSize <= 0) {
-      return {
-        success: false,
-        code: "INVALID_FILE_SIZE",
-        message: "File size must be greater than zero.",
-      };
-    }
-
-    const MAX_FILE_SIZE = 25 * 1024 * 1024;
-
-    if (fileSize > MAX_FILE_SIZE) {
-      return {
-        success: false,
-        code: "FILE_TOO_LARGE",
-        message: "File cannot exceed 25 MB.",
-      };
-    }
-
-    try {
-      const result = await serviceCallApiRequest("/upload-attachment", "POST", {
-        conversation_id: conversationSysId,
-
-        file_name: fileName,
-
-        mime_type: mimeType,
-
-        file_size: fileSize,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("Unable to prepare ServiceCall attachment:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "PREPARE_ATTACHMENT_FAILED",
-
-        message: error.message || "Unable to prepare attachment.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-forward-messages",
-
-  async (event, payload = {}) => {
-    /*
-     * Multiple source messages.
-     */
-    const messageSysIds = Array.isArray(payload.messageSysIds)
-      ? payload.messageSysIds
-          .map((value) => String(value || "").trim())
-          .filter(Boolean)
-      : [];
-
-    /*
-     * Multiple destination conversations.
-     */
-    const destinationConversationIds = Array.isArray(
-      payload.destinationConversationIds,
-    )
-      ? payload.destinationConversationIds
-          .map((value) => String(value || "").trim())
-          .filter(Boolean)
-      : [];
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (messageSysIds.length === 0) {
-      return {
-        success: false,
-        code: "MESSAGES_REQUIRED",
-        message: "Select at least one message to forward.",
-      };
-    }
-
-    if (destinationConversationIds.length === 0) {
-      return {
-        success: false,
-        code: "DESTINATIONS_REQUIRED",
-        message: "Select at least one destination.",
-      };
-    }
-
-    /*
-     * Match the server-side safety limits.
-     */
-    if (messageSysIds.length > 50) {
-      return {
-        success: false,
-        code: "TOO_MANY_MESSAGES",
-        message: "Too many messages were selected.",
-      };
-    }
-
-    if (destinationConversationIds.length > 50) {
-      return {
-        success: false,
-        code: "TOO_MANY_DESTINATIONS",
-        message: "Too many destinations were selected.",
-      };
-    }
-
-    /*
-     * Validate every source message sys_id.
-     */
-    for (const messageSysId of messageSysIds) {
-      if (!/^[0-9a-f]{32}$/i.test(messageSysId)) {
-        return {
-          success: false,
-          code: "INVALID_MESSAGE",
-          message: "One or more selected messages are invalid.",
-        };
-      }
-    }
-
-    /*
-     * Validate every destination conversation sys_id.
-     */
-    for (const conversationSysId of destinationConversationIds) {
-      if (!/^[0-9a-f]{32}$/i.test(conversationSysId)) {
-        return {
-          success: false,
-          code: "INVALID_DESTINATION",
-          message: "One or more destinations are invalid.",
-        };
-      }
-    }
-
-    try {
-      const requestBody = {
-        message_sys_ids: messageSysIds,
-
-        destination_conversation_ids: destinationConversationIds,
-      };
-
-      const result = await serviceCallApiRequest(
-        "/forward-message",
-        "POST",
-        requestBody,
-      );
-
-      return result;
-    } catch (error) {
-      console.error("Unable to forward ServiceCall messages:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "FORWARD_MESSAGE_FAILED",
-
-        message: error.message || "Unable to forward the selected messages.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-get-reaction-updates",
-
-  async (event, payload = {}) => {
-    const conversationId = String(payload.conversationSysId || "").trim();
-
-    const afterCheckpoint = String(payload.afterCheckpoint || "").trim();
-
-    if (!conversationId) {
-      return {
-        success: false,
-        code: "CONVERSATION_REQUIRED",
-        message: "Conversation is required.",
-        updates: [],
-      };
-    }
-
-    try {
-      let endpoint =
-        "/reaction-updates?conversation_id=" +
-        encodeURIComponent(conversationId);
-
-      /*
-       * If there is no checkpoint,
-       * ServiceNow establishes one.
-       *
-       * Otherwise only reaction changes
-       * after that checkpoint are returned.
-       */
-      if (afterCheckpoint) {
-        endpoint += "&after=" + encodeURIComponent(afterCheckpoint);
-      }
-
-      const result = await serviceCallApiRequest(endpoint, "GET");
-
-      return result;
-    } catch (error) {
-      console.error(
-        "Unable to get ServiceCall reaction updates:",
-        error.message,
-      );
-
-      return {
-        success: false,
-        code: error.code || "GET_REACTION_UPDATES_FAILED",
-
-        message: error.message || "Unable to retrieve reaction updates.",
-
-        updates: [],
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-set-message-reaction",
-
-  async (event, payload = {}) => {
-    const messageSysId = String(payload.messageSysId || "").trim();
-
-    const reaction = String(payload.reaction || "").trim();
-
-    if (!messageSysId) {
-      return {
-        success: false,
-        code: "MESSAGE_REQUIRED",
-        message: "Message is required.",
-      };
-    }
-
-    if (!reaction) {
-      return {
-        success: false,
-        code: "REACTION_REQUIRED",
-        message: "Reaction is required.",
-      };
-    }
-
-    try {
-      const result = await serviceCallApiRequest("/message-reaction", "POST", {
-        message_sys_id: messageSysId,
-
-        reaction: reaction,
-      });
-
-      return result;
-    } catch (error) {
-      console.error(
-        "Unable to update ServiceCall message reaction:",
-        error.message,
-      );
-
-      return {
-        success: false,
-        code: error.code || "MESSAGE_REACTION_FAILED",
-
-        message: error.message || "Unable to update message reaction.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-mark-conversation-read",
-
-  async (event, conversationSysId) => {
-    conversationSysId = String(conversationSysId || "").trim();
-
-    if (!conversationSysId) {
-      return {
-        success: false,
-        code: "CONVERSATION_REQUIRED",
-        message: "Conversation is required.",
-      };
-    }
-
-    try {
-      const result = await serviceCallApiRequest(
-        "/mark-conversation-read",
-        "POST",
-        {
-          conversation_id: conversationSysId,
-        },
-      );
-
-      return result;
-    } catch (error) {
-      console.error(
-        "Unable to mark ServiceCall conversation as read:",
-        error.message,
-      );
-
-      return {
-        success: false,
-
-        code: error.code || "MARK_CONVERSATION_READ_FAILED",
-
-        message: error.message || "Unable to mark conversation as read.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-create-group",
-
-  async (event, payload = {}) => {
-    const title = String(payload.title || "").trim();
-
-    const participantSysIds = Array.isArray(payload.participantSysIds)
-      ? payload.participantSysIds
-      : [];
-
-    /* =========================================
-           VALIDATION
-        ========================================= */
-
-    if (!title) {
-      return {
-        success: false,
-        code: "GROUP_TITLE_REQUIRED",
-        message: "Group title is required.",
-      };
-    }
-
-    if (participantSysIds.length === 0) {
-      return {
-        success: false,
-        code: "PARTICIPANTS_REQUIRED",
-        message: "Select at least one participant.",
-      };
-    }
-
-    try {
-      /*
-       * IMPORTANT:
-       *
-       * serviceCallApiRequest uses:
-       *
-       * path,
-       * method,
-       * body
-       *
-       * This is the same convention as
-       * send-message and message-reaction.
-       */
-
-      const result = await serviceCallApiRequest("/create-group", "POST", {
-        title: title,
-
-        participant_sys_ids: participantSysIds,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("Unable to create ServiceCall group:", error);
-
-      return {
-        success: false,
-        code: error.code || "CREATE_GROUP_FAILED",
-
-        message: error.message || "Unable to create group.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-get-group-details",
-  async (event, conversationSysId) => {
-    const cleanConversationSysId = String(conversationSysId || "").trim();
-
-    if (!cleanConversationSysId) {
-      return {
-        success: false,
-        code: "CONVERSATION_REQUIRED",
-        message: "Conversation is required.",
-      };
-    }
-
-    try {
-      return await serviceCallApiRequest(
-        "/group-details" +
-          "?conversation_id=" +
-          encodeURIComponent(cleanConversationSysId),
-        "GET",
-      );
-    } catch (error) {
-      console.error("Unable to load ServiceCall group details:", error);
-
-      return {
-        success: false,
-        code: error.code || "GROUP_DETAILS_FAILED",
-        message: error.message || "Unable to load group details.",
-      };
-    }
-  },
-);
-
-ipcMain.handle("servicecall-rename-group", async (event, payload = {}) => {
-  const conversationSysId = String(payload.conversationSysId || "").trim();
-
-  const title = String(payload.title || "").trim();
-
-  if (!conversationSysId) {
-    return {
-      success: false,
-      code: "CONVERSATION_REQUIRED",
-      message: "Conversation is required.",
-    };
-  }
-
-  if (!title) {
-    return {
-      success: false,
-      code: "GROUP_TITLE_REQUIRED",
-      message: "Group title is required.",
-    };
-  }
-
-  try {
-    return await serviceCallApiRequest("/rename-group", "POST", {
-      conversation_id: conversationSysId,
-
-      title: title,
-    });
-  } catch (error) {
-    console.error("Unable to rename ServiceCall group:", error);
-
-    return {
-      success: false,
-      code: error.code || "RENAME_GROUP_FAILED",
-
-      message: error.message || "Unable to rename group.",
-    };
-  }
-});
-
-/* =========================================================
-   SERVICECALL CHAT - ADD GROUP MEMBERS
-========================================================= */
-
-ipcMain.handle(
-  "servicecall-add-group-members",
-
-  async (event, data = {}) => {
-    try {
-      const conversationSysId = String(data.conversationSysId || "").trim();
-
-      const participantSysIds = Array.isArray(data.participantSysIds)
-        ? data.participantSysIds
-        : [];
-
-      if (!conversationSysId) {
-        return {
-          success: false,
-          code: "CONVERSATION_REQUIRED",
-          message: "Conversation is required.",
-        };
-      }
-
-      if (participantSysIds.length === 0) {
-        return {
-          success: false,
-          code: "PARTICIPANTS_REQUIRED",
-          message: "Select at least one person.",
-        };
-      }
-
-      const result = await serviceCallApiRequest("/add-group-members", "POST", {
-        conversation_id: conversationSysId,
-
-        participant_sys_ids: participantSysIds,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("Unable to add group members:", error);
-
-      return {
-        success: false,
-
-        code: error.code || "ADD_GROUP_MEMBERS_FAILED",
-
-        message: error.message || "Unable to add people to the group.",
-      };
-    }
-  },
-);
-
-/* =========================================================
-   SERVICECALL - SET GROUP MEMBER ROLE
-========================================================= */
-
-ipcMain.handle(
-  "servicecall-set-group-member-role",
-  async (event, { conversationSysId, memberUserSysId, role } = {}) => {
-    try {
-      const cleanConversationSysId = String(conversationSysId || "").trim();
-
-      const cleanMemberUserSysId = String(memberUserSysId || "").trim();
-
-      const cleanRole = String(role || "")
-        .trim()
-        .toLowerCase();
-
-      if (!cleanConversationSysId) {
-        return {
-          success: false,
-          code: "MISSING_CONVERSATION_ID",
-          message: "Conversation ID is required.",
-        };
-      }
-
-      if (!cleanMemberUserSysId) {
-        return {
-          success: false,
-          code: "MISSING_MEMBER_USER_ID",
-          message: "Member user ID is required.",
-        };
-      }
-
-      if (cleanRole !== "owner" && cleanRole !== "member") {
-        throw new Error("Role must be owner or member.");
-      }
-
-      return await serviceCallApiRequest("/set-group-member-role", "POST", {
-        conversation_id: cleanConversationSysId,
-
-        member_user_sys_id: cleanMemberUserSysId,
-
-        role: cleanRole,
-      });
-    } catch (error) {
-      console.error("Set group member role failed:", error);
-
-      return {
-        success: false,
-        code: "SET_GROUP_MEMBER_ROLE_FAILED",
-        message:
-          error && error.message
-            ? error.message
-            : "Unable to change group member role.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-remove-group-member",
-  async (event, { conversationSysId, memberUserSysId } = {}) => {
-    const cleanConversationSysId = String(conversationSysId || "").trim();
-
-    const cleanMemberUserSysId = String(memberUserSysId || "").trim();
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (
-      !cleanConversationSysId ||
-      !/^[0-9a-f]{32}$/i.test(cleanConversationSysId)
-    ) {
-      throw new Error("A valid conversation sys_id is required.");
-    }
-
-    if (
-      !cleanMemberUserSysId ||
-      !/^[0-9a-f]{32}$/i.test(cleanMemberUserSysId)
-    ) {
-      throw new Error("A valid member user sys_id is required.");
-    }
-
-    /* -------------------------
-       SERVICENOW REQUEST
-    ------------------------- */
-
-    return await serviceCallApiRequest("/remove-group-member", "POST", {
-      conversation_id: cleanConversationSysId,
-
-      member_user_sys_id: cleanMemberUserSysId,
-    });
-  },
-);
-
-ipcMain.handle(
-  "servicecall-leave-group",
-  async (event, { conversationSysId }) => {
-    const cleanConversationSysId = String(conversationSysId || "").trim();
-
-    if (!/^[0-9a-f]{32}$/i.test(cleanConversationSysId)) {
-      return {
-        success: false,
-        code: "INVALID_CONVERSATION_ID",
-        message: "A valid conversation ID is required.",
-      };
-    }
-
-    try {
-      return await serviceCallApiRequest("/leave-group", "POST", {
-        conversation_id: cleanConversationSysId,
-      });
-    } catch (error) {
-      console.error("ServiceCall leave group failed:", error);
-
-      return {
-        success: false,
-        code: "LEAVE_GROUP_FAILED",
-        message:
-          error && error.message ? error.message : "Unable to leave group.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-delete-messages",
-
-  async (event, payload = {}) => {
-    const conversationSysId = String(payload.conversationSysId || "").trim();
-
-    const mode = String(payload.mode || "")
-      .trim()
-      .toLowerCase();
-
-    const rawMessageSysIds = payload.messageSysIds;
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (!conversationSysId || !/^[0-9a-f]{32}$/i.test(conversationSysId)) {
-      return {
-        success: false,
-        code: "INVALID_CONVERSATION",
-        message: "Invalid conversation.",
-      };
-    }
-
-    /*
-     * Supported modes:
-     *
-     * everyone
-     * me
-     */
-    if (mode !== "everyone" && mode !== "me") {
-      return {
-        success: false,
-        code: "INVALID_DELETE_MODE",
-        message: "Delete mode must be everyone or me.",
-      };
-    }
-
-    if (!Array.isArray(rawMessageSysIds) || rawMessageSysIds.length === 0) {
-      return {
-        success: false,
-        code: "MESSAGES_REQUIRED",
-        message: "At least one message is required.",
-      };
-    }
-
-    if (rawMessageSysIds.length > 100) {
-      return {
-        success: false,
-        code: "TOO_MANY_MESSAGES",
-        message: "You can delete up to 100 messages at a time.",
-      };
-    }
-
-    /*
-     * Normalize and validate every message sys_id
-     * before sending anything to ServiceNow.
-     */
-    const messageSysIds = [];
-
-    const seenMessageSysIds = new Set();
-
-    for (const rawMessageSysId of rawMessageSysIds) {
-      const messageSysId = String(rawMessageSysId || "").trim();
-
-      if (!/^[0-9a-f]{32}$/i.test(messageSysId)) {
-        return {
-          success: false,
-          code: "INVALID_MESSAGE",
-          message: "One or more selected messages are invalid.",
-        };
-      }
-
-      if (seenMessageSysIds.has(messageSysId)) {
-        return {
-          success: false,
-          code: "DUPLICATE_MESSAGE",
-          message: "The same message was selected more than once.",
-        };
-      }
-
-      seenMessageSysIds.add(messageSysId);
-
-      messageSysIds.push(messageSysId);
-    }
-
-    /* -------------------------
-       SERVICENOW REQUEST
-    ------------------------- */
-
-    try {
-      const result = await serviceCallApiRequest("/delete-messages", "POST", {
-        conversation_id: conversationSysId,
-
-        message_sys_ids: messageSysIds,
-
-        mode: mode,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("Unable to delete ServiceCall messages:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "DELETE_MESSAGES_FAILED",
-
-        message: error.message || "Unable to delete selected messages.",
-      };
-    }
-  },
-);
-
-/* =========================================================
-   SERVICECALL CHAT - DELETE CHAT
-========================================================= */
-
-ipcMain.handle(
-  "servicecall-delete-chat",
-
-  async (event, conversationSysId) => {
-    try {
-      const normalizedConversationSysId = String(
-        conversationSysId || "",
-      ).trim();
-
-      /* -------------------------------------------------
-         VALIDATION
-      ------------------------------------------------- */
-
-      if (
-        !normalizedConversationSysId ||
-        !/^[0-9a-f]{32}$/i.test(normalizedConversationSysId)
-      ) {
-        return {
-          success: false,
-          code: "INVALID_CONVERSATION",
-          message: "A valid conversation is required.",
-        };
-      }
-
-      /* -------------------------------------------------
-         SERVICECALL API
-      ------------------------------------------------- */
-
-      const result = await serviceCallApiRequest("/delete-chat", "POST", {
-        conversation_id: normalizedConversationSysId,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("ServiceCall delete chat failed:", error);
-
-      return {
-        success: false,
-        code: "DELETE_CHAT_FAILED",
-        message:
-          error && error.message ? error.message : "Unable to delete chat.",
-      };
-    }
-  },
-);
-
-/* =====================================================
-   SERVICECALL CHAT - EDIT MESSAGE
-===================================================== */
-
-ipcMain.handle(
-  "servicecall-edit-message",
-
-  async (event, payload = {}) => {
-    const conversationSysId = String(payload.conversationSysId || "").trim();
-
-    const messageSysId = String(payload.messageSysId || "").trim();
-
-    const message = String(payload.message || "").trim();
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (!conversationSysId || !/^[0-9a-f]{32}$/i.test(conversationSysId)) {
-      return {
-        success: false,
-        code: "INVALID_CONVERSATION",
-        message: "Invalid conversation.",
-      };
-    }
-
-    if (!messageSysId || !/^[0-9a-f]{32}$/i.test(messageSysId)) {
-      return {
-        success: false,
-        code: "INVALID_MESSAGE",
-        message: "Invalid message.",
-      };
-    }
-
-    if (message.length > 10000) {
-      return {
-        success: false,
-        code: "MESSAGE_TOO_LONG",
-        message: "Message cannot exceed 10000 characters.",
-      };
-    }
-
-    /* -------------------------
-       SERVICENOW REQUEST
-    ------------------------- */
-
-    try {
-      const result = await serviceCallApiRequest("/edit-message", "POST", {
-        conversation_id: conversationSysId,
-
-        message_sys_id: messageSysId,
-
-        message: message,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("Unable to edit ServiceCall message:", error.message);
-
-      return {
-        success: false,
-
-        code: error.code || "EDIT_MESSAGE_FAILED",
-
-        message: error.message || "Unable to edit message.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-upload-chat-attachment-binary",
-
-  async (event, payload = {}) => {
-    const attachmentSysId = String(payload.attachmentSysId || "").trim();
-
-    const fileBytes = payload.fileBytes;
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (!attachmentSysId || !/^[0-9a-f]{32}$/i.test(attachmentSysId)) {
-      return {
-        success: false,
-        code: "INVALID_ATTACHMENT",
-        message: "A valid attachment is required.",
-      };
-    }
-
-    if (!fileBytes) {
-      return {
-        success: false,
-        code: "FILE_DATA_REQUIRED",
-        message: "Attachment file data is required.",
-      };
-    }
-
-    try {
-      /*
-       * Electron IPC may give us an
-       * ArrayBuffer / Uint8Array rather
-       * than a Node Buffer.
-       *
-       * Convert it here in main.js.
-       */
-      let binaryData;
-
-      if (Buffer.isBuffer(fileBytes)) {
-        binaryData = fileBytes;
-      } else if (fileBytes instanceof ArrayBuffer) {
-        binaryData = Buffer.from(fileBytes);
-      } else if (ArrayBuffer.isView(fileBytes)) {
-        binaryData = Buffer.from(
-          fileBytes.buffer,
-          fileBytes.byteOffset,
-          fileBytes.byteLength,
-        );
-      } else {
-        /*
-         * Electron structured-clone can
-         * sometimes give Buffer-like data.
-         */
-        binaryData = Buffer.from(fileBytes);
-      }
-
-      if (!binaryData.length) {
-        return {
-          success: false,
-          code: "EMPTY_ATTACHMENT",
-          message: "Attachment file is empty.",
-        };
-      }
-
-      const MAX_FILE_SIZE = 25 * 1024 * 1024;
-
-      if (binaryData.length > MAX_FILE_SIZE) {
-        return {
-          success: false,
-          code: "FILE_TOO_LARGE",
-          message: "File cannot exceed 25 MB.",
-        };
-      }
-
-      /* -------------------------
-         BINARY UPLOAD
-      ------------------------- */
-
-      const result = await serviceCallBinaryApiRequest(
-        "/upload-attachment/" + encodeURIComponent(attachmentSysId) + "/binary",
-
-        binaryData,
-      );
-
-      return result;
-    } catch (error) {
-      console.error(
-        "Unable to upload ServiceCall attachment binary:",
-        error.message,
-      );
-
-      return {
-        success: false,
-
-        code: error.code || "UPLOAD_ATTACHMENT_BINARY_FAILED",
-
-        message: error.message || "Unable to upload attachment.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-send-attachment-message",
-
-  async (event, payload = {}) => {
-    const attachmentSysId = String(payload.attachmentSysId || "").trim();
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (!attachmentSysId || !/^[0-9a-f]{32}$/i.test(attachmentSysId)) {
-      return {
-        success: false,
-        code: "INVALID_ATTACHMENT",
-        message: "A valid attachment is required.",
-      };
-    }
-
-    try {
-      const result = await serviceCallApiRequest(
-        "/send-attachment-message",
-        "POST",
-        {
-          attachment_id: attachmentSysId,
-        },
-      );
-
-      return result;
-    } catch (error) {
-      console.error(
-        "Unable to send ServiceCall attachment message:",
-        error.message,
-      );
-
-      return {
-        success: false,
-
-        code: error.code || "SEND_ATTACHMENT_MESSAGE_FAILED",
-
-        message: error.message || "Unable to send attachment message.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-download-chat-attachment",
-  async (event, payload = {}) => {
-    const attachmentSysId = String(payload.attachmentSysId || "").trim();
-
-    /*
-     * Validate ServiceCall attachment sys_id.
-     */
-    if (!attachmentSysId || !/^[0-9a-f]{32}$/i.test(attachmentSysId)) {
-      return {
-        success: false,
-        code: "INVALID_ATTACHMENT",
-        message: "A valid attachment is required.",
-      };
-    }
-
-    try {
-      /*
-       * ServiceNow performs the real
-       * authorization:
-       *
-       * user
-       *   -> ServiceCall access
-       *   -> conversation
-       *   -> membership
-       *   -> attachment
-       *   -> physical file
-       */
-      const result = await serviceCallBinaryDownloadRequest(
-        "/download-attachment/" + encodeURIComponent(attachmentSysId),
-      );
-
-      return {
-        success: true,
-
-        /*
-         * Return a Uint8Array instead of
-         * exposing any ServiceNow file URL.
-         *
-         * Electron structured cloning can
-         * safely transfer this to preload /
-         * renderer.
-         */
-        fileBytes: new Uint8Array(result.buffer),
-
-        contentType: result.contentType,
-
-        contentDisposition: result.contentDisposition,
-      };
-    } catch (error) {
-      console.error("ServiceCall attachment download failed:", error);
-
-      return {
-        success: false,
-        code: error.code || "DOWNLOAD_ATTACHMENT_FAILED",
-        message: error.message || "Unable to download attachment.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-open-chat-attachment",
-  async (event, payload = {}) => {
-    const attachmentSysId = String(payload.attachmentSysId || "").trim();
-
-    const requestedFileName = String(payload.fileName || "attachment").trim();
-
-    if (!attachmentSysId || !/^[0-9a-f]{32}$/i.test(attachmentSysId)) {
-      return {
-        success: false,
-        code: "INVALID_ATTACHMENT",
-        message: "A valid attachment is required.",
-      };
-    }
-
-    try {
-      /*
-       * Download through our secure
-       * ServiceCall endpoint.
-       */
-      const result = await serviceCallBinaryDownloadRequest(
-        "/download-attachment/" + encodeURIComponent(attachmentSysId),
-      );
-
-      /*
-       * Never trust the original filename
-       * as a filesystem path.
-       */
-      const safeFileName = path
-        .basename(requestedFileName || "attachment")
-        .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-
-      /*
-       * Use a ServiceCall-owned temporary
-       * directory.
-       */
-      const tempDirectory = path.join(
-        os.tmpdir(),
-        "ServiceCall",
-        "attachments",
-      );
-
-      fs.mkdirSync(tempDirectory, {
-        recursive: true,
-      });
-
-      /*
-       * Prefix with attachment sys_id so
-       * files with identical names do not
-       * overwrite each other.
-       */
-      const tempFilePath = path.join(
-        tempDirectory,
-        attachmentSysId + "-" + safeFileName,
-      );
-
-      fs.writeFileSync(tempFilePath, result.buffer);
-
-      /*
-       * Ask the operating system to open
-       * the file with its default app.
-       */
-      const openError = await shell.openPath(tempFilePath);
-
-      if (openError) {
-        const error = new Error(openError);
-
-        error.code = "OPEN_ATTACHMENT_FAILED";
-
-        throw error;
-      }
-
-      return {
-        success: true,
-      };
-    } catch (error) {
-      console.error("ServiceCall open attachment failed:", error);
-
-      return {
-        success: false,
-
-        code: error.code || "OPEN_ATTACHMENT_FAILED",
-
-        message: error.message || "Unable to open attachment.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-cancel-chat-attachment",
-  async (event, payload = {}) => {
-    const attachmentSysId = String(payload.attachmentSysId || "").trim();
-
-    if (!attachmentSysId || !/^[0-9a-f]{32}$/i.test(attachmentSysId)) {
-      return {
-        success: false,
-        code: "INVALID_ATTACHMENT",
-        message: "A valid attachment is required.",
-      };
-    }
-
-    try {
-      const result = await serviceCallApiRequest("/cancel-attachment", "POST", {
-        attachment_id: attachmentSysId,
-      });
-
-      console.log("ServiceCall attachment cancelled:", result);
-
-      return result;
-    } catch (error) {
-      console.error("ServiceCall cancel attachment failed:", error);
-
-      return {
-        success: false,
-
-        code: error.code || "CANCEL_ATTACHMENT_FAILED",
-
-        message: error.message || "Unable to cancel attachment.",
-      };
-    }
-  },
-);
-ipcMain.handle("servicecall-send-chat-content", async (event, payload = {}) => {
-  const conversationSysId = String(payload.conversationSysId || "").trim();
-
-  const message = String(payload.message || "").trim();
-
-  const replyToMessageSysId = String(payload.replyToMessageSysId || "").trim();
-
-  const attachmentSysIds = Array.isArray(payload.attachmentSysIds)
-    ? payload.attachmentSysIds
-        .map((id) => String(id || "").trim())
-        .filter(Boolean)
-    : [];
-
-  /* =========================================
-       CONVERSATION
-    ========================================= */
-
-  if (!conversationSysId || !/^[0-9a-f]{32}$/i.test(conversationSysId)) {
-    return {
-      success: false,
-      code: "INVALID_CONVERSATION",
-      message: "A valid conversation is required.",
-    };
-  }
-
-  /* =========================================
-       CONTENT
-    ========================================= */
-
-  if (!message && attachmentSysIds.length === 0) {
-    return {
-      success: false,
-      code: "EMPTY_MESSAGE",
-      message: "Message text or an attachment is required.",
-    };
-  }
-
-  if (message.length > 10000) {
-    return {
-      success: false,
-      code: "MESSAGE_TOO_LONG",
-      message: "Message cannot exceed 10000 characters.",
-    };
-  }
-
-  /* =========================================
-       ATTACHMENTS
-    ========================================= */
-
-  if (attachmentSysIds.length > 10) {
-    return {
-      success: false,
-      code: "TOO_MANY_ATTACHMENTS",
-      message: "A maximum of 10 attachments is allowed per message.",
-    };
-  }
-
-  for (const attachmentSysId of attachmentSysIds) {
-    if (!/^[0-9a-f]{32}$/i.test(attachmentSysId)) {
-      return {
-        success: false,
-        code: "INVALID_ATTACHMENT",
-        message: "One or more attachments are invalid.",
-      };
-    }
-  }
-
-  /*
-   * Prevent the same attachment ID from
-   * being submitted more than once.
-   */
-  if (new Set(attachmentSysIds).size !== attachmentSysIds.length) {
-    return {
-      success: false,
-      code: "DUPLICATE_ATTACHMENT",
-      message: "The same attachment cannot be included more than once.",
-    };
-  }
-
-  /* =========================================
-       REPLY
-    ========================================= */
-
-  if (replyToMessageSysId && !/^[0-9a-f]{32}$/i.test(replyToMessageSysId)) {
-    return {
-      success: false,
-      code: "INVALID_REPLY_MESSAGE",
-      message: "Reply message is invalid.",
-    };
-  }
-
-  /* =========================================
-       SERVICENOW
-    ========================================= */
-
-  try {
-    const result = await serviceCallApiRequest("/send-chat-content", "POST", {
-      conversation_id: conversationSysId,
-
-      message: message,
-
-      attachment_ids: attachmentSysIds,
-
-      reply_to_message_sys_id: replyToMessageSysId,
-    });
-
-    console.log("ServiceCall chat content sent:", result);
-
-    return result;
-  } catch (error) {
-    console.error("ServiceCall send chat content failed:", error);
-
-    return {
-      success: false,
-
-      code: error.code || "SEND_CHAT_CONTENT_FAILED",
-
-      message: error.message || "Unable to send chat content.",
-    };
-  }
-});
-
-ipcMain.handle(
-  "servicecall-save-chat-attachment",
-  async (event, payload = {}) => {
-    const attachmentSysId = String(payload.attachmentSysId || "").trim();
-
-    const requestedFileName = String(payload.fileName || "attachment").trim();
-
-    /* -------------------------
-       VALIDATION
-    ------------------------- */
-
-    if (!attachmentSysId || !/^[0-9a-f]{32}$/i.test(attachmentSysId)) {
-      return {
-        success: false,
-        code: "INVALID_ATTACHMENT",
-        message: "A valid attachment is required.",
-      };
-    }
-
-    try {
-      /*
-       * Never trust the supplied filename
-       * as a filesystem path.
-       */
-      const safeFileName = path
-        .basename(requestedFileName || "attachment")
-        .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-
-      /*
-       * Let the user choose the destination
-       * BEFORE downloading the file.
-       *
-       * Cancelling the dialog therefore causes
-       * no unnecessary network/file activity.
-       */
-      const saveResult = await dialog.showSaveDialog(mainWindow, {
-        title: "Save ServiceCall Attachment",
-        defaultPath: safeFileName,
-      });
-
-      if (saveResult.canceled || !saveResult.filePath) {
-        return {
-          success: true,
-          cancelled: true,
-        };
-      }
-
-      /*
-       * Download through the SAME secure
-       * ServiceCall authorization endpoint
-       * used by Open.
-       */
-      const result = await serviceCallBinaryDownloadRequest(
-        "/download-attachment/" + encodeURIComponent(attachmentSysId),
-      );
-
-      /*
-       * Write only to the exact location
-       * selected by the user.
-       */
-      fs.writeFileSync(saveResult.filePath, result.buffer);
-
-      return {
-        success: true,
-        cancelled: false,
-      };
-    } catch (error) {
-      console.error("ServiceCall save attachment failed:", error);
-
-      return {
-        success: false,
-        code: error.code || "SAVE_ATTACHMENT_FAILED",
-        message: error.message || "Unable to save attachment.",
-      };
-    }
-  },
-);
-
-ipcMain.handle(
-  "servicecall-copy-image-to-clipboard",
-
-  async (event, payload = {}) => {
-    try {
-      const imageBytes = payload?.imageBytes;
-
-      if (!imageBytes) {
-        return {
-          success: false,
-          message: "Image data is required.",
-        };
-      }
-
-      const buffer = Buffer.from(imageBytes);
-
-      if (buffer.length === 0) {
-        return {
-          success: false,
-          message: "Image data is empty.",
-        };
-      }
-
-      const image = nativeImage.createFromBuffer(buffer);
-
-      if (image.isEmpty()) {
-        return {
-          success: false,
-          message: "Unable to read image data.",
-        };
-      }
-
-      clipboard.writeImage(image);
-
-      return {
-        success: true,
-      };
-    } catch (error) {
-      console.error("Unable to copy image to clipboard:", error);
-
-      return {
-        success: false,
-        message: error?.message || "Unable to copy image.",
-      };
-    }
-  },
-);
-
-/* =====================================================
-   SERVICECALL - READ CLIPBOARD IMAGE
-===================================================== */
-
-ipcMain.handle(
-  "servicecall-read-clipboard-image",
+/* -------------------------
+   RECORD BUTTON
+------------------------- */
+
+recordButton.addEventListener(
+  "click",
 
   async () => {
+    if (recordingActionInProgress) {
+      return;
+    }
+
     try {
-      const image = clipboard.readImage();
-
-      /*
-       * No image currently exists
-       * in the clipboard.
-       */
-      if (!image || image.isEmpty()) {
-        return {
-          success: true,
-          hasImage: false,
-        };
+      if (
+        window.ServiceCallRecorder &&
+        window.ServiceCallRecorder.isRecording()
+      ) {
+        await stopServiceCallRecording();
+      } else {
+        await startServiceCallRecording();
       }
-
-      /*
-       * Convert clipboard image
-       * into PNG bytes.
-       *
-       * Renderer will turn these
-       * bytes into a File and send
-       * it through our EXISTING
-       * attachment pipeline.
-       */
-      const pngBuffer = image.toPNG();
-
-      if (!pngBuffer || pngBuffer.length === 0) {
-        return {
-          success: true,
-          hasImage: false,
-        };
-      }
-
-      return {
-        success: true,
-        hasImage: true,
-
-        mimeType: "image/png",
-
-        fileName: "ServiceCall Screenshot.png",
-
-        imageBytes: Array.from(pngBuffer),
-      };
     } catch (error) {
-      console.error("Unable to read clipboard image:", error);
-
-      return {
-        success: false,
-        hasImage: false,
-
-        message: error?.message || "Unable to read clipboard image.",
-      };
+      console.error("ServiceCall recording action failed:", error);
     }
   },
 );
 
-ipcMain.handle(
-  "servicecall-show-image-context-menu",
+/* -------------------------
+   END CONFERENCE / LEAVE CALL
+------------------------- */
 
-  async (event) => {
-    return new Promise((resolve) => {
-      let resolved = false;
+document.getElementById("endButton").addEventListener("click", async () => {
+  const endButton = document.getElementById("endButton");
 
-      const finish = (action) => {
-        if (resolved) {
-          return;
+  if (recordingActionInProgress) {
+    statusText.textContent =
+      "Please wait for the recording to finish processing.";
+
+    return;
+  }
+
+  endButton.disabled = true;
+
+  try {
+    /*
+     * -----------------------------------------
+     * 1. FINALIZE ACTIVE RECORDING FIRST
+     * -----------------------------------------
+     *
+     * Never terminate the call/media before
+     * the active recording has been stopped,
+     * converted, uploaded and completed.
+     */
+    if (
+      window.ServiceCallRecorder &&
+      window.ServiceCallRecorder.isRecording()
+    ) {
+      statusText.textContent = "Saving recording before ending call...";
+
+      console.log(
+        "ServiceCall call ending while recording is active. Finalizing recording first.",
+      );
+
+      await stopServiceCallRecording();
+
+      console.log("ServiceCall recording finalized before call termination.");
+    }
+
+    let result;
+
+    /* -------------------------
+                   2. OWNER
+                ------------------------- */
+
+    if (currentUserIsOwner) {
+      statusText.textContent = "Ending conference...";
+
+      if (isMeeting && meetingSysId) {
+        result = await window.serviceCall.endMeeting(meetingSysId);
+      } else {
+        result = await window.serviceCall.endCall(callSysId);
+      }
+
+      if (!result || !result.success) {
+        throw new Error(
+          result && result.message
+            ? result.message
+            : "Unable to end conference.",
+        );
+      }
+
+      if (isMeeting) {
+        playMeetingLeaveEndSound();
+      }
+
+      /*
+       * ServiceNow has successfully
+       * ended the conference.
+       *
+       * We can now leave Agora.
+       */
+      await stopAgoraAudio();
+
+      /*
+       * Tell the main ServiceCall window that
+       * this meeting has changed.
+       *
+       * Normal calls/conferences do not send
+       * this notification.
+       */
+      if (
+        isMeeting &&
+        meetingSysId &&
+        window.serviceCall &&
+        typeof window.serviceCall.notifyMeetingChanged === "function"
+      ) {
+        window.serviceCall.notifyMeetingChanged(meetingSysId);
+      }
+
+      setMode("completed");
+
+      return;
+    }
+
+    /* -------------------------
+   3. PARTICIPANT
+------------------------- */
+
+    statusText.textContent = isMeeting
+      ? "Leaving meeting..."
+      : "Leaving call...";
+
+    /*
+     * Meetings use the meeting lifecycle API.
+     *
+     * Normal conferences continue using the
+     * existing leave-call API.
+     */
+    if (isMeeting && meetingSysId) {
+      result = await window.serviceCall.leaveMeeting(meetingSysId);
+    } else {
+      result = await window.serviceCall.leaveCall(callSysId);
+    }
+
+    if (!result || !result.success) {
+      throw new Error(
+        result && result.message
+          ? result.message
+          : isMeeting
+            ? "Unable to leave meeting."
+            : "Unable to leave call.",
+      );
+    }
+
+    if (isMeeting) {
+      playMeetingLeaveEndSound();
+    }
+
+    /*
+     * Leave Agora only on THIS desktop.
+     *
+     * Other participants remain connected.
+     */
+    await stopAgoraAudio();
+
+    /*
+     * Meeting data changed.
+     *
+     * Tell the main desktop window so the
+     * Meetings card refreshes automatically.
+     */
+    if (
+      isMeeting &&
+      meetingSysId &&
+      window.serviceCall &&
+      typeof window.serviceCall.notifyMeetingChanged === "function"
+    ) {
+      window.serviceCall.notifyMeetingChanged(meetingSysId);
+    }
+
+    stopAllTimers();
+
+    stopRingtone();
+
+    statusText.textContent = isMeeting
+      ? "You left the meeting"
+      : "You left the call";
+
+    closeCallWindowAfterDelay();
+  } catch (error) {
+    console.error(
+      currentUserIsOwner ? "End conference failed:" : "Leave call failed:",
+      error,
+    );
+
+    /*
+     * IMPORTANT:
+     *
+     * If recording finalization failed,
+     * we intentionally do NOT continue
+     * with End Conference / Leave Call.
+     *
+     * This gives the user a chance to
+     * retry rather than knowingly
+     * discarding the recording.
+     */
+    statusText.textContent =
+      error.message ||
+      (currentUserIsOwner
+        ? "Unable to end conference."
+        : "Unable to leave call.");
+
+    endButton.disabled = false;
+  }
+});
+
+/* -------------------------
+   CLOSE CALL WINDOW
+------------------------- */
+
+function closeCallWindowAfterDelay() {
+  if (closeTimer) {
+    return;
+  }
+
+  closeTimer = setTimeout(() => {
+    stopAllTimers();
+
+    window.close();
+  }, 1000);
+}
+
+/* -------------------------
+   STOP TIMERS
+------------------------- */
+
+function stopAllTimers() {
+  if (callStatusTimer) {
+    clearInterval(callStatusTimer);
+
+    callStatusTimer = null;
+  }
+
+  if (durationTimer) {
+    clearInterval(durationTimer);
+
+    durationTimer = null;
+  }
+}
+
+/* -------------------------
+   START
+------------------------- */
+
+setMode(currentMode);
+
+startCallStatusPolling();
+
+window.addEventListener("beforeunload", () => {
+  stopAllTimers();
+
+  stopRingtone();
+
+  /*
+   * Stop any local screen capture immediately.
+   *
+   * We deliberately stop the native MediaStream
+   * synchronously because beforeunload cannot
+   * reliably wait for asynchronous cleanup.
+   */
+
+  if (localScreenStream) {
+    localScreenStream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch (error) {
+        // Ignore final cleanup errors.
+      }
+    });
+  }
+
+  localScreenStream = null;
+
+  localScreenNativeTrack = null;
+
+  localScreenAgoraTrack = null;
+
+  /*
+   * Final Agora cleanup.
+   *
+   * Do not await here because the renderer
+   * is already being destroyed.
+   *
+   * Agora leave() performs the remaining
+   * media cleanup.
+   */
+
+
+<!DOCTYPE html>
+<html>
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self' data: blob:;
+        script-src 'self';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: blob:;
+        media-src 'self' blob:;
+        connect-src 'self' https: wss:;
+    ">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>
+        ServiceCall
+    </title>
+
+
+    <style>
+        * {
+            box-sizing: border-box;
         }
 
-        resolved = true;
-        resolve({
-          success: true,
-          action: action,
-        });
-      };
 
-      const menu = Menu.buildFromTemplate([
-        {
-          label: "Copy image",
-          click: () => {
-            finish("copy-image");
-          },
-        },
-      ]);
+        body {
+            margin: 0;
 
-      const window = BrowserWindow.fromWebContents(event.sender);
+            font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
 
-      menu.popup({
-        window: window || undefined,
+            background:
+                #f4f7f6;
 
-        callback: () => {
-          /*
-           * Menu closed without choosing anything.
-           */
-          finish("");
-        },
-      });
-    });
-  },
-);
+            color:
+                #1f2d2a;
 
-/* =====================================================
-   SERVICECALL - NATIVE PASTE
-===================================================== */
+            min-height:
+                100vh;
+        }
 
-ipcMain.handle(
-  "servicecall-native-paste",
 
-  async (event) => {
-    try {
-      const webContents = event.sender;
+        button {
+            font-family:
+                inherit;
+        }
 
-      if (!webContents || webContents.isDestroyed()) {
-        return {
-          success: false,
-          message: "ServiceCall window is unavailable.",
-        };
-      }
 
-      /*
-       * Execute Electron's native Paste
-       * command in the focused renderer.
-       */
-      webContents.paste();
+        .hidden {
+            display:
+                none !important;
+        }
 
-      return {
-        success: true,
-      };
-    } catch (error) {
-      console.error("ServiceCall native paste failed:", error);
 
-      return {
-        success: false,
-        message: error?.message || "Unable to paste clipboard content.",
-      };
-    }
-  },
-);
+        /* --------------------------------
+           TOP BAR
+        -------------------------------- */
 
-ipcMain.handle(
-  "servicecall-get-user-presence",
+        .topbar {
+            height:
+                54px;
 
-  async (event, userSysId) => {
-    const sysId = String(userSysId || "").trim();
+            background:
+                #173a33;
 
-    if (!sysId) {
-      return {
-        success: false,
-        code: "USER_REQUIRED",
-        message: "User sys_id is required.",
-      };
-    }
+            color:
+                white;
 
-    try {
-      return await serviceCallApiRequest(
-        "/user-presence?user_sys_id=" + encodeURIComponent(sysId),
-        "GET",
-      );
-    } catch (error) {
-      console.error("Unable to get ServiceCall user presence:", error.message);
+            display:
+                flex;
 
-      return {
-        success: false,
-        code: error.code || "GET_USER_PRESENCE_FAILED",
-        message: error.message || "Unable to retrieve user presence.",
-      };
-    }
-  },
-);
+            align-items:
+                center;
+
+            padding:
+                0 18px;
+
+            box-shadow:
+                0 2px 8px rgba(0, 0, 0, 0.12);
+        }
+
+
+        .brand {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            gap:
+                10px;
+
+            font-size:
+                16px;
+
+            font-weight:
+                bold;
+        }
+
+
+        .brand-logo {
+            width:
+                26px;
+
+            height:
+                26px;
+
+            border-radius:
+                8px;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            background:
+                #79d9c3;
+
+            color:
+                #173a33;
+
+            font-size:
+                13px;
+
+            font-weight:
+                bold;
+        }
+
+
+        /* --------------------------------
+           MAIN CONTAINER
+        -------------------------------- */
+
+        .container {
+            width:
+                100%;
+
+            max-width:
+                980px;
+
+            margin:
+                0 auto;
+
+            padding:
+                28px 22px 32px 22px;
+
+            text-align:
+                center;
+        }
+
+
+        /* --------------------------------
+           USER / CALL DETAILS
+        -------------------------------- */
+
+        .avatar {
+            width:
+                92px;
+
+            height:
+                92px;
+
+            margin:
+                4px auto 18px auto;
+
+            border-radius:
+                50%;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            background:
+                #dcefeb;
+
+            color:
+                #0b4f46;
+
+            font-size:
+                31px;
+
+            font-weight:
+                bold;
+
+            box-shadow:
+                0 5px 18px rgba(0, 0, 0, 0.08);
+        }
+
+
+        .person-name {
+            font-size:
+                24px;
+
+            font-weight:
+                bold;
+
+            margin-bottom:
+                6px;
+
+            word-break:
+                break-word;
+        }
+
+
+        .department {
+            min-height:
+                18px;
+
+            font-size:
+                14px;
+
+            color:
+                #687772;
+
+            margin-bottom:
+                14px;
+        }
+
+
+        .status {
+            min-height:
+                22px;
+
+            margin-bottom:
+                6px;
+
+            font-size:
+                15px;
+
+            color:
+                #40514d;
+        }
+
+
+        .timer {
+            min-height:
+                24px;
+
+            font-size:
+                18px;
+
+            font-weight:
+                bold;
+
+            color:
+                #0b6b58;
+
+            margin-bottom:
+                8px;
+        }
+
+
+        .call-number {
+            min-height:
+                18px;
+
+            margin-bottom:
+                22px;
+
+            font-size:
+                12px;
+
+            color:
+                #8a9793;
+        }
+
+
+        /* --------------------------------
+           SCREEN SHARING VIEW
+        -------------------------------- */
+
+        .screen-share-container {
+            width:
+                100%;
+
+            max-width:
+                900px;
+
+            margin:
+                0 auto 24px auto;
+
+            background:
+                #101817;
+
+            border-radius:
+                12px;
+
+            overflow:
+                hidden;
+
+            box-shadow:
+                0 8px 28px rgba(0, 0, 0, 0.18);
+        }
+
+
+        .screen-share-header {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                space-between;
+
+            gap:
+                12px;
+
+            padding:
+                10px 14px;
+
+            background:
+                #173a33;
+
+            color:
+                white;
+
+            font-size:
+                13px;
+        }
+
+
+        .screen-share-title {
+            font-weight:
+                bold;
+
+            overflow:
+                hidden;
+
+            text-overflow:
+                ellipsis;
+
+            white-space:
+                nowrap;
+        }
+
+
+        .screen-share-view {
+            position:
+                relative;
+
+            width:
+                100%;
+
+            aspect-ratio:
+                16 / 9;
+
+            background:
+                #101817;
+        }
+
+
+        .screen-share-video {
+            position:
+                absolute;
+
+            inset:
+                0;
+
+            width:
+                100%;
+
+            height:
+                100%;
+
+            overflow:
+                hidden;
+        }
+
+
+        .screen-share-video video {
+            width:
+                100% !important;
+
+            height:
+                100% !important;
+
+            object-fit:
+                contain !important;
+        }
+
+
+        .screen-share-placeholder {
+            position:
+                absolute;
+
+            inset:
+                0;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            padding:
+                20px;
+
+            color:
+                #d5dfdc;
+
+            font-size:
+                14px;
+
+            text-align:
+                center;
+
+            pointer-events:
+                none;
+        }
+
+
+        .screen-sharing-active {
+            background:
+                #dcefeb !important;
+
+            color:
+                #0b4f46 !important;
+
+            font-weight:
+                bold;
+        }
+
+
+        /* --------------------------------
+           ACTIONS
+        -------------------------------- */
+
+        .actions {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            flex-wrap:
+                wrap;
+
+            gap:
+                12px;
+
+            margin-top:
+                18px;
+        }
+
+
+        .actions button {
+            min-width:
+                112px;
+
+            min-height:
+                42px;
+
+            padding:
+                10px 16px;
+
+            border:
+                none;
+
+            border-radius:
+                8px;
+
+            cursor:
+                pointer;
+
+            font-size:
+                14px;
+
+            transition:
+                transform 0.12s ease,
+                box-shadow 0.12s ease,
+                opacity 0.12s ease;
+        }
+
+
+        .actions button:hover {
+            transform:
+                translateY(-1px);
+
+            box-shadow:
+                0 4px 12px rgba(0, 0, 0, 0.10);
+        }
+
+
+        .actions button:disabled {
+            cursor:
+                not-allowed;
+
+            opacity:
+                0.55;
+
+            transform:
+                none;
+
+            box-shadow:
+                none;
+        }
+
+
+        .primary {
+            background:
+                #0b6b58;
+
+            color:
+                white;
+        }
+
+
+        .secondary {
+            background:
+                #e6eeec;
+
+            color:
+                #243631;
+        }
+
+
+        .danger {
+            background:
+                #c94343;
+
+            color:
+                white;
+        }
+
+
+        .accept {
+            background:
+                #16856d;
+
+            color:
+                white;
+        }
+
+
+        /* --------------------------------
+           RECORDING
+        -------------------------------- */
+
+        .recording-text {
+            margin-top:
+                18px;
+
+            min-height:
+                18px;
+
+            color:
+                #b33838;
+
+            font-size:
+                13px;
+
+            font-weight:
+                bold;
+        }
+
+
+        /* --------------------------------
+           LIVE PARTICIPANTS PANEL
+        -------------------------------- */
+
+        .participants-panel {
+            position:
+                fixed;
+
+            top:
+                54px;
+
+            right:
+                0;
+
+            bottom:
+                0;
+
+            width:
+                340px;
+
+            max-width:
+                92vw;
+
+            z-index:
+                900;
+
+            display:
+                flex;
+
+            flex-direction:
+                column;
+
+            background:
+                #ffffff;
+
+            border-left:
+                1px solid #dfe8e5;
+
+            box-shadow:
+                -8px 0 28px rgba(0, 0, 0, 0.12);
+
+            text-align:
+                left;
+        }
+
+
+        .participants-panel-header {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                space-between;
+
+            gap:
+                12px;
+
+            padding:
+                18px;
+
+            border-bottom:
+                1px solid #e5ecea;
+        }
+
+
+        .participants-panel-heading {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            gap:
+                7px;
+        }
+
+
+        .participants-panel-title {
+            font-size:
+                17px;
+
+            font-weight:
+                bold;
+
+            color:
+                #1f2d2a;
+        }
+
+
+        .participants-panel-count {
+            display:
+                inline-flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            min-width:
+                26px;
+
+            height:
+                26px;
+
+            padding:
+                0 8px;
+
+            border-radius:
+                13px;
+
+            background:
+                #e4f3ef;
+
+            color:
+                #0b6b58;
+
+            font-size:
+                12px;
+
+            font-weight:
+                bold;
+        }
+
+
+        .participants-panel-close {
+            width:
+                34px;
+
+            height:
+                34px;
+
+            border:
+                none;
+
+            border-radius:
+                8px;
+
+            background:
+                #eef3f2;
+
+            color:
+                #324540;
+
+            cursor:
+                pointer;
+
+            font-size:
+                22px;
+
+            line-height:
+                1;
+        }
+
+
+        .participants-panel-close:hover {
+            background:
+                #e1e9e7;
+        }
+
+
+        .participants-panel-body {
+            flex:
+                1;
+
+            overflow-y:
+                auto;
+
+            padding:
+                14px;
+        }
+
+
+        .participants-section-label {
+            margin:
+                3px 4px 10px 4px;
+
+            color:
+                #687772;
+
+            font-size:
+                11px;
+
+            font-weight:
+                bold;
+
+            text-transform:
+                uppercase;
+
+            letter-spacing:
+                0.5px;
+        }
+
+
+        .live-participant {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            gap:
+                11px;
+
+            padding:
+                11px 10px;
+
+            margin-bottom:
+                5px;
+
+            border-radius:
+                10px;
+
+            transition:
+                background 0.12s ease;
+        }
+
+
+        .live-participant:hover {
+            background:
+                #f4f8f7;
+        }
+
+
+        .live-participant-avatar {
+            width:
+                40px;
+
+            height:
+                40px;
+
+            flex-shrink:
+                0;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            border-radius:
+                50%;
+
+            background:
+                #dcefeb;
+
+            color:
+                #0b4f46;
+
+            font-size:
+                14px;
+
+            font-weight:
+                bold;
+        }
+
+
+        .live-participant-info {
+            flex:
+                1;
+
+            min-width:
+                0;
+        }
+
+
+        .live-participant-name {
+            overflow:
+                hidden;
+
+            color:
+                #1f2d2a;
+
+            font-size:
+                14px;
+
+            font-weight:
+                600;
+
+            text-overflow:
+                ellipsis;
+
+            white-space:
+                nowrap;
+        }
+
+
+        .live-participant-meta {
+            margin-top:
+                3px;
+
+            color:
+                #71807c;
+
+            font-size:
+                12px;
+        }
+
+
+        .live-participant-status {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            gap:
+                6px;
+
+            color:
+                #53635f;
+
+            font-size:
+                11px;
+
+            white-space:
+                nowrap;
+        }
+
+
+        .live-participant-status-dot {
+            width:
+                8px;
+
+            height:
+                8px;
+
+            flex-shrink:
+                0;
+
+            border-radius:
+                50%;
+
+            background:
+                #16856d;
+        }
+
+
+        .participants-empty {
+            padding:
+                40px 18px;
+
+            text-align:
+                center;
+
+            color:
+                #71807c;
+
+            font-size:
+                13px;
+
+            line-height:
+                1.5;
+        }
+
+
+        /* --------------------------------
+           MODAL BASE
+        -------------------------------- */
+
+        .modal-overlay {
+            position:
+                fixed;
+
+            inset:
+                0;
+
+            z-index:
+                1000;
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            padding:
+                22px;
+
+            background:
+                rgba(9, 22, 19, 0.58);
+        }
+
+
+        .modal-card {
+            width:
+                100%;
+
+            max-width:
+                520px;
+
+            max-height:
+                82vh;
+
+            overflow:
+                hidden;
+
+            background:
+                white;
+
+            border-radius:
+                14px;
+
+            box-shadow:
+                0 18px 50px rgba(0, 0, 0, 0.22);
+
+            text-align:
+                left;
+        }
+
+
+        .modal-header {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                space-between;
+
+            gap:
+                14px;
+
+            padding:
+                16px 18px;
+
+            border-bottom:
+                1px solid #e5ecea;
+        }
+
+
+        .modal-title {
+            font-size:
+                17px;
+
+            font-weight:
+                bold;
+
+            color:
+                #1f2d2a;
+        }
+
+
+        .modal-close {
+            width:
+                34px;
+
+            height:
+                34px;
+
+            border:
+                none;
+
+            border-radius:
+                8px;
+
+            background:
+                #eef3f2;
+
+            color:
+                #324540;
+
+            cursor:
+                pointer;
+
+            font-size:
+                23px;
+
+            line-height:
+                1;
+        }
+
+
+        .modal-body {
+            padding:
+                18px;
+
+            overflow-y:
+                auto;
+
+            max-height:
+                calc(82vh - 68px);
+        }
+
+
+        /* --------------------------------
+           ADD PARTICIPANT
+        -------------------------------- */
+
+        .participant-help {
+            margin-bottom:
+                12px;
+
+            color:
+                #687772;
+
+            font-size:
+                13px;
+
+            line-height:
+                1.45;
+        }
+
+
+        .participant-search {
+            width:
+                100%;
+
+            height:
+                42px;
+
+            padding:
+                0 12px;
+
+            border:
+                1px solid #ccd8d5;
+
+            border-radius:
+                8px;
+
+            outline:
+                none;
+
+            font-size:
+                14px;
+
+            margin-bottom:
+                12px;
+        }
+
+
+        .participant-search:focus {
+            border-color:
+                #16856d;
+        }
+
+
+        .participant-results {
+            display:
+                flex;
+
+            flex-direction:
+                column;
+
+            gap:
+                8px;
+
+            max-height:
+                330px;
+
+            overflow-y:
+                auto;
+        }
+
+
+        .participant-result {
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                space-between;
+
+            gap:
+                12px;
+
+            padding:
+                11px 12px;
+
+            border:
+                1px solid #e0e8e6;
+
+            border-radius:
+                8px;
+
+            background:
+                #fafcfc;
+        }
+
+
+        .participant-result button {
+            border:
+                none;
+
+            border-radius:
+                7px;
+
+            background:
+                #0b6b58;
+
+            color:
+                white;
+
+            padding:
+                8px 12px;
+
+            cursor:
+                pointer;
+        }
+
+
+        .participant-message {
+            padding:
+                18px 10px;
+
+            text-align:
+                center;
+
+            color:
+                #71807c;
+
+            font-size:
+                13px;
+        }
+
+
+        /* --------------------------------
+           SCREEN SOURCE MODAL
+        -------------------------------- */
+
+        .screen-source-modal-card {
+            width:
+                100%;
+
+            max-width:
+                760px;
+
+            max-height:
+                82vh;
+
+            background:
+                white;
+
+            border-radius:
+                14px;
+
+            box-shadow:
+                0 18px 50px rgba(0, 0, 0, 0.22);
+
+            overflow:
+                hidden;
+
+            text-align:
+                left;
+        }
+
+
+        .screen-source-results {
+            display:
+                grid;
+
+            grid-template-columns:
+                repeat(auto-fit,
+                    minmax(190px, 1fr));
+
+            gap:
+                14px;
+
+            max-height:
+                480px;
+
+            overflow-y:
+                auto;
+
+            padding-top:
+                4px;
+        }
+
+
+        .screen-source-item {
+            border:
+                1px solid #dbe5e2;
+
+            border-radius:
+                10px;
+
+            background:
+                white;
+
+            overflow:
+                hidden;
+
+            cursor:
+                pointer;
+
+            transition:
+                transform 0.15s ease,
+                border-color 0.15s ease,
+                box-shadow 0.15s ease;
+        }
+
+
+        .screen-source-item:hover {
+            transform:
+                translateY(-2px);
+
+            border-color:
+                #16856d;
+
+            box-shadow:
+                0 6px 18px rgba(0, 0, 0, 0.10);
+        }
+
+
+        .screen-source-thumbnail {
+            width:
+                100%;
+
+            aspect-ratio:
+                16 / 9;
+
+            object-fit:
+                cover;
+
+            display:
+                block;
+
+            background:
+                #101817;
+        }
+
+
+        .screen-source-name {
+            padding:
+                10px 11px;
+
+            font-size:
+                13px;
+
+            color:
+                #1f2d2a;
+
+            white-space:
+                nowrap;
+
+            overflow:
+                hidden;
+
+            text-overflow:
+                ellipsis;
+        }
+
+
+        .screen-source-message {
+            grid-column:
+                1 / -1;
+
+            padding:
+                25px;
+
+            text-align:
+                center;
+
+            color:
+                #65736f;
+
+            font-size:
+                13px;
+        }
+
+
+        /* --------------------------------
+           SMALL WINDOW BEHAVIOUR
+        -------------------------------- */
+
+        @media (max-width: 520px) {
+
+            .container {
+                padding:
+                    24px 14px 28px 14px;
+            }
+
+
+            .avatar {
+                width:
+                    82px;
+
+                height:
+                    82px;
+
+                font-size:
+                    28px;
+            }
+
+
+            .person-name {
+                font-size:
+                    21px;
+            }
+
+
+            .actions {
+                gap:
+                    9px;
+            }
+
+
+            .actions button {
+                min-width:
+                    105px;
+            }
+
+
+            .modal-overlay {
+                padding:
+                    12px;
+            }
+
+
+            .screen-source-results {
+                grid-template-columns:
+                    1fr;
+            }
+
+
+            .participants-panel {
+                width:
+                    100%;
+
+                max-width:
+                    100%;
+            }
+        }
+    </style>
+
+</head>
+
+
+<body>
+
+
+    <!-- --------------------------------
+         TOP BAR
+    --------------------------------- -->
+
+    <div class="topbar">
+
+        <div class="brand">
+
+            <div class="brand-logo">
+                now
+            </div>
+
+            <div>
+                ServiceCall
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         MAIN CALL UI
+    --------------------------------- -->
+
+    <div class="container">
+
+
+        <div class="avatar" id="avatar">
+            ?
+        </div>
+
+
+        <div class="person-name" id="personName">
+            Unknown User
+        </div>
+
+
+        <div class="department" id="department">
+        </div>
+
+
+        <div class="status" id="statusText">
+            Connecting...
+        </div>
+
+
+        <div class="timer hidden" id="timer">
+            00:00
+        </div>
+
+
+        <div class="call-number" id="callNumber">
+        </div>
+
+
+
+        <!-- --------------------------------
+             SCREEN SHARE VIEW
+        --------------------------------- -->
+
+        <div class="screen-share-container hidden" id="screenShareContainer">
+
+            <div class="screen-share-header">
+
+                <div class="screen-share-title" id="screenShareTitle">
+                    Screen sharing
+                </div>
+
+            </div>
+
+
+            <div class="screen-share-view">
+
+                <div class="screen-share-video" id="screenShareVideo">
+                </div>
+
+
+                <div class="screen-share-placeholder" id="screenSharePlaceholder">
+                    Connecting to shared screen...
+                </div>
+
+            </div>
+
+        </div>
+
+
+
+        <!-- --------------------------------
+             INCOMING CALL ACTIONS
+        --------------------------------- -->
+
+        <div class="actions hidden" id="incomingActions">
+
+            <button class="danger" id="declineButton" type="button">
+                Decline
+            </button>
+
+
+            <button class="accept" id="acceptButton" type="button">
+                Accept
+            </button>
+
+        </div>
+
+
+
+        <!-- --------------------------------
+             OUTGOING / RINGING ACTIONS
+        --------------------------------- -->
+
+        <div class="actions hidden" id="callingActions">
+
+            <button class="danger" id="cancelButton" type="button">
+                Cancel
+            </button>
+
+        </div>
+
+
+
+        <!-- --------------------------------
+             CONNECTED CALL ACTIONS
+        --------------------------------- -->
+
+        <div class="actions hidden" id="connectedActions">
+
+            <button class="secondary" id="muteButton" type="button">
+                Mute
+            </button>
+
+
+            <button class="secondary" id="participantsButton" type="button">
+                Participants (<span id="participantsButtonCount">0</span>)
+            </button>
+
+
+            <button class="secondary" id="addUserButton" type="button">
+                Add User
+            </button>
+
+
+            <button class="secondary" id="shareScreenButton" type="button">
+                Share Screen
+            </button>
+
+
+            <button class="secondary" id="recordButton" type="button">
+                Record Call
+            </button>
+
+
+            <button class="danger" id="endButton" type="button">
+                End Call
+            </button>
+
+        </div>
+
+
+        <div class="recording-text hidden" id="recordingText">
+            Call is being recorded
+        </div>
+
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         LIVE PARTICIPANTS PANEL
+    --------------------------------- -->
+
+    <div class="participants-panel hidden" id="participantsPanel">
+
+        <div class="participants-panel-header">
+
+            <div class="participants-panel-heading">
+
+                <div class="participants-panel-title">
+                    Participants
+                </div>
+
+
+                <span class="participants-panel-count" id="participantsPanelCount">
+                    0
+                </span>
+
+            </div>
+
+
+            <button class="participants-panel-close" id="closeParticipantsPanel" type="button"
+                title="Close participants">
+                &times;
+            </button>
+
+        </div>
+
+
+        <div class="participants-panel-body" id="participantsPanelBody">
+
+            <div class="participants-section-label">
+                In this call
+            </div>
+
+
+            <div class="participants-empty">
+                Loading participants...
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         ADD PARTICIPANT MODAL
+    --------------------------------- -->
+
+    <div class="modal-overlay hidden" id="addParticipantModal">
+
+        <div class="modal-card">
+
+            <div class="modal-header">
+
+                <div class="modal-title">
+                    Add participant
+                </div>
+
+
+                <button class="modal-close" id="closeParticipantModal" type="button">
+                    &times;
+                </button>
+
+            </div>
+
+
+            <div class="modal-body">
+
+                <div class="participant-help">
+                    Search for a ServiceCall user to invite to this call.
+                </div>
+
+
+                <input class="participant-search" id="participantSearch" type="text" autocomplete="off"
+                    placeholder="Search users...">
+
+
+                <div class="participant-results" id="participantResults">
+
+                    <div class="participant-empty">
+                        Start typing a user's name.
+                    </div>
+
+                </div>
+
+
+                <div class="participant-message" id="participantMessage">
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         SCREEN SOURCE MODAL
+    --------------------------------- -->
+
+    <div class="modal-overlay hidden" id="screenSourceModal">
+
+        <div class="screen-source-modal-card">
+
+            <div class="modal-header">
+
+                <div class="modal-title">
+                    Share your screen
+                </div>
+
+
+                <button class="modal-close" id="closeScreenSourceModal" type="button">
+                    &times;
+                </button>
+
+            </div>
+
+
+            <div class="modal-body">
+
+                <div class="participant-help">
+                    Choose a screen or window to share.
+                </div>
+
+
+                <div class="screen-source-results" id="screenSourceResults">
+
+                    <div class="screen-source-message">
+                        Loading screens and windows...
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- --------------------------------
+         SERVICECALL SCRIPTS
+    --------------------------------- -->
+
+    <script src="agora-service.bundle.js"></script>
+
+    <script src="recording-service.bundle.js"></script>
+
+    <script src="call-window.js"></script>
+
+
+</body>
+
+</html>
+  stopAgoraAudio();
+});
