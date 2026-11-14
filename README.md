@@ -543,6 +543,41 @@ function getOrCreateDeviceId() {
   return deviceId;
 }
 
+/* =====================================================
+   SERVICECALL — HEARTBEAT NETWORK TIMEOUT
+===================================================== */
+
+const HEARTBEAT_REQUEST_TIMEOUT_MS = 8000;
+
+async function fetchHeartbeatWithTimeout(url, options) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, HEARTBEAT_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      const timeoutError = new Error(
+        "ServiceCall heartbeat request timed out.",
+      );
+
+      timeoutError.code = "HEARTBEAT_TIMEOUT";
+
+      throw timeoutError;
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function sendHeartbeatOnce() {
   if (isDeviceSuspended) {
     console.log("ServiceCall heartbeat skipped because device is suspended.");
@@ -578,7 +613,7 @@ async function sendHeartbeatOnce() {
     app_version: app.getVersion(),
   };
 
-  let response = await fetch(heartbeatUrl, {
+  let response = await fetchHeartbeatWithTimeout(heartbeatUrl, {
     method: "POST",
 
     headers: {
@@ -604,7 +639,7 @@ async function sendHeartbeatOnce() {
     try {
       const newAccessToken = await refreshAccessToken();
 
-      response = await fetch(heartbeatUrl, {
+      response = await fetchHeartbeatWithTimeout(heartbeatUrl, {
         method: "POST",
 
         headers: {
@@ -1122,51 +1157,57 @@ function startNotificationLoop() {
 }
 
 function stopHeartbeatLoop() {
+  /*
+   * Invalidate callbacks from older loops.
+   */
+
+  heartbeatLoopGeneration++;
+
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
-
     heartbeatTimer = null;
   }
 }
 
+/* =====================================================
+   SERVICECALL — RELIABLE HEARTBEAT LOOP
+===================================================== */
+
+let heartbeatRequestInProgress = false;
+let heartbeatLoopGeneration = 0;
+
 async function startHeartbeatLoop() {
   stopHeartbeatLoop();
 
-  try {
-    const result = await sendHeartbeatOnce();
+  const generation = ++heartbeatLoopGeneration;
 
-    console.log("ServiceCall heartbeat:", result);
-
-    sendAuthStatus("connected", "ServiceCall Desktop is connected.");
-  } catch (error) {
-    console.error("Initial heartbeat failed:", error);
-
-    if (error.code === "AUTHENTICATION_REQUIRED") {
-      stopHeartbeatLoop();
-
-      sendAuthStatus(
-        "authentication_required",
-        "Your ServiceNow session has expired. Please sign in again.",
-      );
-
+  async function runHeartbeat() {
+    if (
+      generation !== heartbeatLoopGeneration ||
+      heartbeatRequestInProgress ||
+      isDeviceSuspended
+    ) {
       return;
     }
 
-    sendAuthStatus(
-      "warning",
-      "ServiceCall Desktop heartbeat failed: " + error.message,
-    );
+    heartbeatRequestInProgress = true;
 
-    return;
-  }
-
-  heartbeatTimer = setInterval(async () => {
     try {
       const result = await sendHeartbeatOnce();
 
+      if (generation !== heartbeatLoopGeneration) {
+        return;
+      }
+
       console.log("ServiceCall heartbeat:", result);
+
+      sendAuthStatus("connected", "ServiceCall Desktop is connected.");
     } catch (error) {
-      console.error("Heartbeat failed:", error);
+      if (generation !== heartbeatLoopGeneration) {
+        return;
+      }
+
+      console.error("ServiceCall heartbeat failed:", error);
 
       if (error.code === "AUTHENTICATION_REQUIRED") {
         stopHeartbeatLoop();
@@ -1181,10 +1222,29 @@ async function startHeartbeatLoop() {
 
       sendAuthStatus(
         "warning",
-        "ServiceCall Desktop heartbeat failed: " + error.message,
+        "ServiceCall heartbeat failed: " + error.message,
       );
+    } finally {
+      heartbeatRequestInProgress = false;
     }
-  }, 30000);
+  }
+
+  /*
+   * Attempt the first heartbeat immediately.
+   */
+
+  await runHeartbeat();
+
+  /*
+   * Keep retrying after temporary failures.
+   * Do not restart after an authentication error.
+   */
+
+  if (generation !== heartbeatLoopGeneration) {
+    return;
+  }
+
+  heartbeatTimer = setInterval(runHeartbeat, 30000);
 }
 
 function startIncomingCallLoop() {
@@ -2438,12 +2498,142 @@ function showMainWindow() {
   createWindow();
 }
 
+/* =====================================================
+   SERVICECALL — STARTUP SPLASH SCREEN
+===================================================== */
+
+let splashWindow = null;
+
+function createSplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    return;
+  }
+
+  splashWindow = new BrowserWindow({
+    width: 460,
+    height: 340,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    frame: false,
+    center: true,
+    show: false,
+    backgroundColor: "#101827",
+    alwaysOnTop: true,
+    skipTaskbar: true,
+
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  splashWindow.once("ready-to-show", () => {
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.show();
+    }
+  });
+
+  splashWindow.on("closed", () => {
+    splashWindow = null;
+  });
+
+  splashWindow.loadFile(path.join(__dirname, "splash.html")).catch((error) => {
+    console.error("Unable to load ServiceCall splash:", error);
+  });
+}
+
+function closeSplashWindow() {
+  if (!splashWindow || splashWindow.isDestroyed()) {
+    return;
+  }
+
+  splashWindow.close();
+  splashWindow = null;
+}
+
+/* =====================================================
+   SERVICECALL — WAIT FOR INITIAL PRESENCE
+===================================================== */
+
+async function waitForInitialPresence(windowToCheck, timeoutMs = 2500) {
+  if (!windowToCheck || windowToCheck.isDestroyed()) {
+    return false;
+  }
+
+  try {
+    return await windowToCheck.webContents.executeJavaScript(
+      `
+      new Promise((resolve) => {
+
+        const root = document.documentElement;
+
+        if (
+          root.dataset.servicecallPresenceReady === "true"
+        ) {
+          resolve(true);
+          return;
+        }
+
+        let finished = false;
+        let observer = null;
+
+        const finish = (ready) => {
+
+          if (finished) {
+            return;
+          }
+
+          finished = true;
+
+          if (observer) {
+            observer.disconnect();
+          }
+
+          resolve(ready);
+        };
+
+        observer = new MutationObserver(() => {
+
+          if (
+            root.dataset.servicecallPresenceReady === "true"
+          ) {
+            finish(true);
+          }
+        });
+
+        observer.observe(root, {
+          attributes: true,
+          attributeFilter: [
+            "data-servicecall-presence-ready"
+          ]
+        });
+
+        setTimeout(() => {
+          finish(false);
+        }, ${Math.max(0, timeoutMs)});
+
+      });
+      `,
+      true,
+    );
+  } catch (error) {
+    console.warn("ServiceCall initial presence wait failed:", error);
+
+    return false;
+  }
+}
+
 async function createWindow() {
+  createSplashWindow();
   mainWindow = new BrowserWindow({
     width: 900,
     height: 650,
     minWidth: 700,
     minHeight: 500,
+    show: false,
+    backgroundColor: "#101827",
     title: "ServiceCall Desktop",
 
     webPreferences: {
@@ -2459,82 +2649,130 @@ async function createWindow() {
    * RESOLVE STARTUP AUTHENTICATION
    * -----------------------------------------
    */
+  try {
+    const startupState = await resolveStartupAuthentication();
 
-  const startupState = await resolveStartupAuthentication();
+    console.log("ServiceCall startup state:", startupState);
 
-  console.log("ServiceCall startup state:", startupState);
-
-  /*
-   * -----------------------------------------
-   * AUTHORIZED USER
-   * -----------------------------------------
-   */
-
-  if (startupState.state === "ready") {
-    /*
-     * Make sure we begin in the
-     * available state.
-     */
-
-    serviceCallAccessUnavailable = false;
-
-    await mainWindow.loadFile("index.html");
-
-    /*
-     * Start background ServiceCall services
-     * ONLY after authorization succeeds.
-     */
-
-    await startHeartbeatLoop();
-
-    startIncomingCallLoop();
-
-    startOutgoingCallLoop();
-
-    startNotificationLoop();
-
-    startAuthorizationMonitor();
-  } else if (startupState.state === "access_denied") {
     /*
      * -----------------------------------------
-     * AUTHENTICATED BUT ACCESS NOT AVAILABLE
+     * AUTHORIZED USER
      * -----------------------------------------
      */
-    console.warn("ServiceCall access denied at startup.");
+
+    if (startupState.state === "ready") {
+      /*
+       * Make sure we begin in the
+       * available state.
+       */
+
+      serviceCallAccessUnavailable = false;
+
+      /*
+       * Establish desktop connectivity before
+       * the renderer loads its presence.
+       */
+
+      await startHeartbeatLoop();
+
+      await mainWindow.loadFile("index.html");
+
+      /*
+       * Wait briefly for the renderer to restore
+       * the saved presence before showing it.
+       */
+
+      const presenceReady = await waitForInitialPresence(mainWindow, 2500);
+
+      console.log("ServiceCall initial presence ready:", presenceReady);
+
+      /*
+       * Start existing background services.
+       */
+
+      startIncomingCallLoop();
+      startOutgoingCallLoop();
+      startNotificationLoop();
+      startAuthorizationMonitor();
+    } else if (startupState.state === "access_denied") {
+      /*
+       * -----------------------------------------
+       * AUTHENTICATED BUT ACCESS NOT AVAILABLE
+       * -----------------------------------------
+       */
+      console.warn("ServiceCall access denied at startup.");
+
+      /*
+       * Startup access denial belongs to the
+       * authentication flow.
+       *
+       * Do NOT use the runtime unavailable page
+       * here.
+       */
+      serviceCallAccessUnavailable = false;
+
+      await mainWindow.loadFile(path.join("auth", "auth-gate.html"));
+
+      /*
+       * Do NOT start the runtime authorization
+       * monitor here.
+       *
+       * The runtime monitor is only for a user
+       * who successfully entered ServiceCall
+       * and later loses access.
+       */
+    } else {
+      /*
+       * -----------------------------------------
+       * LOGIN / AUTHENTICATION GATE
+       * -----------------------------------------
+       */
+      /*
+       * No usable authenticated ServiceCall
+       * session exists.
+       */
+
+      serviceCallAccessUnavailable = false;
+
+      await mainWindow.loadFile(path.join("auth", "auth-gate.html"));
+    }
+
+    /* -----------------------------------------
+   STARTUP DISPLAY HANDOFF
+----------------------------------------- */
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  } catch (error) {
+    console.error("ServiceCall startup initialization failed:", error);
 
     /*
-     * Startup access denial belongs to the
-     * authentication flow.
-     *
-     * Do NOT use the runtime unavailable page
-     * here.
+     * Avoid leaving a blank application
+     * window after a startup failure.
      */
-    serviceCallAccessUnavailable = false;
 
-    await mainWindow.loadFile(path.join("auth", "auth-gate.html"));
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        await mainWindow.loadFile(path.join("auth", "auth-gate.html"));
 
+        mainWindow.show();
+        mainWindow.focus();
+      } catch (fallbackError) {
+        console.error(
+          "Unable to load ServiceCall fallback page:",
+          fallbackError,
+        );
+      }
+    }
+  } finally {
     /*
-     * Do NOT start the runtime authorization
-     * monitor here.
-     *
-     * The runtime monitor is only for a user
-     * who successfully entered ServiceCall
-     * and later loses access.
-     */
-  } else {
-    /*
-     * -----------------------------------------
-     * LOGIN / AUTHENTICATION GATE
-     * -----------------------------------------
-     */
-    /*
-     * No usable authenticated ServiceCall
-     * session exists.
+     * Always dismiss the splash, even if
+     * authentication or initialization fails.
      */
 
-    serviceCallAccessUnavailable = false;
-
-    await mainWindow.loadFile(path.join("auth", "auth-gate.html"));
+    closeSplashWindow();
   }
 
   /*
@@ -3088,25 +3326,6 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
-
-  /* -----------------------------------------
-           DEVICE SLEEP / RESUME
-        ----------------------------------------- */
-
-  powerMonitor.on("suspend", async () => {
-    console.log("ServiceCall detected device suspend.");
-
-    isDeviceSuspended = true;
-
-    /*
-     * Tell ServiceNow this device
-     * intentionally became Away.
-     *
-     * Keep the user's manual presence
-     * untouched.
-     */
-    await updateDesktopState("away");
-  });
 
   /* -----------------------------------------
            DEVICE SLEEP / RESUME
