@@ -1,4 +1,3 @@
-call-window.js - 
 const params = new URLSearchParams(window.location.search);
 
 const mode = params.get("mode") || "incoming";
@@ -12,6 +11,16 @@ const department = params.get("department") || "";
 const callNumber = params.get("callNumber") || "";
 
 const isConference = params.get("isConference") === "true";
+
+/* =====================================================
+   NATIVE WEBRTC DEVELOPMENT MODE
+===================================================== */
+
+const WEBRTC_TEST_MODE = false;
+
+const useNativeWebRTC = WEBRTC_TEST_MODE && !isConference && !isMeeting;
+
+console.log("[ServiceCall] Native WebRTC test mode:", useNativeWebRTC);
 
 /* -------------------------
    MEETING CONTEXT
@@ -425,6 +434,24 @@ async function stopAgoraAudio() {
   }
 }
 
+/* =====================================================
+   STOP ACTIVE CALL MEDIA
+===================================================== */
+
+async function stopActiveCallMedia() {
+  if (useNativeWebRTC) {
+    if (window.ServiceCallPeer) {
+      window.ServiceCallPeer.stop();
+    }
+
+    console.log("[ServiceCall] Native WebRTC media stopped.");
+
+    return;
+  }
+
+  await stopActiveCallMedia();
+}
+
 /* -------------------------
    UI STATE
 ------------------------- */
@@ -482,7 +509,13 @@ function setMode(newMode) {
       startDurationTimer();
     }
 
-    startAgoraAudio();
+    if (useNativeWebRTC) {
+      statusText.textContent = "Connecting native WebRTC...";
+
+      startNativeWebRTC();
+    } else {
+      startAgoraAudio();
+    }
   }
 
   if (newMode === "declined") {
@@ -517,11 +550,79 @@ function setMode(newMode) {
 
     stopAllTimers();
 
-    stopAgoraAudio();
+    stopActiveCallMedia();
 
     closeCallWindowAfterDelay();
 
     return;
+  }
+}
+
+/* =====================================================
+   SERVICECALL NATIVE WEBRTC STARTUP
+===================================================== */
+
+let nativeWebRTCStarting = false;
+
+async function startNativeWebRTC() {
+  if (!useNativeWebRTC) {
+    return;
+  }
+
+  if (nativeWebRTCStarting || window.ServiceCallPeer.isRunning()) {
+    return;
+  }
+
+  nativeWebRTCStarting = true;
+
+  try {
+    const result = await window.serviceCall.getCallStatus(callSysId);
+
+    if (!result.success || result.state !== "connected") {
+      throw new Error("Call is not connected.");
+    }
+
+    const remoteUserId = result.other_user_sys_id;
+
+    const isCaller = result.participant_role === "caller";
+
+    if (!/^[a-f0-9]{32}$/i.test(remoteUserId || "")) {
+      throw new Error("Remote user sys_id unavailable.");
+    }
+
+    if (!["caller", "participant"].includes(result.participant_role)) {
+      throw new Error("Unable to determine caller role.");
+    }
+
+    console.log("[ServiceCall WebRTC] Starting:", {
+      callId: callSysId,
+      isCaller,
+      role: result.participant_role,
+    });
+
+    await window.ServiceCallPeer.start({
+      callId: callSysId,
+      remoteUserId,
+      isCaller,
+
+      onStateChange: (state) => {
+        console.log("[ServiceCall WebRTC] Connection:", state);
+
+        if (state === "connected") {
+          statusText.textContent = "Native WebRTC Connected";
+        }
+
+        if (state === "failed") {
+          statusText.textContent = "WebRTC Connection Failed";
+        }
+      },
+    });
+  } catch (error) {
+    console.error("[ServiceCall WebRTC] Startup failed:", error);
+
+    statusText.textContent = "Native WebRTC unavailable";
+  } finally {
+    nativeWebRTCStarting = false;
   }
 }
 
@@ -608,6 +709,32 @@ async function checkCallStatus() {
 
     if (!result || !result.success) {
       return;
+    }
+
+    /* =====================================================
+   WEBRTC TEST - INSPECT CALL PARTICIPANTS
+===================================================== */
+
+    if (
+      result.state === "connected" &&
+      !window.__serviceCallWebRTCDebugLogged
+    ) {
+      window.__serviceCallWebRTCDebugLogged = true;
+
+      console.log("[WebRTC TEST] Call state:", result.state);
+
+      console.log(
+        "[WebRTC TEST] Participant structure:",
+        Array.isArray(result.participants)
+          ? result.participants.map((p) => ({
+              keys: Object.keys(p),
+              status: p.status,
+              role: p.role,
+            }))
+          : "No participant array",
+      );
+
+      console.log("[WebRTC TEST] Call status fields:", Object.keys(result));
     }
 
     /*
@@ -703,7 +830,7 @@ async function checkCallStatus() {
       participantStatus === "missed" ||
       (currentMode === "incoming" && participantStatus === "declined")
     ) {
-      await stopAgoraAudio();
+      await stopActiveCallMedia();
       stopRingtone();
       stopAllTimers();
 
@@ -828,11 +955,37 @@ document.getElementById("cancelButton").addEventListener("click", async () => {
    MUTE / UNMUTE
 ------------------------- */
 
+/* -------------------------
+   MUTE / UNMUTE
+------------------------- */
+
 document.getElementById("muteButton").addEventListener("click", async () => {
   try {
+    if (useNativeWebRTC) {
+      if (!window.ServiceCallPeer || !window.ServiceCallPeer.isRunning()) {
+        statusText.textContent = "WebRTC audio is not connected";
+        return;
+      }
+
+      const currentlyMuted = window.ServiceCallMedia.isMuted();
+
+      const newMutedState = !currentlyMuted;
+
+      await window.ServiceCallPeer.setMuted(newMutedState);
+
+      document.getElementById("muteButton").textContent = newMutedState
+        ? "Unmute"
+        : "Mute";
+
+      console.log("[ServiceCall WebRTC] Muted:", newMutedState);
+
+      return;
+    }
+
+    // Existing Agora behavior
+
     if (!window.ServiceCallAgora || !window.ServiceCallAgora.isJoined()) {
       statusText.textContent = "Audio is not connected";
-
       return;
     }
 
@@ -2618,7 +2771,7 @@ document.getElementById("endButton").addEventListener("click", async () => {
        *
        * We can now leave Agora.
        */
-      await stopAgoraAudio();
+      await stopActiveCallMedia();
 
       /*
        * Tell the main ServiceCall window that
@@ -2680,7 +2833,7 @@ document.getElementById("endButton").addEventListener("click", async () => {
      *
      * Other participants remain connected.
      */
-    await stopAgoraAudio();
+    await stopActiveCallMedia();
 
     /*
      * Meeting data changed.
@@ -2814,5 +2967,5 @@ window.addEventListener("beforeunload", () => {
    * media cleanup.
    */
 
-  stopAgoraAudio();
+  stopActiveCallMedia();
 });
