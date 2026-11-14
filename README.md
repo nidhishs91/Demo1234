@@ -3934,6 +3934,36 @@ async function resolveStartupAuthentication() {
     currentServiceCallAuthorization = authorization;
 
     /*
+     * RESTORE / MIGRATE THE AUTHENTICATED SAVED ACCOUNT
+     *
+     * A restored OAuth session may exist before the
+     * savedAccounts structure was introduced.
+     *
+     * Ensure the authenticated account exists and
+     * becomes the active account before notification
+     * monitoring starts.
+     */
+
+    if (user && user.sys_id) {
+      const latestConfig = loadConfig();
+
+      const savedAccountResult = saveAuthenticatedAccount(
+        latestConfig,
+        user,
+        authorization,
+      );
+
+      saveConfig(savedAccountResult.config);
+
+      console.log("ServiceCall startup saved account restored:", {
+        hasActiveAccountKey: Boolean(savedAccountResult.accountKey),
+        savedAccountCount: Object.keys(
+          savedAccountResult.config.savedAccounts || {},
+        ).length,
+      });
+    }
+
+    /*
      * -------------------------------------
      * 5. AUTHENTICATED BUT NOT AUTHORIZED
      * -------------------------------------
